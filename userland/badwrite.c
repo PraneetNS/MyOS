@@ -5,9 +5,7 @@
    page fault handler, and the process gets terminated cleanly -- NOT
    silently corrupt kernel memory, and NOT crash the whole machine. */
 
-static inline void sys_write(const char* s) {
-    asm volatile ("int $0x80" : : "a"(1), "b"(s));
-}
+#include "libc.h"
 
 void _start(void) {
     sys_write("[badwrite] About to write to kernel memory at 0x100000...\n");

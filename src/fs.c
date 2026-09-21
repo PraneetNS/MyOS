@@ -102,3 +102,27 @@ int fs_read_file(const fs_entry_t* entry, uint8_t* buffer) {
     }
     return (int) entry->size_bytes;
 }
+
+int fs_read_range(const fs_entry_t* entry, uint32_t offset, uint8_t* buffer, uint32_t maxlen) {
+    if (!entry) return -1;
+    if (offset >= entry->size_bytes) return 0; /* EOF */
+
+    uint32_t remaining_in_file = entry->size_bytes - offset;
+    uint32_t to_read = (maxlen < remaining_in_file) ? maxlen : remaining_in_file;
+
+    uint32_t done = 0;
+    while (done < to_read) {
+        uint32_t file_pos = offset + done;
+        uint32_t sector_index = file_pos / 512;
+        uint32_t sector_offset = file_pos % 512;
+
+        uint8_t sector[512];
+        if (ata_read_sector(entry->start_lba + sector_index, sector) != 0) return -1;
+
+        uint32_t chunk = 512 - sector_offset;
+        if (chunk > to_read - done) chunk = to_read - done;
+        for (uint32_t i = 0; i < chunk; i++) buffer[done + i] = sector[sector_offset + i];
+        done += chunk;
+    }
+    return (int) done;
+}
