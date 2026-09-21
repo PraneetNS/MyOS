@@ -1,8 +1,7 @@
 #include "syscall.h"
 #include "idt.h"
 #include "vga.h"
-#include "shell.h"
-#include "vmm.h"
+#include "scheduler.h"
 
 #define SYS_EXIT  0
 #define SYS_WRITE 1
@@ -13,28 +12,19 @@ static void syscall_handler(struct registers* regs) {
     switch (regs->eax) {
         case SYS_WRITE:
             /* regs->ebx = pointer to a NUL-terminated string, set by the
-               caller in EBX before `int 0x80` (see usermode_demo.c) */
+               caller in EBX before `int 0x80` (see userland/hello.c) */
             terminal_writestring((const char*) regs->ebx);
             break;
 
         case SYS_EXIT:
-            terminal_writestring("[ok] program exited\n");
-            vmm_switch_to_kernel(); /* leave the process's address space, reclaim isolation */
-            /* We're about to call shell_run(), which never returns --
-               that means we permanently skip this handler's own normal
-               epilogue (in isr_common_stub), which is where `sti` would
-               otherwise re-enable interrupts. Without this explicit
-               sti, the keyboard (and everything else) would silently
-               stop firing forever after the first program exits. */
-            asm volatile ("sti");
-            /* NOTE: this re-enters the shell via a fresh nested call
-               rather than a true "return" to where it was launched from
-               -- see the README's Stage 5 notes on why, and its
-               documented limitation (unbounded kernel stack growth
-               across many "run" commands in one session). A real kernel
-               would instead tear down the process and hand control back
-               to a scheduler, as Stage 4's demo did. */
-            shell_run(); /* never returns */
+            terminal_writestring("[ok] process exited\n");
+            /* Tears the process down and switch_task()s into whatever's
+               next in the round-robin rotation. Because this goes
+               through switch_task's popf (not a bare function call),
+               interrupts get correctly re-enabled for whatever we
+               resume -- no manual `sti` needed here, unlike Stage 5/6's
+               shell_run()-recursion design this replaces. */
+            scheduler_exit_current(); /* never returns */
             break;
 
         default:

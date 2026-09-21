@@ -2,7 +2,7 @@
 #include "vga.h"
 #include "keyboard.h"
 #include "fs.h"
-#include "elf.h"
+#include "process.h"
 #include "kheap.h"
 
 static int streq(const char* a, const char* b) {
@@ -63,12 +63,19 @@ static void cmd_run(const char* name) {
     int n = fs_read_file(e, buf);
     if (n < 0) { terminal_writestring("run: read error\n"); kfree(buf); return; }
 
-    /* elf_load_and_run() never returns if the ELF is valid -- it jumps
-       into ring 3, and that program's eventual sys_exit calls shell_run()
-       again (see syscall.c). If the ELF is invalid, it returns -1 here
-       and we fall through back to the prompt normally. */
-    elf_load_and_run(buf, (uint32_t) n);
-    kfree(buf); /* only reached on a load failure */
+    /* process_spawn_from_elf() copies everything it needs into the new
+       process's own frames synchronously, so -- unlike Stage 5/6, where
+       enter_usermode() never returned and buf couldn't be freed until
+       long after -- we can free buf immediately regardless of outcome. */
+    process_t* p = process_spawn_from_elf(name, buf, (uint32_t) n);
+    kfree(buf);
+
+    if (p) {
+        terminal_writestring("[shell] launched '");
+        terminal_writestring(name);
+        terminal_writestring("' as a new process -- it now runs concurrently,\n");
+        terminal_writestring("        preemptively time-sliced against this shell.\n");
+    }
 }
 
 void shell_run(void) {

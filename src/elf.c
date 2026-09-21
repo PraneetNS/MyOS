@@ -1,7 +1,5 @@
 #include "elf.h"
 #include "vga.h"
-#include "kheap.h"
-#include "usermode.h"
 #include "vmm.h"
 
 #define EI_NIDENT 16
@@ -65,8 +63,6 @@ static int load_segment(address_space_t* as, const Elf32_Phdr* ph, const uint8_t
         uint8_t* frame = (uint8_t*) frame_phys; /* writable directly: kernel's own identity map is still active */
         for (int i = 0; i < PAGE_SIZE; i++) frame[i] = 0; /* covers .bss for free */
 
-        /* Copy whatever part of this page overlaps the segment's file
-           data (p_offset..p_offset+p_filesz maps to p_vaddr..+p_filesz). */
         uint32_t seg_file_end = ph->p_vaddr + ph->p_filesz;
         for (uint32_t va = page_vaddr; va < page_vaddr + PAGE_SIZE; va++) {
             if (va < ph->p_vaddr || va >= seg_file_end) continue;
@@ -77,7 +73,8 @@ static int load_segment(address_space_t* as, const Elf32_Phdr* ph, const uint8_t
     return 0;
 }
 
-int elf_load_and_run(const uint8_t* image, uint32_t image_size) {
+int elf_load_into(const uint8_t* image, uint32_t image_size,
+                   address_space_t* as, uint32_t* out_entry, uint32_t* out_stack_top) {
     if (image_size < sizeof(Elf32_Ehdr)) {
         terminal_writestring("[elf] file too small to be an ELF\n");
         return -1;
@@ -98,17 +95,10 @@ int elf_load_and_run(const uint8_t* image, uint32_t image_size) {
     print_hex(eh->e_entry);
     terminal_writestring("\n");
 
-    address_space_t as = vmm_create_address_space();
-    if (!as.directory) return -1;
-
-    terminal_writestring("[elf] new address space, page directory phys=0x");
-    print_hex(as.directory_phys);
-    terminal_writestring("\n");
-
     const Elf32_Phdr* phdrs = (const Elf32_Phdr*)(image + eh->e_phoff);
     for (int i = 0; i < eh->e_phnum; i++) {
         if (phdrs[i].p_type != PT_LOAD) continue;
-        if (load_segment(&as, &phdrs[i], image) != 0) {
+        if (load_segment(as, &phdrs[i], image) != 0) {
             terminal_writestring("[elf] failed to load a segment (out of memory?)\n");
             return -1;
         }
@@ -116,16 +106,13 @@ int elf_load_and_run(const uint8_t* image, uint32_t image_size) {
 
     for (int i = 0; i < USER_STACK_PAGES; i++) {
         uint32_t page_vaddr = USER_STACK_TOP - (i + 1) * PAGE_SIZE;
-        if (!vmm_map_user_page(&as, page_vaddr)) {
+        if (!vmm_map_user_page(as, page_vaddr)) {
             terminal_writestring("[elf] failed to map user stack\n");
             return -1;
         }
     }
 
-    terminal_writestring("[elf] segments loaded into isolated frames, switching address space...\n");
-    vmm_switch(&as);
-
-    enter_usermode(eh->e_entry, USER_STACK_TOP); /* never returns */
-
-    return 0; /* unreachable */
+    *out_entry = eh->e_entry;
+    *out_stack_top = USER_STACK_TOP;
+    return 0;
 }

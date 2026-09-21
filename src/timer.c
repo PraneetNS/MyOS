@@ -1,7 +1,7 @@
 #include "timer.h"
 #include "idt.h"
 #include "io.h"
-#include "task.h"
+#include "scheduler.h"
 
 static volatile uint32_t tick_count = 0;
 

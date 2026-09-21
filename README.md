@@ -282,31 +282,101 @@ qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d
 Try `run badwrite.elf` yourself once booted -- it's the clearest way to
 see Stage 6's actual payoff.
 
-## Stage 7 (next): making it a real multi-process OS
+## Stage 7 (done): unifying the scheduler with real processes
 
-The remaining big gap: only one user process can be "active" at a time,
-and `sys_exit` returns via nested C calls rather than genuine process
-teardown. In order:
+- `src/process.h` + `src/process.c` — a real process control block:
+  address space, saved kernel-mode `esp`, a dedicated kernel stack (for
+  `TSS.esp0`), entry point, user stack top, and state
+  (`READY`/`EXITED`/`UNUSED`). The shell itself is process 0: always
+  resident, runs in ring0 in the kernel's own address space, entry point
+  is `shell_run` directly (no ring3 trampoline needed for it).
+- `src/scheduler.c` + `src/scheduler.h` — round-robin over the process
+  table, reusing Stage 4's exact `switch_task` mechanism (the same
+  "swap stack pointers, let the C call chain encode the continuation"
+  trick), but now correctly handling per-process `CR3` and `TSS.esp0` on
+  every switch, which Stage 4 never needed since its kernel threads all
+  shared one address space.
+- `src/elf.c` — split from Stage 5/6's "load and immediately
+  `enter_usermode`" into `elf_load_into()`, which only loads a process's
+  segments into a *given* address space and hands back its entry point.
+  Deciding *when* it actually runs is now the scheduler's job, not the
+  loader's.
+- `src/vmm.c` — every address space now tracks every physical frame it
+  owns (directory, page tables, data pages) so `vmm_destroy_address_space()`
+  can give them all back to the physical memory manager on process exit,
+  instead of leaking them for the rest of the session as Stage 6 did.
+- `src/shell.c`'s `run <file>` is no longer blocking: `process_spawn_from_elf()`
+  loads the ELF into a brand new process slot and returns immediately --
+  the shell prints its next prompt right away while the new process runs
+  **concurrently**, preemptively time-sliced against the shell and any
+  other running processes, exactly like Stage 4's two kernel threads did,
+  except these are now real, isolated, ring-3 user processes.
 
-1. **A process control block (PCB)** — track multiple processes'
-   address spaces, register state, and status (running/ready/exited) as
-   data, not as implicit C call-stack depth.
-2. **Unify with Stage 4's scheduler** — instead of `sys_exit` calling
-   `shell_run()` directly, terminate the process (free its frames via
-   `pmm_free_frame`, which exists but is barely used yet) and let the
-   *scheduler* pick what runs next, exactly like Stage 4's kernel-thread
-   demo did, but now for real user processes with real address spaces.
-3. **`fork`/`exec`** — or at minimum, launching a *second* process while
-   a first one is still resident, which the current design doesn't
-   support (only one process's frames are ever "live" conceptually,
-   even though nothing stops you from launching another -- it would
-   just leak the previous one's frames rather than reclaiming them).
-4. **A user-mode heap syscall** (`sbrk`-style) — programs still only get
-   a fixed stack and whatever pages they were loaded with.
+**Verified with hard evidence of genuine concurrency, not just
+sequential dressed up to look concurrent:** launching `hello.elf`
+showed the shell's *own next prompt* land interleaved with the
+process's output (`myos> Hello from a REAL ELF binary...`), and a
+follow-up `help` command was typed and answered while the process was
+still active -- proof the shell moved on immediately rather than
+blocking. Launching two processes back-to-back showed keystroke-level
+interleaving (`myos> rHello from...` -- the `r` of a second `run`
+command landing inside the first process's still-running output).
+`badwrite.elf` was re-verified against the new teardown path: exactly
+one `v=0e` (page fault) in the interrupt log, process terminated
+cleanly via `scheduler_exit_current()`, zero triple faults across every
+test.
 
-Resources: OSDev Wiki's "Scheduling Algorithms" and "Process Management"
-pages, and revisiting "Meaty Skeleton" now with real address spaces
-available, cover this stage's direction.
+**A design improvement that eliminated a whole bug class, not just
+patched it:** Stage 5/6's `sys_exit` called `shell_run()` as a bare
+function call, which skipped the interrupt handler's normal `sti`
+epilogue and silently disabled interrupts forever after any program's
+first exit (worked around with a manual `sti`, documented in Stage 6's
+notes). Routing exit through `scheduler_exit_current()` -> `switch_task`
+instead means every process transition now goes through `switch_task`'s
+own `popf`, which correctly restores/sets the interrupt flag for
+whatever gets resumed -- the same mechanism Stage 4 relied on
+originally. No manual `sti` needed anywhere in Stage 7's exit or
+page-fault paths. Worth remembering: the *design* fix (route everything
+through one correct mechanism) was better than the *patch* fix
+(remember to add `sti` at every call site) -- the patch only works
+until the next new call site forgets it.
+
+**Known limitations, honestly documented:**
+- Round-robin only, fixed `MAX_PROCESSES=4` slots (shell + 3), no
+  priorities.
+- No `fork`/`exec` -- `run` always creates a brand new process from a
+  fresh ELF; there's no way to spawn a *child* of an existing process.
+- No inter-process communication, no `wait()`, no process hierarchy.
+- The kernel stack size (8KB per process) and owned-frame tracking
+  table (64 frames per address space) are fixed, generous-for-this-demo
+  constants, not dynamically sized.
+
+## Stage 8 (next): making it feel like an OS instead of a kernel
+
+The hard systems-programming core is now genuinely complete: boot,
+memory management, preemptive multitasking, real privilege separation,
+a filesystem, and real concurrent isolated processes. What's left is
+mostly *breadth*, not fundamentally new mechanisms:
+
+1. **`fork`/`exec`** -- lets a process spawn another, the missing piece
+   for anything resembling a real process hierarchy.
+2. **Pipes / IPC** -- processes currently can't talk to each other at
+   all.
+3. **A real filesystem** (FAT is the natural next step from MyFS) with
+   **write support** -- everything on disk right now is baked in at
+   build time by `tools/build_disk.py`.
+4. **More syscalls**: file I/O (`open`/`read`/`write`/`close` against
+   the filesystem, not just the two syscalls processes have now), a
+   `sbrk`-style heap syscall, `wait`/`waitpid`.
+5. **A libc-lite** for userland -- right now every userland program
+   hand-rolls its own `int 0x80` wrappers; a small static library would
+   make writing new programs much less tedious.
+
+Resources: OSDev Wiki's "Going Further on x86" page is a good index for
+picking among these; none of them individually is harder than what's
+already been built here -- Stage 7 was the last conceptually new hard
+part (real concurrent isolated execution). Everything from here is
+extending a design that already works.
 
 ## Notes on the toolchain choices made here
 

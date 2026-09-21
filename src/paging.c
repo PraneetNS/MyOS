@@ -1,8 +1,7 @@
 #include "paging.h"
 #include "idt.h"
 #include "vga.h"
-#include "vmm.h"
-#include "shell.h"
+#include "scheduler.h"
 
 #define PAGE_PRESENT 0x1
 #define PAGE_WRITE   0x2
@@ -52,16 +51,13 @@ static void page_fault_handler(struct registers* regs) {
     if (from_usermode) {
         /* A user process touched memory it has no mapping for -- exactly
            the protection this stage exists to add. Contain it: don't
-           crash the whole OS, just refuse to let the process continue,
-           restore the kernel's own address space, and hand control back
-           to the shell. This is the real payoff of per-process page
-           directories: kernel-space entry 0 is supervisor-only in every
-           process's page directory, so this fault is expected and
-           recoverable, not a bug. */
-        terminal_writestring("Process terminated (illegal memory access). Returning to shell.\n\n");
-        vmm_switch_to_kernel();
-        asm volatile ("sti"); /* see syscall.c's SYS_EXIT for why this is required here too */
-        shell_run(); /* never returns */
+           crash the whole OS, just terminate this one process via the
+           scheduler (same teardown path as a normal sys_exit) and let
+           whatever's next in the rotation run. Kernel-space entry 0 is
+           supervisor-only in every process's page directory, so this
+           fault is expected and recoverable, not a bug. */
+        terminal_writestring("Process terminated (illegal memory access).\n");
+        scheduler_exit_current(); /* never returns */
     }
 
     terminal_writestring("Kernel-mode page fault -- this is a real kernel bug. System halted.\n");

@@ -10,7 +10,8 @@
 #include "syscall.h"
 #include "ata.h"
 #include "fs.h"
-#include "shell.h"
+#include "process.h"
+#include "scheduler.h"
 
 static void print_uint(uint32_t n) {
     char buf[11]; int i = 10; buf[10] = '\0';
@@ -18,8 +19,6 @@ static void print_uint(uint32_t n) {
     while (n > 0 && i > 0) { buf[--i] = '0' + (n % 10); n /= 10; }
     terminal_writestring(&buf[i]);
 }
-
-#define KERNEL_STACK_SIZE 8192
 
 void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     (void) magic;
@@ -52,20 +51,21 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     tss_install(5, 0x10, 0);
     terminal_writestring("[ok] TSS installed\n");
-
-    /* Kernel-side stack used for any ring3->ring0 transition (every
-       syscall a shell-launched program makes). Set once here; there's
-       only ever one "current" user-mode program at a time in this
-       design, so a single shared kernel stack for the TSS is fine. */
-    uint8_t* kstack = (uint8_t*) kmalloc(KERNEL_STACK_SIZE);
-    tss_set_kernel_stack((uint32_t)(kstack + KERNEL_STACK_SIZE));
+    /* TSS.esp0 is updated per-process by the scheduler on every switch
+       (see scheduler.c's enter_process()) -- no one-shot setup needed
+       here anymore, unlike Stage 5/6. */
 
     syscall_install();
     terminal_writestring("[ok] Syscall interface installed (int 0x80)\n");
 
     fs_init();
 
-    shell_run(); /* never returns */
+    process_init_table();
+    terminal_writestring("[ok] Process table initialized (shell = process 0)\n");
+
+    scheduler_start(); /* never returns -- becomes the shell, and from here
+                           on, processes launched via 'run' are real,
+                           independently scheduled tasks */
 
     for (;;) { asm volatile ("hlt"); }
 }
