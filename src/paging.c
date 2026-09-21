@@ -4,6 +4,7 @@
 
 #define PAGE_PRESENT 0x1
 #define PAGE_WRITE   0x2
+#define PAGE_USER    0x4
 
 /* Identity-map the first 16MB: 4 page tables x 1024 entries x 4KB = 16MB.
    That's comfortably more than our kernel + heap need for now, and this
@@ -42,9 +43,15 @@ void paging_init(void) {
     for (int t = 0; t < NUM_TABLES; t++) {
         for (int i = 0; i < 1024; i++) {
             uint32_t phys = (t * 1024 + i) * 4096;
-            page_tables[t][i] = phys | PAGE_PRESENT | PAGE_WRITE;
+            /* NOTE: marking the whole identity map user-accessible is a
+               simplification for this teaching stage -- a real kernel
+               would only mark the specific pages a given process's
+               code/stack/heap occupy as PAGE_USER, keeping the rest of
+               physical memory kernel-only. Revisit once processes have
+               their own address spaces instead of sharing this one. */
+            page_tables[t][i] = phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
         }
-        page_directory[t] = ((uint32_t) &page_tables[t]) | PAGE_PRESENT | PAGE_WRITE;
+        page_directory[t] = ((uint32_t) &page_tables[t]) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
     }
 
     /* Remaining directory entries: not present (yet) */

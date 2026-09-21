@@ -16,14 +16,14 @@ struct gdt_ptr {
     uint32_t base;
 } __attribute__((packed));
 
-#define GDT_ENTRIES 5
+#define GDT_ENTRIES 6
 static struct gdt_entry gdt[GDT_ENTRIES];
 static struct gdt_ptr   gdt_pointer;
 
 /* Defined in gdt_flush.s -- loads the GDT register and reloads segments */
 extern void gdt_flush(uint32_t gdt_ptr_addr);
 
-static void gdt_set_gate(int num, uint32_t base, uint32_t limit,
+static void gdt_set_gate_internal(int num, uint32_t base, uint32_t limit,
                           uint8_t access, uint8_t gran) {
     gdt[num].base_low    = (base & 0xFFFF);
     gdt[num].base_middle  = (base >> 16) & 0xFF;
@@ -36,15 +36,23 @@ static void gdt_set_gate(int num, uint32_t base, uint32_t limit,
     gdt[num].access       = access;
 }
 
+/* Public wrapper so other modules (tss.c) can install additional
+   descriptors, e.g. the TSS, into the same table after gdt_install(). */
+void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
+    gdt_set_gate_internal(num, base, limit, access, gran);
+    gdt_flush((uint32_t) &gdt_pointer);
+}
+
 void gdt_install(void) {
     gdt_pointer.limit = (sizeof(struct gdt_entry) * GDT_ENTRIES) - 1;
     gdt_pointer.base  = (uint32_t) &gdt;
 
-    gdt_set_gate(0, 0, 0, 0, 0);                /* 0x00: null descriptor, required */
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);  /* 0x08: kernel code, ring 0 */
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);  /* 0x10: kernel data, ring 0 */
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);  /* 0x18: user code,   ring 3 (for later) */
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);  /* 0x20: user data,   ring 3 (for later) */
+    gdt_set_gate_internal(0, 0, 0, 0, 0);                /* 0x00: null descriptor, required */
+    gdt_set_gate_internal(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);  /* 0x08: kernel code, ring 0 */
+    gdt_set_gate_internal(2, 0, 0xFFFFFFFF, 0x92, 0xCF);  /* 0x10: kernel data, ring 0 */
+    gdt_set_gate_internal(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);  /* 0x18: user code,   ring 3 */
+    gdt_set_gate_internal(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);  /* 0x20: user data,   ring 3 */
+    gdt_set_gate_internal(5, 0, 0, 0, 0);                 /* 0x28: TSS -- filled in by tss_install() */
 
     gdt_flush((uint32_t) &gdt_pointer);
 }

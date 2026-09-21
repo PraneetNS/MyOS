@@ -79,6 +79,15 @@ IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
 
+/* Syscall gate: vector 128 (0x80), deliberately outside the ISR_NOERRCODE
+   macro block above since it's not part of the sequential 0-31 range. */
+.global isr128
+isr128:
+    cli
+    push $0
+    push $128
+    jmp isr_common_stub
+
 .extern isr_handler
 .extern irq_handler
 

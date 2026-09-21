@@ -64,8 +64,21 @@ void terminal_write(const char* data, size_t size) {
         terminal_putchar(data[i]);
 }
 
+/* terminal_row/column/buffer are shared mutable state. With preemptive
+   multitasking now in the picture (Stage 4), two contexts could
+   interleave writes to them mid-string and corrupt the display -- so
+   each full string write is made a small critical section. This is a
+   coarse fix (a real kernel would use a proper spinlock for SMP); on
+   a single CPU, disabling interrupts around the write is sufficient. */
 void terminal_writestring(const char* data) {
     size_t len = 0;
     while (data[len]) len++;
+
+    uint32_t saved_eflags;
+    asm volatile ("pushf; pop %0; cli" : "=r"(saved_eflags));
+
     terminal_write(data, len);
+
+    if (saved_eflags & 0x200) /* only re-enable if it was enabled before */
+        asm volatile ("sti");
 }

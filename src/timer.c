@@ -1,12 +1,14 @@
 #include "timer.h"
 #include "idt.h"
 #include "io.h"
+#include "task.h"
 
 static volatile uint32_t tick_count = 0;
 
 static void timer_callback(struct registers* regs) {
     (void) regs;
     tick_count++;
+    scheduler_tick(); /* no-op until scheduler_start() has been called */
 }
 
 uint32_t timer_get_ticks(void) {

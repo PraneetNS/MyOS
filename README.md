@@ -86,22 +86,76 @@ reused the freed space) passes, and keyboard input still works
 correctly with the paging unit live (rules out a whole class of subtle
 "stack page not mapped" bugs).
 
-## Stage 4 (next): user-space processes and a scheduler
+## Stage 4 (done): ring 3, syscalls, and a preemptive scheduler
 
-1. **Task Switching** — save/restore CPU state per task; extend the GDT's
-   already-reserved user code/data segments (0x18, 0x20) into real use.
-2. **Ring 3** — jump to user-mode via `iret`, with a proper Task State
-   Segment (TSS) so the CPU knows where to find the kernel stack on
-   privilege-level switches.
-3. **System calls** — an `int 0x80`-style (or `syscall` instruction)
-   interface so user-mode code can ask the kernel to do privileged things.
-4. **Preemptive scheduling** — hook a round-robin scheduler into the PIT
-   timer IRQ that's already ticking at 100Hz.
-5. **A real filesystem** comes after this — loading and running actual
-   programs needs somewhere to load them *from*.
+- `src/tss.c` — installs a Task State Segment (GDT slot 5) so the CPU
+  knows which kernel stack to switch to on a ring3→ring0 transition.
+- `src/paging.c` — identity-mapped pages now carry the `PAGE_USER` bit
+  (documented in-file as a teaching-stage simplification: a real kernel
+  would only mark a given process's own pages user-accessible, not the
+  whole map).
+- `src/usermode.h` + `boot/usermode_asm.s` — `enter_usermode()` builds a
+  fake interrupt-return frame and `iret`s into ring 3.
+- `src/usermode_demo.c` — a program that runs at CPL=3 and can *only*
+  reach the kernel via `int 0x80` — it has no direct access to
+  `terminal_writestring` or any other kernel function.
+- `src/syscall.c` + `isr128` in `boot/isr.s` — the `int 0x80` gate
+  (DPL=3, so ring-3 code is allowed to invoke it) with two syscalls:
+  `SYS_WRITE` and `SYS_EXIT`.
+- `src/task.c` + `boot/task_switch.s` — a round-robin scheduler over
+  kernel-mode tasks. `switch_task` is the classic "swap stack pointers,
+  let the C call chain encode the continuation" technique: each task's
+  suspended state is just wherever its own call stack was sitting when
+  the timer interrupted it.
+- `src/demo_tasks.c` — two tasks proving genuine preemption: each keeps
+  its own independent counter that survives being suspended mid-loop
+  and resumed later, interleaved with the other task's output.
 
-Resources: OSDev Wiki's "Getting to Ring 3" and "Meaty Skeleton" pages
-cover this stage's ordering closely.
+Flow: `kernel_main` sets up TSS/syscalls, registers two demo tasks,
+then calls `enter_usermode()` to run the ring-3 demo. That program's
+`sys_exit` syscall hands off permanently to `scheduler_start()`, which
+never returns — from that point on, control only re-enters kernel code
+via the timer IRQ's calls to `scheduler_tick()`.
+
+Verified: interrupt-level logging shows exactly 4 syscalls (3 writes +
+1 exit, matching the demo program exactly) and hundreds of clean timer
+ticks with zero GPFs and zero triple faults. A screenshot confirms real
+preemption, not just two tasks racing: Task B is cut off mid-count,
+Task A runs for a while, and when Task B resumes it continues from
+its own last count rather than restarting — proof each task's context
+is genuinely being saved and restored independently.
+
+One incidental bug this stage surfaced and fixed: `terminal_writestring`
+had shared mutable cursor state with no protection against a task being
+preempted mid-write — visible as garbled interleaved characters during
+debugging. Fixed by making each string write a short interrupts-disabled
+critical section (`src/vga.c`). Worth remembering as a general pattern:
+*any* kernel data touched from more than one task or from an interrupt
+handler needs this kind of protection, not just VGA.
+
+## Stage 5 (next): a real filesystem and ELF loading
+
+The ring-3 "process" right now is really just a function pointer baked
+into the kernel binary at compile time. A real OS loads *actual programs*
+from disk. In order:
+
+1. **ATA/AHCI disk driver** — read raw sectors from a virtual disk.
+2. **A filesystem** — start simple (FAT or even a custom flat format)
+   before attempting something like ext2.
+3. **ELF loader** — parse an ELF binary's program headers, map its
+   segments into a process's address space, and jump to its entry point
+   instead of a hardcoded kernel-side function pointer.
+4. **Per-process address spaces** — right now every task shares the
+   same page directory. Real process isolation needs each process to
+   get its own page directory, with `paging.c`'s current "identity-map
+   everything as user-accessible" simplification replaced by mapping
+   only that process's own pages.
+5. **A basic shell** that can load and run those programs on request —
+   at that point this stops being a kernel with demos baked in and
+   starts being an OS you actually *use*.
+
+Resources: OSDev Wiki's "ATA PIO Mode", "FAT", and "ELF" pages, in
+that order.
 
 ## Notes on the toolchain choices made here
 

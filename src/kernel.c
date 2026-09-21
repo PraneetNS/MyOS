@@ -6,22 +6,22 @@
 #include "pmm.h"
 #include "paging.h"
 #include "kheap.h"
+#include "tss.h"
+#include "syscall.h"
+#include "usermode.h"
+#include "usermode_demo.h"
+#include "task.h"
+#include "demo_tasks.h"
 
-/* Tiny helper: print an unsigned int in decimal (no libc here) */
 static void print_uint(uint32_t n) {
-    char buf[11];
-    int i = 10;
-    buf[10] = '\0';
-    if (n == 0) {
-        terminal_writestring("0");
-        return;
-    }
-    while (n > 0 && i > 0) {
-        buf[--i] = '0' + (n % 10);
-        n /= 10;
-    }
+    char buf[11]; int i = 10; buf[10] = '\0';
+    if (n == 0) { terminal_writestring("0"); return; }
+    while (n > 0 && i > 0) { buf[--i] = '0' + (n % 10); n /= 10; }
     terminal_writestring(&buf[i]);
 }
+
+#define KERNEL_STACK_SIZE 8192
+#define USER_STACK_SIZE   8192
 
 void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     (void) magic;
@@ -48,31 +48,36 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     asm volatile ("sti");
     terminal_writestring("[ok] Interrupts enabled\n");
 
-    terminal_writestring("\nFree physical frames: ");
+    terminal_writestring("Free physical frames: ");
     print_uint(pmm_free_frame_count());
     terminal_writestring("\n");
 
-    /* Heap smoke test: allocate three blocks, free the middle one,
-       allocate again and confirm the allocator reused freed space. */
-    terminal_writestring("\nHeap test:\n");
-    void* a = kmalloc(128);
-    void* b = kmalloc(256);
-    void* c = kmalloc(64);
-    terminal_writestring("  allocated a, b, c\n");
+    /* --- Stage 4: TSS, ring 3, syscalls, scheduler --- */
 
-    kfree(b);
-    terminal_writestring("  freed b\n");
+    tss_install(5, 0x10, 0); /* slot 5 in the GDT, kernel data selector for ss0 */
+    terminal_writestring("[ok] TSS installed\n");
 
-    void* d = kmalloc(100);
-    terminal_writestring("  allocated d (should fit in freed space)\n");
-    terminal_writestring(d ? "  [pass] kmalloc returned non-null after free+realloc\n"
-                           : "  [FAIL] kmalloc returned null\n");
+    syscall_install();
+    terminal_writestring("[ok] Syscall interface installed (int 0x80)\n");
 
-    (void) a; (void) c;
+    /* Kernel-side stack the CPU will switch to on the demo's ring3->ring0
+       transitions (the two sys_write/sys_exit syscalls it makes). */
+    uint8_t* kstack = (uint8_t*) kmalloc(KERNEL_STACK_SIZE);
+    tss_set_kernel_stack((uint32_t)(kstack + KERNEL_STACK_SIZE));
 
-    terminal_writestring("\nStage 3 complete. Type something:\n> ");
+    uint8_t* ustack = (uint8_t*) kmalloc(USER_STACK_SIZE);
+    uint32_t user_stack_top = (uint32_t)(ustack + USER_STACK_SIZE);
 
-    for (;;) {
-        asm volatile ("hlt");
-    }
+    /* Register the two kernel-mode demo tasks the scheduler will run
+       once the ring-3 demo below calls sys_exit(). */
+    task_create(task_a_entry);
+    task_create(task_b_entry);
+
+    terminal_writestring("\nEntering ring 3...\n");
+    enter_usermode((uint32_t) usermode_demo_entry, user_stack_top);
+
+    /* enter_usermode never returns -- sys_exit's handler calls
+       scheduler_start(), which takes over permanently. This line is
+       unreachable but kept as a documented safety net. */
+    for (;;) { asm volatile ("hlt"); }
 }
