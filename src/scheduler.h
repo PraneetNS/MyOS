@@ -20,4 +20,12 @@ void scheduler_exit_current(void);
    find its own entry point/stack on a brand-new process's first run. */
 process_t* scheduler_current(void);
 
+/* Called from sys_spawn_wait's syscall handler after spawning a child:
+   marks the calling process WAITING (so the scheduler won't pick it
+   again) and switches away immediately. Returns once
+   scheduler_exit_current() wakes it back up when child_pid exits -- at
+   that point this looks, to the caller, just like an ordinary function
+   return. */
+void scheduler_wait_for(int child_pid);
+
 #endif

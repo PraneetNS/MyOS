@@ -9,6 +9,7 @@
 #include "scheduler.h"
 
 static process_t table[MAX_PROCESSES];
+static int next_pid = 1; /* pid 0 is reserved for the shell */
 
 /* The "return address" fabricated onto a brand-new process's kernel
    stack (see the switch_task frame below). It runs once, on that
@@ -34,6 +35,10 @@ static void fabricate_initial_frame(process_t* p, void (*entry)(void)) {
     p->esp = (uint32_t) sp;
 }
 
+static void clear_fds(process_t* p) {
+    for (int i = 0; i < MAX_FDS; i++) p->fds[i].in_use = 0;
+}
+
 void process_init_table(void) {
     for (int i = 0; i < MAX_PROCESSES; i++) table[i].state = PROC_UNUSED;
 
@@ -46,6 +51,10 @@ void process_init_table(void) {
     shell->kernel_stack_top  = (uint32_t)(shell->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
     shell->is_kernel_task = 1;
     shell->state = PROC_READY;
+    shell->pid = 0;
+    shell->ppid = -1;
+    shell->waiting_for_pid = -1;
+    clear_fds(shell);
 
     const char* n = "shell";
     int i = 0; for (; n[i] && i < 31; i++) shell->name[i] = n[i]; shell->name[i] = '\0';
@@ -60,14 +69,21 @@ void process_init_table(void) {
 process_t* process_get_shell(void) { return &table[0]; }
 process_t* process_table_entry(int i) { return &table[i]; }
 
-process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size) {
+process_t* process_find_by_pid(int pid) {
+    for (int i = 0; i < MAX_PROCESSES; i++)
+        if (table[i].state != PROC_UNUSED && table[i].pid == pid)
+            return &table[i];
+    return 0;
+}
+
+process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid) {
     int slot = -1;
     for (int i = 1; i < MAX_PROCESSES; i++) { /* slot 0 is always the shell */
         if (table[i].state == PROC_UNUSED) { slot = i; break; }
     }
     if (slot < 0) {
         terminal_writestring("[proc] no free process slots (max ");
-        char c = '0' + MAX_PROCESSES; terminal_putchar(c);
+        terminal_putchar('0' + MAX_PROCESSES);
         terminal_writestring(")\n");
         return 0;
     }
@@ -87,6 +103,10 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
     p->kernel_stack_top  = (uint32_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
     p->is_kernel_task = 0;
+    p->pid = next_pid++;
+    p->ppid = parent_pid;
+    p->waiting_for_pid = -1;
+    clear_fds(p);
 
     int i = 0; for (; name[i] && i < 31; i++) p->name[i] = name[i]; p->name[i] = '\0';
 

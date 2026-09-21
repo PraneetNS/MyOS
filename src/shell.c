@@ -67,7 +67,7 @@ static void cmd_run(const char* name) {
        process's own frames synchronously, so -- unlike Stage 5/6, where
        enter_usermode() never returned and buf couldn't be freed until
        long after -- we can free buf immediately regardless of outcome. */
-    process_t* p = process_spawn_from_elf(name, buf, (uint32_t) n);
+    process_t* p = process_spawn_from_elf(name, buf, (uint32_t) n, 0 /* parent = shell */);
     kfree(buf);
 
     if (p) {

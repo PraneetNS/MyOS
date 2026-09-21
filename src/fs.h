@@ -18,4 +18,9 @@ const fs_entry_t* fs_find(const char* name);
    rounded up to a sector). Returns bytes read, or -1 on error. */
 int fs_read_file(const fs_entry_t* entry, uint8_t* buffer);
 
+/* Reads up to maxlen bytes starting at byte offset `offset` within the
+   file (for SYS_READ-style partial/streamed reads). Returns bytes
+   actually read (0 at end-of-file), or -1 on error. */
+int fs_read_range(const fs_entry_t* entry, uint32_t offset, uint8_t* buffer, uint32_t maxlen);
+
 #endif

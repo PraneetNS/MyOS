@@ -351,32 +351,85 @@ until the next new call site forgets it.
   table (64 frames per address space) are fixed, generous-for-this-demo
   constants, not dynamically sized.
 
-## Stage 8 (next): making it feel like an OS instead of a kernel
+## Stage 8 (done): file I/O syscalls, process hierarchy, and a userland libc
 
-The hard systems-programming core is now genuinely complete: boot,
-memory management, preemptive multitasking, real privilege separation,
-a filesystem, and real concurrent isolated processes. What's left is
-mostly *breadth*, not fundamentally new mechanisms:
+- `src/process.h`/`.c` — every process now has a real `pid` and `ppid`
+  (the shell is pid 0; `next_pid` counts up from 1), plus a per-process
+  file descriptor table (`MAX_FDS=4`) backed directly by `fs.c`.
+- `src/fs.c` gained `fs_read_range()` — partial, offset-based reads (the
+  building block `SYS_READ` needed; `fs_read_file()` from Stage 5 still
+  exists for whole-file reads like the shell's `cat`).
+- `src/syscall.c` grew four new syscalls: `SYS_GETPID`, `SYS_OPEN`,
+  `SYS_READ`, `SYS_CLOSE` (straightforward — they just validate and
+  delegate to the calling process's fd table + `fs.c`), and
+  `SYS_SPAWN_WAIT` (spawns a child process and **blocks the caller**
+  until it exits -- the missing synchronous counterpart to the shell's
+  always-concurrent `run`).
+- `src/scheduler.c` gained a new process state (`PROC_WAITING`) and
+  `scheduler_wait_for()` / `wake_waiters_for()`: a waiting process is
+  excluded from the round-robin rotation (same mechanism that already
+  excluded `EXITED`/`UNUSED` processes) until its child calls
+  `scheduler_exit_current()`, which wakes it back to `READY`. The
+  blocked process's eventual return value was already written into its
+  saved register frame *before* it blocked, so waking it up looks, from
+  its own code's perspective, exactly like an ordinary function return.
+- `userland/libc.h` — a small shared header of `static inline` syscall
+  wrappers (`sys_write`, `sys_exit`, `sys_getpid`, `sys_open`,
+  `sys_read`, `sys_close`, `sys_spawn_wait`, plus a `print_uint` helper),
+  so new userland programs don't hand-roll `int 0x80` each time.
+  `hello.c` and `badwrite.c` were refactored to use it.
+- `userland/reader.c` — proves file I/O syscalls work: opens
+  `hello.txt`, reads it in 32-byte chunks via `sys_read`, all from
+  userland, with no help from the shell's kernel-side `cat`.
+- `userland/parent.c` — proves `sys_spawn_wait` works: spawns
+  `hello.elf` as a genuine child process and blocks until it exits,
+  contrasting directly with the shell's fire-and-forget `run`.
 
-1. **`fork`/`exec`** -- lets a process spawn another, the missing piece
-   for anything resembling a real process hierarchy.
-2. **Pipes / IPC** -- processes currently can't talk to each other at
-   all.
-3. **A real filesystem** (FAT is the natural next step from MyFS) with
-   **write support** -- everything on disk right now is baked in at
-   build time by `tools/build_disk.py`.
-4. **More syscalls**: file I/O (`open`/`read`/`write`/`close` against
-   the filesystem, not just the two syscalls processes have now), a
-   `sbrk`-style heap syscall, `wait`/`waitpid`.
-5. **A libc-lite** for userland -- right now every userland program
-   hand-rolls its own `int 0x80` wrappers; a small static library would
-   make writing new programs much less tedious.
+**A real, subtle bug this stage caught -- a compiler bug, not a kernel
+bug, and worth remembering for exactly that reason:** the first version
+of `reader.elf` printed blank space everywhere a number should have
+appeared (`pid` and the byte count). Disassembling the `-O2` build
+showed `print_uint()`'s loop correctly computing each digit's value via
+the usual multiply-by-magic-constant division trick, but **never
+actually storing the resulting ASCII byte into the output buffer** --
+confirmed by comparing against an `-O0` build of the same source, where
+the `add $0x30,%eax` / `mov %cl,(%eax)` store is clearly present.
+`-O1` had the same problem; `-O0` doesn't. Fixed by building userland
+at `-O0` (documented in `userland/build.sh` -- these are small demo
+programs, so the lost optimization costs nothing). The lesson: a
+freestanding, no-libc environment is exactly the kind of place where an
+optimizer's hosted-environment assumptions can produce a silent,
+plausible-looking wrong answer instead of a crash -- worth treating
+optimization level as a variable to test, not a given, whenever
+something's output looks subtly incomplete rather than obviously broken.
 
-Resources: OSDev Wiki's "Going Further on x86" page is a good index for
-picking among these; none of them individually is harder than what's
-already been built here -- Stage 7 was the last conceptually new hard
-part (real concurrent isolated execution). Everything from here is
-extending a design that already works.
+**Verified with exact, hand-checked evidence:** `reader.elf` reported
+`pid 1` (correct -- first process spawned after the shell) and `393
+bytes read via syscalls` (exactly matching `hello.txt`'s real size).
+`parent.elf` (pid 1) spawned `hello.elf` as pid 2, blocked, and resumed
+only after the child's `[ok] process exited` printed, correctly
+reporting `child (pid 2) finished`. The shell answered `help` normally
+immediately afterward, proving full recovery. The interrupt log showed
+**exactly 16 syscalls** for that whole session -- 11 from `parent.elf`
+plus 5 from its child `hello.elf`, hand-counted in advance from the
+source and matched exactly. Zero triple faults throughout.
+
+## Stage 9 (next): the remaining big pieces
+
+1. **`fork`** (as opposed to `SYS_SPAWN_WAIT`'s spawn-a-*new*-ELF model)
+   -- duplicating an existing process's address space is a genuinely
+   different, harder mechanism than what's built so far.
+2. **Pipes / IPC** -- processes still can't exchange data with each
+   other at all, only sequence via `wait`.
+3. **A real, writable filesystem** -- MyFS is still read-only and built
+   entirely at compile time by `tools/build_disk.py`.
+4. **A `sbrk`-style heap syscall** -- userland programs still only get
+   whatever pages they were loaded with plus a fixed stack.
+5. **Signals** -- there's no way to interrupt a running process from
+   outside it except a fatal page fault.
+
+Resources: OSDev Wiki's "Fork" and "Pipes" pages cover the next two
+directly.
 
 ## Notes on the toolchain choices made here
 
