@@ -71,6 +71,7 @@ if __name__ == "__main__":
     files = [
         ("hello.txt", os.path.join(here, "hello.txt")),
         ("hello.elf", os.path.join(root, "userland", "hello.elf")),
+        ("badwrite.elf", os.path.join(root, "userland", "badwrite.elf")),
     ]
 
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "disk.img")

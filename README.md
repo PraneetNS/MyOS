@@ -211,26 +211,102 @@ Note the new `-hda disk.img`: the kernel now expects a second drive
 attached at the primary ATA bus (ports 0x1F0-0x1F7) for its filesystem,
 separate from the GRUB boot CD.
 
-## Stage 6 (next): process isolation
+## Stage 6 (done): real process isolation
 
-The single biggest thing missing now is memory protection between
-processes. In order:
+- `src/paging.c` — reworked so only directory entry 0 (0-4MB, where the
+  kernel image + heap live -- confirmed at build time to stay under 4MB)
+  is identity-mapped and, critically, **supervisor-only** now: user-mode
+  code can no longer touch kernel memory at all. Entries 1-3 remain as a
+  kernel-only physical-frame identity map the kernel itself uses while
+  setting up new processes, not something any process's own page
+  directory inherits.
+- `src/vmm.c` + `src/vmm.h` — the actual isolation mechanism:
+  `vmm_create_address_space()` allocates a fresh page directory (via the
+  Stage 3 physical memory manager) that shares only the kernel's
+  supervisor-only entry 0; `vmm_map_user_page()` backs a virtual page
+  with a **freshly allocated physical frame** on demand. Two processes
+  loaded at the identical virtual address now get genuinely different
+  physical memory -- this is the difference between Stage 5's shared
+  identity map and real virtual memory.
+- `src/elf.c` — rewritten to load each `PT_LOAD` segment page-by-page
+  into a new address space's fresh frames (instead of writing directly
+  into the old shared identity map), and to map a proper per-process
+  user stack at the classic `0xC0000000` convention.
+- Page fault handling (`src/paging.c`) now decodes the hardware error
+  code and **contains** user-mode faults instead of halting the whole
+  machine: it prints what happened, restores the kernel's own address
+  space, and hands control back to the shell. A kernel-mode fault (a
+  real kernel bug) still halts, since that's genuinely fatal.
+- `userland/badwrite.c` — a second userland program built specifically
+  to prove protection works: it deliberately writes to kernel memory at
+  `0x100000` and expects to be killed for it.
 
-1. **Per-process page directories** — each process gets its own
-   `CR3`-loadable page directory instead of sharing the kernel's.
-2. **A proper `fork`/`exec`-style process model** — or at minimum,
-   loading a *new* ELF while a previous one is still "running" (right
-   now only one user program can be active at a time).
-3. **User-mode heap** (`brk`/`sbrk`-style syscall) — programs currently
-   get a fixed stack and nothing else.
-4. **File writes** — the filesystem is read-only; adding writes means
-   dealing with real allocation instead of "just append contiguously."
-5. Eventually: replacing the kernel-stack-recursion trick from `sys_exit`
-   with genuine process teardown back into a scheduler loop, unifying
-   Stage 4's scheduler with Stage 5's process loading properly.
+**A real bug this stage caught, worth remembering:** the first working
+build of this stage silently broke the keyboard after any program's
+first exit. Cause: `sys_exit` (and the new page-fault recovery path)
+call `shell_run()` directly rather than returning through the syscall
+handler's normal assembly epilogue -- and that epilogue is where `sti`
+re-enables interrupts. Skipping it left interrupts permanently disabled
+after the first `run` command in any session. Fixed with an explicit
+`sti` at both call sites. This is the same category of bug as Stage 4's
+VGA reentrancy issue: shortcuts around the normal interrupt-return path
+have to manually redo whatever that path would have done. Confirmed
+fixed by running three programs consecutively in one session and
+checking the interrupt log shows exactly 5 syscalls x 3 = 15, not 5.
 
-Resources: OSDev Wiki's "Higher Half Kernel" and "User Mode" pages cover
-per-process address spaces; "Meaty Skeleton" covers the fork/exec model.
+**Verified, with hard evidence, not just visual inspection:**
+- Two consecutive `run hello.elf` calls produced page directories at
+  `0x0021D000` and `0x00225000` -- different physical memory every time,
+  proving real per-launch isolation, not address reuse.
+- `run badwrite.elf` triggered `*** PAGE FAULT at 0x00100000
+  (err=0x00000007, user-mode, write) ***` -- the exact, correctly
+  decoded hardware fault for a user-mode write to a present-but-
+  protected page. The process was terminated; the shell recovered
+  cleanly; `run hello.elf` immediately after succeeded normally,
+  proving the whole OS survived a memory protection violation instead
+  of crashing.
+- Zero triple faults and zero unexpected interrupt vectors across every
+  test, confirmed via QEMU's `-d int` interrupt-level logging, not just
+  screenshots.
+
+## Building and running Stage 6 (updated)
+
+```bash
+make                        # kernel + myos.iso
+./userland/build.sh          # now builds every userland/*.c, including badwrite.elf
+python3 tools/build_disk.py  # disk.img now has 3 files
+
+qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d
+```
+
+Try `run badwrite.elf` yourself once booted -- it's the clearest way to
+see Stage 6's actual payoff.
+
+## Stage 7 (next): making it a real multi-process OS
+
+The remaining big gap: only one user process can be "active" at a time,
+and `sys_exit` returns via nested C calls rather than genuine process
+teardown. In order:
+
+1. **A process control block (PCB)** — track multiple processes'
+   address spaces, register state, and status (running/ready/exited) as
+   data, not as implicit C call-stack depth.
+2. **Unify with Stage 4's scheduler** — instead of `sys_exit` calling
+   `shell_run()` directly, terminate the process (free its frames via
+   `pmm_free_frame`, which exists but is barely used yet) and let the
+   *scheduler* pick what runs next, exactly like Stage 4's kernel-thread
+   demo did, but now for real user processes with real address spaces.
+3. **`fork`/`exec`** — or at minimum, launching a *second* process while
+   a first one is still resident, which the current design doesn't
+   support (only one process's frames are ever "live" conceptually,
+   even though nothing stops you from launching another -- it would
+   just leak the previous one's frames rather than reclaiming them).
+4. **A user-mode heap syscall** (`sbrk`-style) — programs still only get
+   a fixed stack and whatever pages they were loaded with.
+
+Resources: OSDev Wiki's "Scheduling Algorithms" and "Process Management"
+pages, and revisiting "Meaty Skeleton" now with real address spaces
+available, cover this stage's direction.
 
 ## Notes on the toolchain choices made here
 

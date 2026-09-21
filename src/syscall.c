@@ -2,6 +2,7 @@
 #include "idt.h"
 #include "vga.h"
 #include "shell.h"
+#include "vmm.h"
 
 #define SYS_EXIT  0
 #define SYS_WRITE 1
@@ -18,6 +19,14 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_EXIT:
             terminal_writestring("[ok] program exited\n");
+            vmm_switch_to_kernel(); /* leave the process's address space, reclaim isolation */
+            /* We're about to call shell_run(), which never returns --
+               that means we permanently skip this handler's own normal
+               epilogue (in isr_common_stub), which is where `sti` would
+               otherwise re-enable interrupts. Without this explicit
+               sti, the keyboard (and everything else) would silently
+               stop firing forever after the first program exits. */
+            asm volatile ("sti");
             /* NOTE: this re-enters the shell via a fresh nested call
                rather than a true "return" to where it was launched from
                -- see the README's Stage 5 notes on why, and its
