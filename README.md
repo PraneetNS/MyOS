@@ -43,25 +43,50 @@ qemu-system-i386 -cdrom myos.iso
 4. The kernel halts the CPU in a loop (`hlt`) since there's nothing else
    to do yet — no interrupts are enabled, so it'll sit there forever.
 
-## Stage 2 (next): GDT, IDT, and interrupts
+## Stage 2 (done): GDT, IDT, PIC, timer, keyboard
 
-Right now you're relying on GRUB's GDT setup and no interrupts are
-enabled at all. The next milestones, in order:
+- `src/gdt.c` + `boot/gdt_flush.s` — our own flat GDT (5 entries: null,
+  kernel code, kernel data, user code, user data — the last two unused
+  until Stage 4's userspace/ring 3 work).
+- `src/idt.c` + `boot/isr.s` + `boot/idt_flush.s` — 32 CPU exception
+  vectors + 16 remapped hardware IRQ vectors, each with its own stub
+  (x86 gives no other way to know which interrupt fired). Unhandled
+  exceptions now print a message and halt instead of silently
+  triple-faulting.
+- `src/timer.c` — programs the 8253/8254 PIT to fire IRQ0 at 100Hz.
+  Not doing anything with the ticks yet, but this is the heartbeat
+  a future preemptive scheduler will hook into.
+- `src/keyboard.c` — IRQ1 handler, PS/2 scancode set 1 → ASCII,
+  prints typed characters directly. (Shift/caps-lock handling and a
+  proper input buffer are Stage 3 polish, not blockers.)
 
-1. **Your own GDT** — even a flat GDT you define yourself, so the kernel
-   doesn't depend on whatever GRUB set up.
-2. **IDT + exception handlers** — so CPU faults (divide-by-zero, page
-   fault, general protection fault) print something instead of
-   triple-faulting the machine into a silent reboot.
-3. **PIC remapping + IRQs** — the legacy 8259 PIC's default interrupt
-   vectors collide with CPU exceptions; remap it before enabling interrupts.
-4. **Timer + keyboard drivers** — first real IRQ handlers. Timer interrupt
-   is also your first step toward preemptive multitasking later.
+Verified: boots in QEMU, all four "[ok]" lines print, `sti` doesn't
+crash, and typed keys echo to the screen — confirming the full pipeline
+(PIC → IDT → ISR stub → C handler → VGA) actually works end to end.
 
-Resources for this next stage: the OSDev Wiki pages "GDT", "IDT", and
-"Interrupts" cover exactly this in order. Philipp Oppermann's "Writing an
-OS in Rust" blog covers the same stages if you ever want to compare the
-Rust approach to this C one.
+## Stage 3 (next): paging and a heap allocator
+
+This is the big one — real memory management. In order:
+
+1. **Physical memory manager** — a bitmap or free-list tracking which
+   4KB physical frames are in use, seeded from the Multiboot2 memory
+   map GRUB hands you in `mb_info_addr` (currently unused — you'll
+   parse it here).
+2. **Paging** — build page tables, load `CR3`, set the paging bit in
+   `CR0`. This is what gives you virtual memory and is a hard
+   prerequisite for user-space processes later (Stage 4) and for
+   eventually moving to 64-bit long mode.
+3. **Page fault handler** — vector 14 already has a slot in the IDT;
+   right now it just panics. Once paging is live, this is where you'll
+   implement things like demand paging or a guard page for stack
+   overflow detection.
+4. **Kernel heap** — a `kmalloc`/`kfree` built on top of the physical
+   allocator + paging, so the kernel itself can allocate memory
+   dynamically instead of everything being static/global like it is now.
+
+Resources: OSDev Wiki's "Memory Management" and "Paging" pages, and
+the "Memory Management" chapters of OSTEP, cover this stage in the
+same order.
 
 ## Notes on the toolchain choices made here
 

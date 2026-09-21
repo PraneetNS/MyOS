@@ -7,14 +7,15 @@ CFLAGS  = -m32 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic \
 ASFLAGS = --32
 LDFLAGS = -m elf_i386 -T boot/linker.ld -nostdlib
 
-OBJS = boot/boot.o src/kernel.o src/vga.o
+OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o \
+       src/kernel.o src/vga.o src/gdt.o src/idt.o src/timer.o src/keyboard.o
 
 KERNEL_BIN = isodir/boot/myos.bin
 ISO        = myos.iso
 
 all: $(ISO)
 
-boot/boot.o: boot/boot.s
+boot/%.o: boot/%.s
 	$(AS) $(ASFLAGS) $< -o $@
 
 src/%.o: src/%.c
