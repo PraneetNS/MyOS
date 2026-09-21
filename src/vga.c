@@ -50,6 +50,14 @@ void terminal_putchar(char c) {
         return;
     }
 
+    if (c == '\b') {
+        if (terminal_column > 0) {
+            terminal_column--;
+            terminal_buffer[terminal_row * VGA_WIDTH + terminal_column] = vga_entry(' ', terminal_color);
+        }
+        return;
+    }
+
     terminal_buffer[terminal_row * VGA_WIDTH + terminal_column] = vga_entry(c, terminal_color);
 
     if (++terminal_column == VGA_WIDTH) {

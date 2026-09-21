@@ -1,7 +1,7 @@
 #include "syscall.h"
 #include "idt.h"
 #include "vga.h"
-#include "task.h"
+#include "shell.h"
 
 #define SYS_EXIT  0
 #define SYS_WRITE 1
@@ -17,8 +17,15 @@ static void syscall_handler(struct registers* regs) {
             break;
 
         case SYS_EXIT:
-            terminal_writestring("[ok] sys_exit received -- handing off to the scheduler\n\n");
-            scheduler_start(); /* never returns */
+            terminal_writestring("[ok] program exited\n");
+            /* NOTE: this re-enters the shell via a fresh nested call
+               rather than a true "return" to where it was launched from
+               -- see the README's Stage 5 notes on why, and its
+               documented limitation (unbounded kernel stack growth
+               across many "run" commands in one session). A real kernel
+               would instead tear down the process and hand control back
+               to a scheduler, as Stage 4's demo did. */
+            shell_run(); /* never returns */
             break;
 
         default:

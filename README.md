@@ -133,29 +133,104 @@ critical section (`src/vga.c`). Worth remembering as a general pattern:
 *any* kernel data touched from more than one task or from an interrupt
 handler needs this kind of protection, not just VGA.
 
-## Stage 5 (next): a real filesystem and ELF loading
+## Stage 5 (done): a real filesystem and ELF loading
 
-The ring-3 "process" right now is really just a function pointer baked
-into the kernel binary at compile time. A real OS loads *actual programs*
-from disk. In order:
+- `src/ata.c` — polling-mode ATA PIO driver (primary bus, master drive,
+  LBA28). No IRQ handling needed for polled I/O, though the controller
+  still fires IRQ14 on its own -- safely ignored since nothing's
+  registered for that vector (confirmed harmless via interrupt logging).
+- `src/fs.c` + `src/fs.h` — a deliberately simple custom filesystem:
+  a superblock at LBA 0, a flat directory table (name + start LBA +
+  size, 64 bytes/entry) starting at LBA 1, and contiguous file data
+  from LBA 16 onward. Read-only, no subdirectories, no allocation --
+  real simplicity on purpose, to keep the concept (superblock →
+  directory → data) clear before ever reaching for something like FAT.
+- `tools/build_disk.py` — host-side Python tool that writes `disk.img`
+  in that exact format. This is the "mkfs" for MyFS.
+- `userland/hello.c` + `userland/user.ld` + `userland/build.sh` — a
+  **completely separate build**: a real standalone ELF32 program,
+  compiled and linked on its own (entry `_start`, loaded at a fixed
+  `0x800000`), that only ever talks to the kernel via `int 0x80` --
+  identical syscall convention to Stage 4's baked-in demo, except this
+  binary now lives as genuine bytes on disk.img rather than being
+  compiled into the kernel image.
+- `src/elf.c` — parses the ELF32 header and program headers, validates
+  magic/class/machine/type, copies each `PT_LOAD` segment to its
+  `p_vaddr` (documented in-file as relying on the current identity-map
+  simplification -- a real loader would map fresh frames into a new
+  page directory instead), zeroes `.bss`, and calls `enter_usermode()`
+  at `e_entry`.
+- `src/shell.c` + keyboard line-buffering (`keyboard_read_line()` in
+  `src/keyboard.c`) — an interactive shell: `ls`, `cat <file>`,
+  `run <file>`, `help`. Backspace works properly now too (`src/vga.c`
+  gained real `\b` handling as part of this).
 
-1. **ATA/AHCI disk driver** — read raw sectors from a virtual disk.
-2. **A filesystem** — start simple (FAT or even a custom flat format)
-   before attempting something like ext2.
-3. **ELF loader** — parse an ELF binary's program headers, map its
-   segments into a process's address space, and jump to its entry point
-   instead of a hardcoded kernel-side function pointer.
-4. **Per-process address spaces** — right now every task shares the
-   same page directory. Real process isolation needs each process to
-   get its own page directory, with `paging.c`'s current "identity-map
-   everything as user-accessible" simplification replaced by mapping
-   only that process's own pages.
-5. **A basic shell** that can load and run those programs on request —
-   at that point this stops being a kernel with demos baked in and
-   starts being an OS you actually *use*.
+Flow: `kernel_main` sets up through Stage 4, mounts the filesystem,
+then calls `shell_run()`, which never returns under normal operation.
+`run <file>`'s ELF launch, like Stage 4's demo, hands off via
+`sys_exit` -- except now `sys_exit` calls `shell_run()` again rather
+than starting the old scheduler demo, so the user lands back at a
+working prompt after their program exits.
 
-Resources: OSDev Wiki's "ATA PIO Mode", "FAT", and "ELF" pages, in
-that order.
+**Verified end-to-end, not just visually:** booted with `-hda disk.img`
+attached, ran `ls` (lists both files correctly), `cat hello.txt` (full
+file content read via ATA and printed correctly), and `run hello.elf`
+(loader printed the correct parsed entry point `0x00800000` matching
+the linker script exactly, loaded segments, entered ring 3, the program
+printed its 4 messages via real syscalls, exited cleanly, and the shell
+re-prompted). Interrupt-level logging over the whole session shows
+exactly 428 timer ticks, 55 keyboard IRQs matching keystrokes typed,
+5 syscalls matching `hello.c`'s code exactly (4 writes + 1 exit), and
+zero unexpected vectors, zero GPFs, zero triple faults.
+
+**Known limitations, honestly documented rather than hidden:**
+- Every process still shares the kernel's one page directory (the
+  Stage 4 "identity-map everything as user-accessible" simplification
+  persists). No memory isolation between processes yet.
+- `sys_exit` re-entering `shell_run()` via a fresh nested C call (rather
+  than a true return, for the same reasons explained in Stage 4) means
+  kernel stack usage grows slightly with every `run` command in a
+  session. Fine for a demo; a real kernel would tear down the process
+  and return to a scheduler loop instead, as Stage 4's original demo did.
+- The old Stage 4 baked-in ring-3 demo and 2-task scheduler demo
+  (`src/usermode_demo.c`, `src/task.c`, `src/demo_tasks.c`) are still in
+  the tree and still compile, just no longer called from `kernel_main`
+  by default -- kept as reference/available to re-enable.
+
+## Building and running Stage 5 (updated)
+
+```bash
+make                       # kernel + myos.iso, as before
+./userland/build.sh        # builds userland/hello.elf
+python3 tools/build_disk.py  # builds disk.img from hello.txt + hello.elf
+
+qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d
+```
+
+Note the new `-hda disk.img`: the kernel now expects a second drive
+attached at the primary ATA bus (ports 0x1F0-0x1F7) for its filesystem,
+separate from the GRUB boot CD.
+
+## Stage 6 (next): process isolation
+
+The single biggest thing missing now is memory protection between
+processes. In order:
+
+1. **Per-process page directories** — each process gets its own
+   `CR3`-loadable page directory instead of sharing the kernel's.
+2. **A proper `fork`/`exec`-style process model** — or at minimum,
+   loading a *new* ELF while a previous one is still "running" (right
+   now only one user program can be active at a time).
+3. **User-mode heap** (`brk`/`sbrk`-style syscall) — programs currently
+   get a fixed stack and nothing else.
+4. **File writes** — the filesystem is read-only; adding writes means
+   dealing with real allocation instead of "just append contiguously."
+5. Eventually: replacing the kernel-stack-recursion trick from `sys_exit`
+   with genuine process teardown back into a scheduler loop, unifying
+   Stage 4's scheduler with Stage 5's process loading properly.
+
+Resources: OSDev Wiki's "Higher Half Kernel" and "User Mode" pages cover
+per-process address spaces; "Meaty Skeleton" covers the fork/exec model.
 
 ## Notes on the toolchain choices made here
 

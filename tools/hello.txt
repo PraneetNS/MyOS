@@ -1,0 +1,10 @@
+Hello from disk!
+
+This text file lives inside MyOS's custom filesystem on disk.img.
+It was written by tools/build_disk.py, read off the virtual hard
+disk by src/ata.c (polling-mode ATA PIO), and located by name via
+src/fs.c's directory table -- all before the kernel ever prints
+this text to the screen.
+
+Try 'run hello.elf' next to see a real ELF binary get loaded and
+executed the same way.
