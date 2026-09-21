@@ -64,29 +64,44 @@ Verified: boots in QEMU, all four "[ok]" lines print, `sti` doesn't
 crash, and typed keys echo to the screen — confirming the full pipeline
 (PIC → IDT → ISR stub → C handler → VGA) actually works end to end.
 
-## Stage 3 (next): paging and a heap allocator
+## Stage 3 (done): paging and a kernel heap
 
-This is the big one — real memory management. In order:
+- `src/multiboot2.h` — parses the Multiboot2 memory map tag GRUB passes in
+  (previously ignored; `mb_info_addr` is now actually used).
+- `src/pmm.c` — physical memory manager: a bitmap over every 4KB frame,
+  seeded from the real memory map (verified: found ~125MB free on a
+  128MB QEMU VM, matching expectations exactly).
+- `src/paging.c` + `boot/paging_asm.s` — builds a page directory + 4 page
+  tables identity-mapping the first 16MB, loads `CR3`, sets `CR0`'s PG
+  bit. Vector 14 (#PF) now has a real handler that reads `CR2` and
+  prints the faulting address instead of triple-faulting.
+- `src/kheap.c` — a first-fit free-list `kmalloc`/`kfree` over a static
+  2MB backing region. Splits blocks on allocation, merges adjacent free
+  blocks on free.
 
-1. **Physical memory manager** — a bitmap or free-list tracking which
-   4KB physical frames are in use, seeded from the Multiboot2 memory
-   map GRUB hands you in `mb_info_addr` (currently unused — you'll
-   parse it here).
-2. **Paging** — build page tables, load `CR3`, set the paging bit in
-   `CR0`. This is what gives you virtual memory and is a hard
-   prerequisite for user-space processes later (Stage 4) and for
-   eventually moving to 64-bit long mode.
-3. **Page fault handler** — vector 14 already has a slot in the IDT;
-   right now it just panics. Once paging is live, this is where you'll
-   implement things like demand paging or a guard page for stack
-   overflow detection.
-4. **Kernel heap** — a `kmalloc`/`kfree` built on top of the physical
-   allocator + paging, so the kernel itself can allocate memory
-   dynamically instead of everything being static/global like it is now.
+Verified: zero triple faults with interrupt logging enabled, pmm found
+the correct free frame count from the real memory map, the heap
+smoke-test (alloc 3 blocks → free the middle → alloc a 4th → confirm it
+reused the freed space) passes, and keyboard input still works
+correctly with the paging unit live (rules out a whole class of subtle
+"stack page not mapped" bugs).
 
-Resources: OSDev Wiki's "Memory Management" and "Paging" pages, and
-the "Memory Management" chapters of OSTEP, cover this stage in the
-same order.
+## Stage 4 (next): user-space processes and a scheduler
+
+1. **Task Switching** — save/restore CPU state per task; extend the GDT's
+   already-reserved user code/data segments (0x18, 0x20) into real use.
+2. **Ring 3** — jump to user-mode via `iret`, with a proper Task State
+   Segment (TSS) so the CPU knows where to find the kernel stack on
+   privilege-level switches.
+3. **System calls** — an `int 0x80`-style (or `syscall` instruction)
+   interface so user-mode code can ask the kernel to do privileged things.
+4. **Preemptive scheduling** — hook a round-robin scheduler into the PIT
+   timer IRQ that's already ticking at 100Hz.
+5. **A real filesystem** comes after this — loading and running actual
+   programs needs somewhere to load them *from*.
+
+Resources: OSDev Wiki's "Getting to Ring 3" and "Meaty Skeleton" pages
+cover this stage's ordering closely.
 
 ## Notes on the toolchain choices made here
 

@@ -26,4 +26,7 @@ SECTIONS
         *(COMMON)
         *(.bss)
     }
+
+    . = ALIGN(4K);
+    kernel_end = .;   /* first free byte after the kernel image -- pmm/heap use this */
 }
