@@ -32,6 +32,16 @@ uint32_t vmm_map_user_page(address_space_t* as, uint32_t vaddr);
    and the directory itself) back to the pmm. */
 void vmm_destroy_address_space(address_space_t* as);
 
+/* Duplicates every user page currently mapped in `src` (which must be
+   the CURRENTLY ACTIVE address space -- its pages are read via their
+   normal virtual addresses, relying on the live CR3) into `dst`, each
+   backed by a FRESH physical frame with the same content. This is the
+   core mechanism fork() needs: two processes end up with identical
+   data but never share a physical frame. Returns 0 on success, -1 on
+   failure (the caller should vmm_destroy_address_space(dst) on
+   failure -- a partial clone is not rolled back automatically). */
+int vmm_clone_user_pages(address_space_t* dst, address_space_t* src);
+
 void vmm_switch(address_space_t* as); /* loads CR3 with as->directory_phys */
 void vmm_switch_to_kernel(void);      /* restores the kernel's own page directory */
 

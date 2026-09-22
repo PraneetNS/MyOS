@@ -5,6 +5,7 @@
 #include "process.h"
 #include "fs.h"
 #include "kheap.h"
+#include "pipe.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -13,6 +14,9 @@
 #define SYS_READ       4
 #define SYS_CLOSE      5
 #define SYS_SPAWN_WAIT 6
+#define SYS_FORK       7
+#define SYS_PIPE_WRITE 8
+#define SYS_PIPE_READ  9
 
 extern void isr128(void); /* defined in isr.s */
 
@@ -108,6 +112,40 @@ static void syscall_handler(struct registers* regs) {
                see scheduler_wait_for()'s doc comment. */
             regs->eax = (uint32_t) child->pid;
             scheduler_wait_for(child->pid); /* blocks; returns once child exits */
+            break;
+        }
+
+        case SYS_FORK: {
+            process_t* me = scheduler_current();
+            process_t* child = process_fork(me, regs);
+            /* Classic fork() semantics: the parent (still running this
+               same syscall handler invocation) sees the child's pid.
+               The child's OWN return value (0) was already baked into
+               its saved_regs snapshot by process_fork() -- it'll see
+               that the moment it's first scheduled in. */
+            regs->eax = child ? (uint32_t) child->pid : (uint32_t)-1;
+            break;
+        }
+
+        case SYS_PIPE_WRITE: {
+            const uint8_t* buf = (const uint8_t*) regs->ebx;
+            uint32_t len = regs->ecx;
+            regs->eax = pipe_write(buf, len);
+            break;
+        }
+
+        case SYS_PIPE_READ: {
+            uint8_t* buf = (uint8_t*) regs->ebx;
+            uint32_t maxlen = regs->ecx;
+            /* pipe_read() may call scheduler_wait_for_pipe() internally,
+               which blocks THIS process via the same switch_task
+               mechanism as SYS_SPAWN_WAIT -- by the time it returns
+               (possibly much later, after a writer provides data and
+               this process gets rescheduled), regs may no longer be
+               "live" in the usual sense, but writing to it here is
+               still correct: it's the same trick every blocking
+               syscall in this kernel uses. */
+            regs->eax = pipe_read(buf, maxlen);
             break;
         }
 

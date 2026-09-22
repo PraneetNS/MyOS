@@ -28,4 +28,10 @@ process_t* scheduler_current(void);
    return. */
 void scheduler_wait_for(int child_pid);
 
+/* Stage 9: same blocking mechanism as scheduler_wait_for(), but for a
+   process waiting on pipe data rather than a specific child's exit
+   (see src/pipe.c). */
+void scheduler_wait_for_pipe(void);
+void scheduler_wake_pipe_waiters(void);
+
 #endif

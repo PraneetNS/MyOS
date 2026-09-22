@@ -77,6 +77,37 @@ void vmm_destroy_address_space(address_space_t* as) {
     as->directory_phys = 0;
 }
 
+int vmm_clone_user_pages(address_space_t* dst, address_space_t* src) {
+    /* Walk every directory entry except 0 (kernel space, shared not
+       cloned) looking for present page tables, then every present page
+       within them. */
+    for (uint32_t dir_index = 1; dir_index < 1024; dir_index++) {
+        uint32_t dir_entry = src->directory[dir_index];
+        if (!(dir_entry & PAGE_PRESENT)) continue;
+
+        uint32_t* table = (uint32_t*)(dir_entry & ~0xFFFu);
+
+        for (uint32_t table_index = 0; table_index < 1024; table_index++) {
+            uint32_t page_entry = table[table_index];
+            if (!(page_entry & PAGE_PRESENT)) continue;
+
+            uint32_t vaddr = (dir_index << 22) | (table_index << 12);
+
+            uint32_t new_frame_phys = vmm_map_user_page(dst, vaddr);
+            if (!new_frame_phys) return -1;
+
+            /* Read from `vaddr` (src's page, valid because src is the
+               CURRENTLY ACTIVE address space right now), write to the
+               new frame's physical address (valid because it's within
+               the kernel's own identity-mapped region). */
+            const uint8_t* source_page = (const uint8_t*) vaddr;
+            uint8_t* dest_page = (uint8_t*) new_frame_phys;
+            for (int i = 0; i < 4096; i++) dest_page[i] = source_page[i];
+        }
+    }
+    return 0;
+}
+
 void vmm_switch(address_space_t* as) {
     asm volatile ("mov %0, %%cr3" : : "r"(as->directory_phys) : "memory");
 }

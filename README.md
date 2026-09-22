@@ -414,22 +414,81 @@ immediately afterward, proving full recovery. The interrupt log showed
 plus 5 from its child `hello.elf`, hand-counted in advance from the
 source and matched exactly. Zero triple faults throughout.
 
-## Stage 9 (next): the remaining big pieces
+## Stage 9 (done): fork() and pipes
 
-1. **`fork`** (as opposed to `SYS_SPAWN_WAIT`'s spawn-a-*new*-ELF model)
-   -- duplicating an existing process's address space is a genuinely
-   different, harder mechanism than what's built so far.
-2. **Pipes / IPC** -- processes still can't exchange data with each
-   other at all, only sequence via `wait`.
-3. **A real, writable filesystem** -- MyFS is still read-only and built
-   entirely at compile time by `tools/build_disk.py`.
-4. **A `sbrk`-style heap syscall** -- userland programs still only get
-   whatever pages they were loaded with plus a fixed stack.
-5. **Signals** -- there's no way to interrupt a running process from
-   outside it except a fatal page fault.
+- **`fork()`** — the genuinely new, harder mechanism this stage adds.
+  `src/vmm.c`'s `vmm_clone_user_pages()` walks the calling process's
+  entire page directory and duplicates every mapped page into a fresh
+  address space, each backed by an independent physical frame (reusing
+  the same "read via the live CR3, write via the frame's physical
+  address" trick `elf.c` already used). `boot/resume_state.s`'s
+  `resume_saved_state()` is the other half: a full CPU-state restore
+  (every general register plus `eip`/`cs`/`eflags`/`useresp`/`ss`) that
+  lets a forked child resume at the *exact* instruction the parent was
+  at, not just at a fresh entry point like every other process so far.
+  `process_fork()` in `src/process.c` ties both together and forces the
+  child's saved `eax` to 0 -- the parent (still running the same
+  syscall handler) sees the child's pid, achieving classic "one call,
+  two returns" Unix semantics.
+- **Pipes** — deliberately the simplest thing that demonstrates real
+  blocking IPC: `src/pipe.c` is a single global 256-byte ring buffer,
+  not a general `pipe()` syscall with fd pairs. `SYS_PIPE_READ` blocks
+  the calling process via the exact same scheduler mechanism as Stage
+  8's `SYS_SPAWN_WAIT` (a new `PROC_WAITING` sentinel value in
+  `scheduler.c`) whenever the pipe is empty, and `SYS_PIPE_WRITE` wakes
+  any blocked reader.
+- `userland/forktest.c` -- proves `fork()` end to end.
+- `userland/producer.c` + `userland/consumer.c` -- proves blocking pipe
+  IPC end to end; launch `consumer.elf` first so it blocks immediately,
+  then `producer.elf`, and watch the consumer wake as data arrives.
 
-Resources: OSDev Wiki's "Fork" and "Pipes" pages cover the next two
-directly.
+**Verified, with the fork() result being unambiguous:** `forktest.elf`
+(pid 1) printed `I am the PARENT, pid 1. fork() gave me child pid 2`,
+then a **separate process** (pid 2) resumed at the exact same source
+line and printed `I am the CHILD, pid 2` with `result == 0` -- one
+`sys_fork()` call, two independent continuations, exactly matching
+real Unix semantics. `consumer.elf` printed `waiting for message 1...`
+and correctly produced nothing further until `producer.elf` started
+writing; data then flowed through correctly. Zero triple faults, zero
+unexpected interrupt vectors (checked via `-d int` logging) across
+every test.
+
+**Worth understanding, not a bug:** the producer/consumer demo's output
+sometimes shows a consumer read pulling back more than one message, or
+splitting one message across two reads (e.g. `got: and final message`
+instead of the whole third message). This is correct byte-stream pipe
+behavior -- `pipe_read()` has no concept of message boundaries, exactly
+like a real Unix pipe without an application-level framing protocol
+layered on top. It's proof the mechanism is realistic, not proof of a
+flaw.
+
+**Known simplifications, honestly scoped:**
+- One global pipe, not a general IPC mechanism -- every process shares
+  the same buffer. A real `pipe()` would return a private fd pair per
+  call and integrate with the existing fd table.
+- `pipe_write()` never blocks -- a full buffer just silently drops the
+  overflow. A real implementation would block the writer too.
+- Forked children inherit a **copy** of open file descriptors (same
+  file, independent offset) rather than sharing a position the way real
+  `fork()`'s descriptor table does.
+- No `exec()` -- there's no way for a forked child to replace itself
+  with a different program; it can only continue running a copy of its
+  parent's code.
+
+## Stage 10 (next): the remaining pieces
+
+1. **`exec()`** -- replace a process's own address space with a freshly
+   loaded ELF, completing the classic `fork()`+`exec()` pattern (right
+   now `fork()` and `SYS_SPAWN_WAIT` are two separate, non-composable
+   ways to create a process).
+2. **A real `pipe()` syscall** -- per-instance pipes integrated with
+   the fd table, replacing the single global buffer.
+3. **A writable filesystem** -- MyFS is still read-only, built entirely
+   at compile time.
+4. **A `sbrk`-style heap syscall** and **signals**.
+
+Resources: OSDev Wiki's "Fork" page (for the exec-completion angle) and
+revisiting "User Mode" now with pipes in place.
 
 ## Notes on the toolchain choices made here
 
