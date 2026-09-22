@@ -74,6 +74,9 @@ if __name__ == "__main__":
         ("badwrite.elf", os.path.join(root, "userland", "badwrite.elf")),
         ("reader.elf", os.path.join(root, "userland", "reader.elf")),
         ("parent.elf", os.path.join(root, "userland", "parent.elf")),
+        ("forktest.elf", os.path.join(root, "userland", "forktest.elf")),
+        ("producer.elf", os.path.join(root, "userland", "producer.elf")),
+        ("consumer.elf", os.path.join(root, "userland", "consumer.elf")),
     ]
 
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "disk.img")

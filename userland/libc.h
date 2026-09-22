@@ -43,6 +43,31 @@ static inline int sys_spawn_wait(const char* name) {
     return ret;
 }
 
+/* Classic fork() semantics: duplicates the calling process (address
+   space and all). Returns the child's pid to the parent, 0 to the
+   child, or -1 on failure. The syscall "returns twice" -- both
+   processes resume at the instruction right after this call. */
+static inline int sys_fork(void) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(7));
+    return ret;
+}
+
+/* One global, system-wide pipe (see src/pipe.c). Write never blocks
+   (drops data if the 256-byte ring buffer is full); read blocks until
+   a writer provides data. */
+static inline unsigned int sys_pipe_write(const void* buf, unsigned int len) {
+    unsigned int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(8), "b"(buf), "c"(len));
+    return ret;
+}
+
+static inline unsigned int sys_pipe_read(void* buf, unsigned int maxlen) {
+    unsigned int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(9), "b"(buf), "c"(maxlen));
+    return ret;
+}
+
 /* Tiny freestanding helpers -- no libc means no <stdio.h>/<string.h>. */
 
 static inline void print_uint(unsigned int n) {

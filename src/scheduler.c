@@ -95,3 +95,26 @@ void scheduler_wait_for(int child_pid) {
     enter_process(next);
     switch_task(&me->esp, next->esp); /* returns here once woken (state back to READY) and rescheduled */
 }
+
+#define PIPE_WAIT_SENTINEL (-2) /* distinct from any real pid (>=0) and from -1 ("not waiting") */
+
+void scheduler_wait_for_pipe(void) {
+    process_t* me = current;
+    me->state = PROC_WAITING;
+    me->waiting_for_pid = PIPE_WAIT_SENTINEL;
+
+    process_t* next = pick_next_from(process_index(me));
+    current = next;
+    enter_process(next);
+    switch_task(&me->esp, next->esp); /* returns here once woken by pipe_write() */
+}
+
+void scheduler_wake_pipe_waiters(void) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table_entry(i);
+        if (p->state == PROC_WAITING && p->waiting_for_pid == PIPE_WAIT_SENTINEL) {
+            p->state = PROC_READY;
+            p->waiting_for_pid = -1;
+        }
+    }
+}

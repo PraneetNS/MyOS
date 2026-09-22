@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "vmm.h"
 #include "fs.h"
+#include "idt.h" /* struct registers -- forked children resume from a saved snapshot of it */
 
 #define MAX_PROCESSES 4
 #define PROC_KERNEL_STACK_SIZE 8192
@@ -33,6 +34,9 @@ typedef struct process {
     int waiting_for_pid;        /* valid when state == PROC_WAITING */
 
     fd_entry_t fds[MAX_FDS];    /* Stage 8: per-process open file table, backed by fs.c */
+
+    int is_forked;              /* Stage 9: resumes via resume_saved_state(&saved_regs), not process_trampoline */
+    struct registers saved_regs;
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as the always-resident
@@ -53,5 +57,13 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 /* Frees a process's address space and kernel stack, marking its slot
    free for reuse. */
 void process_destroy(process_t* p);
+
+/* Duplicates `parent` (its address space via vmm_clone_user_pages, and
+   its exact CPU register state at the moment of the fork syscall) into
+   a fresh process slot. The child resumes at the SAME instruction the
+   parent was at, with eax forced to 0 (classic fork() semantics: the
+   syscall "returns twice"). Returns NULL on failure (no free slot, out
+   of memory, etc). */
+process_t* process_fork(process_t* parent, const struct registers* parent_regs);
 
 #endif

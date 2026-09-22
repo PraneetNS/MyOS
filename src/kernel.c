@@ -12,6 +12,7 @@
 #include "fs.h"
 #include "process.h"
 #include "scheduler.h"
+#include "pipe.h"
 
 static void print_uint(uint32_t n) {
     char buf[11]; int i = 10; buf[10] = '\0';
@@ -59,6 +60,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     terminal_writestring("[ok] Syscall interface installed (int 0x80)\n");
 
     fs_init();
+
+    pipe_init();
+    terminal_writestring("[ok] Pipe (IPC) initialized\n");
 
     process_init_table();
     terminal_writestring("[ok] Process table initialized (shell = process 0)\n");
