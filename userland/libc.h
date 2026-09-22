@@ -68,6 +68,26 @@ static inline unsigned int sys_pipe_read(void* buf, unsigned int maxlen) {
     return ret;
 }
 
+/* Replaces the CALLING process's own code/data with a freshly loaded
+   ELF, keeping its pid/ppid/open files. Only returns (with -1) on
+   failure -- on success there is no "returning": the old program's
+   code is gone. This is the missing piece that makes fork() genuinely
+   useful: fork() to create a new process, then exec() to turn it into
+   a different program. */
+static inline int sys_exec(const char* name) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(10), "b"(name));
+    return ret;
+}
+
+/* Blocks until the process with this pid exits (or returns immediately
+   if it already has, or never existed). Unlike sys_spawn_wait(), this
+   doesn't spawn anything -- it's for waiting on a child you already
+   have, e.g. one created via sys_fork(). */
+static inline void sys_wait(int pid) {
+    asm volatile ("int $0x80" : : "a"(11), "b"(pid));
+}
+
 /* Tiny freestanding helpers -- no libc means no <stdio.h>/<string.h>. */
 
 static inline void print_uint(unsigned int n) {

@@ -6,6 +6,9 @@
 #include "fs.h"
 #include "kheap.h"
 #include "pipe.h"
+#include "elf.h"
+#include "usermode.h"
+#include "vmm.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -17,6 +20,8 @@
 #define SYS_FORK       7
 #define SYS_PIPE_WRITE 8
 #define SYS_PIPE_READ  9
+#define SYS_EXEC       10
+#define SYS_WAIT       11
 
 extern void isr128(void); /* defined in isr.s */
 
@@ -146,6 +151,64 @@ static void syscall_handler(struct registers* regs) {
                still correct: it's the same trick every blocking
                syscall in this kernel uses. */
             regs->eax = pipe_read(buf, maxlen);
+            break;
+        }
+
+        case SYS_EXEC: {
+            const char* name = (const char*) regs->ebx;
+            const fs_entry_t* e = fs_find(name);
+            if (!e) { regs->eax = (uint32_t)-1; break; }
+
+            uint32_t alloc_size = ((e->size_bytes + 511) / 512) * 512;
+            uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
+            if (!buf) { regs->eax = (uint32_t)-1; break; }
+
+            int n = fs_read_file(e, buf);
+            if (n < 0) { kfree(buf); regs->eax = (uint32_t)-1; break; }
+
+            /* Build the NEW program's address space fully before
+               touching the old one -- if anything fails, the calling
+               process's current code/data is untouched and exec()
+               correctly just returns -1 (real exec() semantics: it
+               only fails to return if it succeeds). */
+            address_space_t new_as = vmm_create_address_space();
+            if (!new_as.directory) { kfree(buf); regs->eax = (uint32_t)-1; break; }
+
+            uint32_t entry, stack_top;
+            if (elf_load_into(buf, (uint32_t) n, &new_as, &entry, &stack_top) != 0) {
+                kfree(buf);
+                vmm_destroy_address_space(&new_as);
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+            kfree(buf);
+
+            process_t* me = scheduler_current();
+            vmm_destroy_address_space(&me->as); /* old program's memory reclaimed here */
+            me->as = new_as;
+            me->entry_point = entry;
+            me->user_stack_top = stack_top;
+
+            int i = 0; for (; name[i] && i < 31; i++) me->name[i] = name[i]; me->name[i] = '\0';
+
+            /* This process keeps its pid, ppid, kernel stack, and open
+               fds (real exec() semantics) -- only its address space and
+               entry point changed. From here we jump straight into the
+               new program; there is no "old regs" to return through,
+               since the code that would have resumed there doesn't
+               exist anymore. */
+            vmm_switch(&me->as);
+            enter_usermode(entry, stack_top); /* never returns */
+            break; /* unreachable */
+        }
+
+        case SYS_WAIT: {
+            int pid = (int) regs->ebx;
+            process_t* target = process_find_by_pid(pid);
+            if (!target) { regs->eax = 0; break; } /* already exited (or never existed) -- don't block forever */
+
+            regs->eax = 0;
+            scheduler_wait_for(pid); /* blocks; returns once pid exits */
             break;
         }
 

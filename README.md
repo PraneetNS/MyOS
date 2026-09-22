@@ -475,20 +475,60 @@ flaw.
   with a different program; it can only continue running a copy of its
   parent's code.
 
-## Stage 10 (next): the remaining pieces
+## Stage 10 (done): exec() -- completing fork()+exec()+wait()
 
-1. **`exec()`** -- replace a process's own address space with a freshly
-   loaded ELF, completing the classic `fork()`+`exec()` pattern (right
-   now `fork()` and `SYS_SPAWN_WAIT` are two separate, non-composable
-   ways to create a process).
-2. **A real `pipe()` syscall** -- per-instance pipes integrated with
-   the fd table, replacing the single global buffer.
-3. **A writable filesystem** -- MyFS is still read-only, built entirely
-   at compile time.
-4. **A `sbrk`-style heap syscall** and **signals**.
+- **`SYS_EXEC`** (`src/syscall.c`) -- the missing piece that makes
+  `fork()` actually useful. It loads a fresh ELF into a **brand new**
+  address space first (so a failure leaves the calling process
+  completely untouched -- real `exec()` semantics: it only fails to
+  return), then swaps it into the *current* process in place of its old
+  one via `vmm_destroy_address_space()` on the old space, and jumps
+  straight to the new program's entry point with `enter_usermode()`.
+  The process keeps its pid, ppid, kernel stack, and open file
+  descriptors -- only its code, data, and entry point change.
+- **`SYS_WAIT`** -- a thin, general version of Stage 8's
+  `scheduler_wait_for()`: given a pid (rather than always the pid of a
+  process you just spawned), block until it exits, or return
+  immediately if it already has. This is what actually lets `fork()`
+  and `wait()` compose: a process can `fork()`, then separately
+  `wait()` on the exact child it got back.
+- `userland/forkexec.c` -- the classic Unix process-creation idiom, for
+  real: `fork()` to create a copy, `exec()` in the child to become a
+  different program, `wait()` in the parent to block until it's done.
+  This is exactly how a real shell implements running a command.
 
-Resources: OSDev Wiki's "Fork" page (for the exec-completion angle) and
-revisiting "User Mode" now with pipes in place.
+**Verified with unambiguous evidence that exec() genuinely replaced the
+process's code, not just printed a misleading message:** `forkexec.elf`
+(pid 1) forked; the child (pid 2) printed its own message, then called
+`sys_exec("hello.elf")`. The very next output was the kernel's ELF
+loader firing again with entry `0x00800023` -- different from
+`forkexec.elf`'s own entry `0x00800109` -- followed by `hello.elf`'s
+exact greeting text, still under **pid 2**. The parent's `sys_wait(2)`
+correctly blocked until that transformed process actually exited (not
+just until the original fork point), matching real `wait()` semantics
+even though the child became a completely different program mid-flight.
+Zero triple faults, zero unexpected interrupt vectors.
+
+## Stage 11 (next): what's left
+
+1. **A real per-instance `pipe()` syscall** -- replacing the single
+   global buffer from Stage 9 with fd-integrated, per-call pipes.
+2. **A writable filesystem** -- MyFS is still read-only, built entirely
+   at compile time by `tools/build_disk.py`.
+3. **A `sbrk`-style heap syscall** -- userland programs still only get
+   whatever pages they were loaded with plus a fixed stack.
+4. **Signals** -- still no way to interrupt a running process from
+   outside it except a fatal page fault.
+5. **Zombie/reap semantics** -- `SYS_WAIT` on an already-exited pid
+   currently just returns immediately because `process_destroy()` frees
+   the slot the instant a process exits; a real kernel keeps a
+   zombie's exit status around until a parent collects it.
+
+Every mechanism in this OS now composes with every other one -- ring 3,
+paging-based isolation, the scheduler, the filesystem, and process
+creation are no longer separate demos, they're one coherent system
+(`forkexec.elf` alone exercises five different subsystems in ten lines
+of userland code). What remains is breadth, not new hard problems.
 
 ## Notes on the toolchain choices made here
 
