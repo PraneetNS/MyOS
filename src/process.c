@@ -70,6 +70,8 @@ void process_init_table(void) {
     shell->ppid = -1;
     shell->waiting_for_pid = -1;
     shell->is_forked = 0;
+    shell->heap_end = HEAP_BASE;
+    shell->heap_mapped_up_to = HEAP_BASE;
     clear_fds(shell);
 
     const char* n = "shell";
@@ -123,6 +125,8 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->ppid = parent_pid;
     p->waiting_for_pid = -1;
     p->is_forked = 0;
+    p->heap_end = HEAP_BASE;
+    p->heap_mapped_up_to = HEAP_BASE;
     clear_fds(p);
 
     int i = 0; for (; name[i] && i < 31; i++) p->name[i] = name[i]; p->name[i] = '\0';
@@ -167,6 +171,13 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->pid = next_pid++;
     p->ppid = parent->pid;
     p->waiting_for_pid = -1;
+
+    /* Inherit the parent's heap bookkeeping -- vmm_clone_user_pages()
+       already copied every mapped heap page (with independent data), so
+       the child's heap_mapped_up_to must match reality or a later
+       sys_sbrk() would try to remap an already-mapped page. */
+    p->heap_end = parent->heap_end;
+    p->heap_mapped_up_to = parent->heap_mapped_up_to;
 
     /* Inherit open file descriptors -- real fork() semantics share the
        underlying file position between parent and child; ours just

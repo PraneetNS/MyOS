@@ -9,6 +9,8 @@
 #define MAX_PROCESSES 4
 #define PROC_KERNEL_STACK_SIZE 8192
 #define MAX_FDS 4
+#define HEAP_BASE 0x900000u      /* 9MB -- clear of code at 0x800000 and the 0xC0000000 stack region */
+#define HEAP_MAX  (HEAP_BASE + 0x100000u) /* cap growth at 1MB per process */
 
 typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_EXITED } proc_state_t;
 
@@ -37,6 +39,9 @@ typedef struct process {
 
     int is_forked;              /* Stage 9: resumes via resume_saved_state(&saved_regs), not process_trampoline */
     struct registers saved_regs;
+
+    uint32_t heap_end;          /* Stage 11: current program break, grows from HEAP_BASE via sys_sbrk() */
+    uint32_t heap_mapped_up_to; /* how far the heap has actually been paged in (<= heap_end, rounded to a page) */
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as the always-resident

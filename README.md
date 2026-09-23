@@ -509,26 +509,64 @@ just until the original fork point), matching real `wait()` semantics
 even though the child became a completely different program mid-flight.
 Zero triple faults, zero unexpected interrupt vectors.
 
-## Stage 11 (next): what's left
+## Stage 11 (done): a real sbrk() heap syscall
 
-1. **A real per-instance `pipe()` syscall** -- replacing the single
-   global buffer from Stage 9 with fd-integrated, per-call pipes.
+- **`SYS_SBRK`** (`src/syscall.c`) -- classic `sbrk()` semantics: each
+  process gets a fixed heap region starting at `HEAP_BASE` (0x900000,
+  clear of code and the stack), capped at 1MB of growth
+  (`HEAP_MAX`). Growing the heap maps new pages on demand via
+  `vmm_map_user_page()` (the same per-process, freshly-allocated-frame
+  mechanism every other stage's memory has used) and explicitly zeroes
+  each new page -- matching real `brk()`/`mmap()` behavior, where fresh
+  memory always reads as zero. Returns the *previous* break, so the
+  newly available range is `[return value, return value + increment)`.
+- `process.h` gained `heap_end`/`heap_mapped_up_to` per process.
+  `fork()` correctly **inherits** the parent's heap bookkeeping (since
+  `vmm_clone_user_pages()` already copied any heap pages the parent had
+  grown into); `exec()` correctly **resets** it to `HEAP_BASE` (the old
+  heap died along with the old address space it belonged to).
+- `userland/heaptest.c` -- proves it's real, usable memory, not just a
+  number: grows the heap, confirms the first byte reads as zero,
+  writes and reads back an actual string, then grows again and checks
+  the second region starts exactly one page later.
+
+**Verified with every value hand-checked, not just "it printed
+something":** initial break was exactly `0x00900000` (`HEAP_BASE`
+precisely); the first byte of freshly grown memory really was `0`
+before any write; the string written into the new region read back
+correctly; the second `sbrk()` call returned an address exactly
+`0x1000` (4096) past the first, matching the page size exactly; a byte
+written to the second region read back as `88`, which is exactly the
+decimal ASCII value of `'X'`. Zero triple faults.
+
+**A limit worth being explicit about, not just for this stage:** every
+frame the kernel needs to *write into directly* (via its physical
+address, using the identity-map trick every stage since `elf.c` has
+relied on) must come from `pmm_alloc_frame()`'s low, sub-16MB range --
+true so far only because the system hasn't allocated enough total
+frames to exhaust it. `sbrk()` shares this same latent constraint. It's
+been implicitly true since Stage 5 and never actually hit in testing,
+but it isn't asserted or guarded anywhere in the code. Worth fixing
+properly (a temporary kernel mapping for high frames) before pushing
+memory usage much further, rather than continuing to rely on scale not
+yet having exposed it.
+
+## Stage 12 (next): what's left
+
+1. **A real per-instance `pipe()` syscall** -- replacing Stage 9's
+   single global buffer with fd-integrated, per-call pipes.
 2. **A writable filesystem** -- MyFS is still read-only, built entirely
-   at compile time by `tools/build_disk.py`.
-3. **A `sbrk`-style heap syscall** -- userland programs still only get
-   whatever pages they were loaded with plus a fixed stack.
-4. **Signals** -- still no way to interrupt a running process from
-   outside it except a fatal page fault.
-5. **Zombie/reap semantics** -- `SYS_WAIT` on an already-exited pid
-   currently just returns immediately because `process_destroy()` frees
-   the slot the instant a process exits; a real kernel keeps a
-   zombie's exit status around until a parent collects it.
+   at compile time.
+3. **Signals** and **zombie/reap semantics** for `wait()`.
+4. **Fixing the sub-16MB physical-frame constraint** noted above --
+   the most valuable "hardening" pass available at this point, as
+   opposed to a new feature.
 
-Every mechanism in this OS now composes with every other one -- ring 3,
-paging-based isolation, the scheduler, the filesystem, and process
-creation are no longer separate demos, they're one coherent system
-(`forkexec.elf` alone exercises five different subsystems in ten lines
-of userland code). What remains is breadth, not new hard problems.
+At this point the system is functionally a small, real, coherent Unix-
+like kernel: privilege separation, paging-based process isolation,
+preemptive multitasking, a filesystem, ELF loading, and the classic
+`fork()`/`exec()`/`wait()` process model with a working heap. Everything
+left is extension and hardening, not new hard mechanisms.
 
 ## Notes on the toolchain choices made here
 

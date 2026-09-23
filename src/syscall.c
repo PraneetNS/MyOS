@@ -22,6 +22,7 @@
 #define SYS_PIPE_READ  9
 #define SYS_EXEC       10
 #define SYS_WAIT       11
+#define SYS_SBRK       12
 
 extern void isr128(void); /* defined in isr.s */
 
@@ -188,6 +189,8 @@ static void syscall_handler(struct registers* regs) {
             me->as = new_as;
             me->entry_point = entry;
             me->user_stack_top = stack_top;
+            me->heap_end = HEAP_BASE;          /* the old heap died with the old address space */
+            me->heap_mapped_up_to = HEAP_BASE;
 
             int i = 0; for (; name[i] && i < 31; i++) me->name[i] = name[i]; me->name[i] = '\0';
 
@@ -209,6 +212,45 @@ static void syscall_handler(struct registers* regs) {
 
             regs->eax = 0;
             scheduler_wait_for(pid); /* blocks; returns once pid exits */
+            break;
+        }
+
+        case SYS_SBRK: {
+            /* ebx holds a SIGNED increment (bytes to grow the heap by;
+               0 just queries the current break; negative shrinks it,
+               though we only move the bookkeeping back -- the pages
+               stay mapped, a documented simplification vs a real brk()
+               which could unmap them). Returns the PREVIOUS break,
+               classic sbrk() semantics: the newly available range is
+               [return value, return value + increment). */
+            int32_t increment = (int32_t) regs->ebx;
+            process_t* me = scheduler_current();
+
+            uint32_t old_break = me->heap_end;
+            uint32_t new_break = old_break + increment;
+            int failed = 0;
+
+            if (increment > 0) {
+                if (new_break > HEAP_MAX || new_break < old_break /* overflow */) {
+                    failed = 1;
+                } else {
+                    uint32_t target = (new_break + 4095u) & ~4095u;
+                    while (!failed && me->heap_mapped_up_to < target) {
+                        uint32_t frame_phys = vmm_map_user_page(&me->as, me->heap_mapped_up_to);
+                        if (!frame_phys) { failed = 1; break; }
+                        uint8_t* frame = (uint8_t*) frame_phys;
+                        for (int i = 0; i < 4096; i++) frame[i] = 0; /* zero-initialized, matching real brk()/mmap() */
+                        me->heap_mapped_up_to += 4096;
+                    }
+                }
+            } else if (new_break < HEAP_BASE) {
+                new_break = HEAP_BASE;
+            }
+
+            if (failed) { regs->eax = (uint32_t)-1; break; }
+
+            me->heap_end = new_break;
+            regs->eax = old_break;
             break;
         }
 
