@@ -88,6 +88,17 @@ static inline void sys_wait(int pid) {
     asm volatile ("int $0x80" : : "a"(11), "b"(pid));
 }
 
+/* Classic sbrk(): grows (or queries, with increment=0) this process's
+   heap by `increment` bytes, returning the PREVIOUS break -- so the
+   newly available memory is [return value, return value + increment).
+   Returns (void*)-1 (cast here to a plain int -1) on failure. New pages
+   are zero-initialized. */
+static inline void* sys_sbrk(int increment) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(12), "b"(increment));
+    return (void*) ret;
+}
+
 /* Tiny freestanding helpers -- no libc means no <stdio.h>/<string.h>. */
 
 static inline void print_uint(unsigned int n) {
@@ -95,6 +106,13 @@ static inline void print_uint(unsigned int n) {
     if (n == 0) { sys_write("0"); return; }
     while (n > 0 && i > 0) { buf[--i] = '0' + (n % 10); n /= 10; }
     sys_write(&buf[i]);
+}
+
+static inline void print_hex(unsigned int v) {
+    char hex[11] = "0x00000000";
+    const char* digits = "0123456789ABCDEF";
+    for (int i = 9; i >= 2; i--) { hex[i] = digits[v & 0xF]; v >>= 4; }
+    sys_write(hex);
 }
 
 #endif
