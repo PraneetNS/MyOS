@@ -74,7 +74,8 @@ static int load_segment(address_space_t* as, const Elf32_Phdr* ph, const uint8_t
 }
 
 int elf_load_into(const uint8_t* image, uint32_t image_size,
-                   address_space_t* as, uint32_t* out_entry, uint32_t* out_stack_top) {
+                  address_space_t* as, int argc, const char* const* argv,
+                  uint32_t* out_entry, uint32_t* out_stack_top) {
     if (image_size < sizeof(Elf32_Ehdr)) {
         terminal_writestring("[elf] file too small to be an ELF\n");
         return -1;
@@ -104,15 +105,62 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
         }
     }
 
+    uint32_t top_frame_phys = 0;
     for (int i = 0; i < USER_STACK_PAGES; i++) {
         uint32_t page_vaddr = USER_STACK_TOP - (i + 1) * PAGE_SIZE;
-        if (!vmm_map_user_page(as, page_vaddr)) {
+        uint32_t frame_phys = vmm_map_user_page(as, page_vaddr);
+        if (!frame_phys) {
             terminal_writestring("[elf] failed to map user stack\n");
             return -1;
         }
+        if (i == 0) {
+            top_frame_phys = frame_phys;
+        }
     }
 
+    if (argc < 0 || !argv) argc = 0;
+    if (argc > 32) argc = 32;
+
+    uint32_t str_vaddrs[32];
+    uint32_t offset = 0;
+    uint8_t* page_end = (uint8_t*) top_frame_phys + PAGE_SIZE;
+
+    /* Copy strings down from the top of the stack page */
+    for (int i = argc - 1; i >= 0; i--) {
+        const char* s = argv[i] ? argv[i] : "";
+        uint32_t len = 0;
+        while (s[len]) len++;
+        len++; /* include NUL */
+
+        offset += len;
+        for (uint32_t j = 0; j < len; j++) {
+            *(page_end - offset + j) = s[j];
+        }
+        str_vaddrs[i] = USER_STACK_TOP - offset;
+    }
+
+    /* Word align */
+    offset = (offset + 3) & ~3u;
+
+    /* NULL envp */
+    offset += 4;
+    *(uint32_t*)(page_end - offset) = 0;
+
+    /* NULL argv[argc] terminator */
+    offset += 4;
+    *(uint32_t*)(page_end - offset) = 0;
+
+    /* argv[i] pointers */
+    for (int i = argc - 1; i >= 0; i--) {
+        offset += 4;
+        *(uint32_t*)(page_end - offset) = str_vaddrs[i];
+    }
+
+    /* argc */
+    offset += 4;
+    *(uint32_t*)(page_end - offset) = (uint32_t) argc;
+
     *out_entry = eh->e_entry;
-    *out_stack_top = USER_STACK_TOP;
+    *out_stack_top = USER_STACK_TOP - offset;
     return 0;
 }

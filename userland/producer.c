@@ -10,7 +10,8 @@ static void delay(void) {
     for (volatile unsigned int i = 0; i < 6000000; i++) { }
 }
 
-void _start(void) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv;
     const char* m1 = "[producer] pid ";
     const char* m2 = " starting, will write 3 messages to the pipe.\n";
     sys_write(1, m1, strlen(m1));

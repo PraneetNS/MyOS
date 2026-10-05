@@ -4,7 +4,8 @@
 
 #include "libc.h"
 
-void _start(void) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv;
     const char* m1 = "Hello from a REAL ELF binary, loaded from disk by MyOS!\n";
     const char* m2 = "This program was compiled separately, written to disk by\n";
     const char* m3 = "tools/build_disk.py, and just now: read via the ATA driver,\n";

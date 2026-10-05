@@ -6,7 +6,8 @@
 
 #include "libc.h"
 
-void _start(void) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv;
     const char* m1 = "[forkexec] pid ";
     const char* m2 = ": calling fork()...\n";
     sys_write(1, m1, strlen(m1));
@@ -26,7 +27,7 @@ void _start(void) {
         sys_write(1, mc2, strlen(mc2));
         sys_write(1, mc3, strlen(mc3));
 
-        sys_exec("hello.elf"); /* does not return on success */
+        sys_exec("hello.elf", 0); /* does not return on success */
 
         /* Only reached if exec() failed. */
         const char* err = "[forkexec] child: exec FAILED!\n";

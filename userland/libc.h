@@ -82,9 +82,9 @@ static inline unsigned int sys_pipe_read(void* buf, unsigned int maxlen) {
    code is gone. This is the missing piece that makes fork() genuinely
    useful: fork() to create a new process, then exec() to turn it into
    a different program. */
-static inline int sys_exec(const char* name) {
+static inline int sys_exec(const char* name, const char* const* argv) {
     int ret;
-    asm volatile ("int $0x80" : "=a"(ret) : "a"(10), "b"(name));
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(10), "b"(name), "c"(argv));
     return ret;
 }
 

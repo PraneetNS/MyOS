@@ -6,7 +6,8 @@
 
 #include "libc.h"
 
-void _start(void) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv;
     int mypid = sys_getpid();
     const char* m1 = "[parent] pid ";
     const char* m2 = " starting.\n";
