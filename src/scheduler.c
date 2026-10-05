@@ -24,9 +24,13 @@ static int process_index(process_t* p) {
 
 static process_t* pick_next_from(int idx) {
     for (int step = 1; step <= MAX_PROCESSES; step++) {
-        process_t* p = process_table_entry((idx + step) % MAX_PROCESSES);
+        int candidate = (idx + step) % MAX_PROCESSES;
+        if (candidate == 0) continue;
+        process_t* p = process_table_entry(candidate);
         if (p && p->state == PROC_READY) return p;
     }
+    process_t* p0 = process_table_entry(0);
+    if (p0 && p0->state == PROC_READY) return p0;
     return 0;
 }
 
@@ -45,12 +49,35 @@ static void wake_waiters_for(int pid) {
     }
 }
 
+void scheduler_yield(void) {
+    if (!started || !current) return;
+    process_t* next = pick_next_from(process_index(current));
+    if (!next || next == current) return;
+
+    process_t* prev = current;
+    current = next;
+    enter_process(next);
+    switch_task(&prev->esp, next->esp);
+}
+
 void scheduler_tick(void) {
     if (!started) return;
 
     while (serial_received()) {
         char c = serial_read();
         keyboard_handle_char(c);
+    }
+
+    if (current && current->is_kernel_task) {
+        process_t* next = pick_next_from(0);
+        if (next && next != current) {
+            tick_counter = 0;
+            process_t* prev = current;
+            current = next;
+            enter_process(next);
+            switch_task(&prev->esp, next->esp);
+            return;
+        }
     }
 
     if (++tick_counter < SWITCH_EVERY_N_TICKS) return;
@@ -67,10 +94,11 @@ void scheduler_tick(void) {
 
 void scheduler_start(void) {
     started = 1;
-    process_t* shell = process_get_shell();
-    current = shell;
-    enter_process(shell);
-    switch_task(&discard_esp, shell->esp); /* never returns */
+    process_t* first = pick_next_from(0);
+    if (!first) first = process_get_shell();
+    current = first;
+    enter_process(first);
+    switch_task(&discard_esp, first->esp); /* never returns */
 
     for (;;) asm volatile ("hlt"); /* unreachable */
 }
@@ -162,5 +190,8 @@ void scheduler_wake_stdin_waiters(void) {
             p->state = PROC_READY;
             p->waiting_for_pid = -1;
         }
+    }
+    if (started && current && current->is_kernel_task) {
+        scheduler_yield();
     }
 }

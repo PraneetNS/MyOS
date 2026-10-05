@@ -7,6 +7,19 @@
 #include "shell.h"
 #include "usermode.h"
 #include "scheduler.h"
+#include "serial.h"
+#include "keyboard.h"
+
+void kernel_idle_task(void) {
+    for (;;) {
+        while (serial_received()) {
+            char c = serial_read();
+            keyboard_handle_char(c);
+        }
+        scheduler_yield();
+        asm volatile ("sti; hlt");
+    }
+}
 
 static process_t table[MAX_PROCESSES];
 static int next_pid = 1; /* pid 0 is reserved for the shell */
@@ -70,13 +83,13 @@ static void init_fds(process_t* p) {
     }
 }
 
-void process_init_table(void) {
+void process_init_table(int use_kshell) {
     for (int i = 0; i < MAX_PROCESSES; i++) table[i].state = PROC_UNUSED;
 
     process_t* shell = &table[0];
     shell->as.directory      = (uint32_t*) paging_get_kernel_dir_phys();
     shell->as.directory_phys = paging_get_kernel_dir_phys();
-    shell->as.owned_count    = 0; /* the shell doesn't own this address space -- never destroyed */
+    shell->as.owned_count    = 0; /* the shell/idle doesn't own this address space -- never destroyed */
 
     shell->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
     shell->kernel_stack_top  = (uint32_t)(shell->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
@@ -90,14 +103,31 @@ void process_init_table(void) {
     shell->heap_mapped_up_to = HEAP_BASE;
     init_fds(shell);
 
-    const char* n = "shell";
-    int i = 0; for (; n[i] && i < 31; i++) shell->name[i] = n[i]; shell->name[i] = '\0';
+    if (use_kshell) {
+        const char* n = "kshell";
+        int i = 0; for (; n[i] && i < 31; i++) shell->name[i] = n[i]; shell->name[i] = '\0';
+        fabricate_initial_frame(shell, shell_run);
+    } else {
+        const char* n = "idle";
+        int i = 0; for (; n[i] && i < 31; i++) shell->name[i] = n[i]; shell->name[i] = '\0';
+        fabricate_initial_frame(shell, kernel_idle_task);
+    }
+}
 
-    /* The shell runs in ring0, so its first "switch-in" should just
-       call shell_run() directly -- no trampoline/ring3 transition
-       needed. shell_run() matches the required void(void) signature
-       exactly. */
-    fabricate_initial_frame(shell, shell_run);
+process_t* process_spawn_by_name(const char* name, int parent_pid) {
+    const fs_entry_t* e = fs_find(name);
+    if (!e) return 0;
+
+    uint32_t alloc_size = ((e->size_bytes + 511) / 512) * 512;
+    uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
+    if (!buf) return 0;
+
+    int n = fs_read_file(e, buf);
+    if (n < 0) { kfree(buf); return 0; }
+
+    process_t* child = process_spawn_from_elf(name, buf, (uint32_t) n, parent_pid);
+    kfree(buf);
+    return child;
 }
 
 process_t* process_get_shell(void) { return &table[0]; }

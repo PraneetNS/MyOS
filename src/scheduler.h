@@ -38,4 +38,7 @@ void scheduler_wake_pipe_waiters(void);
 void scheduler_wait_for_stdin(void);
 void scheduler_wake_stdin_waiters(void);
 
+/* Yield CPU voluntarily to the next ready task */
+void scheduler_yield(void);
+
 #endif

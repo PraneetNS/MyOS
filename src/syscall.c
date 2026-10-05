@@ -32,19 +32,7 @@ extern void isr128(void); /* defined in isr.s */
    file in from disk -- the same steps shell.c's cmd_run performs, just
    triggered by a process instead of the shell. */
 static process_t* spawn_child(const char* name, int parent_pid) {
-    const fs_entry_t* e = fs_find(name);
-    if (!e) return 0;
-
-    uint32_t alloc_size = ((e->size_bytes + 511) / 512) * 512;
-    uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
-    if (!buf) return 0;
-
-    int n = fs_read_file(e, buf);
-    if (n < 0) { kfree(buf); return 0; }
-
-    process_t* child = process_spawn_from_elf(name, buf, (uint32_t) n, parent_pid);
-    kfree(buf);
-    return child;
+    return process_spawn_by_name(name, parent_pid);
 }
 
 static void syscall_handler(struct registers* regs) {

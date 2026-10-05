@@ -79,6 +79,8 @@ if __name__ == "__main__":
         ("consumer.elf", os.path.join(root, "userland", "consumer.elf")),
         ("forkexec.elf", os.path.join(root, "userland", "forkexec.elf")),
         ("heaptest.elf", os.path.join(root, "userland", "heaptest.elf")),
+        ("sh.elf", os.path.join(root, "userland", "sh.elf")),
+        ("argtest.elf", os.path.join(root, "userland", "argtest.elf")),
     ]
 
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "disk.img")
