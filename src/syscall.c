@@ -195,8 +195,39 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_EXEC: {
             const char* name = (const char*) regs->ebx;
+            const char* const* uargv = (const char* const*) regs->ecx;
+
             const fs_entry_t* e = fs_find(name);
             if (!e) { regs->eax = (uint32_t)-1; break; }
+
+            /* Copy arguments from user space before tearing down address space */
+            int argc = 0;
+            char kargv_buf[16][64];
+            const char* kargv[17];
+            if (uargv) {
+                while (uargv[argc] && argc < 16) {
+                    const char* uarg = uargv[argc];
+                    int j = 0;
+                    while (uarg[j] && j < 63) {
+                        kargv_buf[argc][j] = uarg[j];
+                        j++;
+                    }
+                    kargv_buf[argc][j] = '\0';
+                    kargv[argc] = kargv_buf[argc];
+                    argc++;
+                }
+            }
+            if (argc == 0) {
+                int j = 0;
+                while (name[j] && j < 63) {
+                    kargv_buf[0][j] = name[j];
+                    j++;
+                }
+                kargv_buf[0][j] = '\0';
+                kargv[0] = kargv_buf[0];
+                argc = 1;
+            }
+            kargv[argc] = 0;
 
             uint32_t alloc_size = ((e->size_bytes + 511) / 512) * 512;
             uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
@@ -214,7 +245,7 @@ static void syscall_handler(struct registers* regs) {
             if (!new_as.directory) { kfree(buf); regs->eax = (uint32_t)-1; break; }
 
             uint32_t entry, stack_top;
-            if (elf_load_into(buf, (uint32_t) n, &new_as, &entry, &stack_top) != 0) {
+            if (elf_load_into(buf, (uint32_t) n, &new_as, argc, kargv, &entry, &stack_top) != 0) {
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
                 regs->eax = (uint32_t)-1;

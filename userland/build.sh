@@ -8,6 +8,8 @@
 set -e
 cd "$(dirname "$0")"
 
+as --32 crt0.s -o crt0.o
+
 for src in *.c; do
     name="${src%.c}"
     # NOTE: -O2 (and even -O1) silently miscompiled print_uint()'s
@@ -22,7 +24,7 @@ for src in *.c; do
     # lost optimization doesn't matter.
     gcc -m32 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic \
         -O0 -Wall -Wextra -nostdlib -c "$src" -o "$name.o"
-    ld -m elf_i386 -T user.ld -nostdlib -o "$name.elf" "$name.o"
+    ld -m elf_i386 -T user.ld -nostdlib -o "$name.elf" crt0.o "$name.o"
     echo "Built userland/$name.elf"
     readelf -h "$name.elf" 2>/dev/null | grep -E "Type|Entry|Machine" || true
 done

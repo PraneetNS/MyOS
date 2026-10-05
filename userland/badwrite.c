@@ -7,7 +7,8 @@
 
 #include "libc.h"
 
-void _start(void) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv;
     const char* m1 = "[badwrite] About to write to kernel memory at 0x100000...\n";
     const char* m2 = "[badwrite] If memory protection works, you'll see a page\n";
     const char* m3 = "[badwrite] fault message next, NOT this program continuing.\n";

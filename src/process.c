@@ -127,7 +127,8 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     if (!p->as.directory) return 0;
 
     uint32_t entry, stack_top;
-    if (elf_load_into(image, image_size, &p->as, &entry, &stack_top) != 0) {
+    const char* argv[2] = { name, 0 };
+    if (elf_load_into(image, image_size, &p->as, 1, argv, &entry, &stack_top) != 0) {
         vmm_destroy_address_space(&p->as);
         return 0;
     }

@@ -8,7 +8,8 @@
 
 #include "libc.h"
 
-void _start(void) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv;
     const char* m1 = "[forktest] pid ";
     const char* m2 = ": about to fork()...\n";
     sys_write(1, m1, strlen(m1));
