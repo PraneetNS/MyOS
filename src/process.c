@@ -64,23 +64,16 @@ static void fabricate_initial_frame(process_t* p, void (*entry)(void)) {
 }
 
 static void init_fds(process_t* p) {
-    p->fds[0].in_use = 1; /* stdin */
-    p->fds[0].entry = 0;
-    p->fds[0].offset = 0;
-
-    p->fds[1].in_use = 1; /* stdout */
-    p->fds[1].entry = 0;
-    p->fds[1].offset = 0;
-
-    p->fds[2].in_use = 1; /* stderr */
-    p->fds[2].entry = 0;
-    p->fds[2].offset = 0;
+    p->fds[0] = vfs_get_console_stdin();
+    p->fds[1] = vfs_get_console_stdout();
+    p->fds[2] = vfs_get_console_stderr();
 
     for (int i = 3; i < MAX_FDS; i++) {
-        p->fds[i].in_use = 0;
-        p->fds[i].entry = 0;
-        p->fds[i].offset = 0;
+        p->fds[i] = 0;
     }
+
+    p->cwd[0] = '/';
+    p->cwd[1] = '\0';
 }
 
 void process_init_table(int use_kshell) {
@@ -186,6 +179,12 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 
 void process_destroy(process_t* p) {
     if (p->state == PROC_UNUSED) return;
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (p->fds[i]) {
+            open_file_unref(p->fds[i]);
+            p->fds[i] = 0;
+        }
+    }
     if (!p->is_kernel_task)
         vmm_destroy_address_space(&p->as);
     if (p->kernel_stack_base) { kfree(p->kernel_stack_base); p->kernel_stack_base = 0; }
@@ -219,19 +218,23 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->ppid = parent->pid;
     p->waiting_for_pid = -1;
 
-    /* Inherit the parent's heap bookkeeping -- vmm_clone_user_pages()
-       already copied every mapped heap page (with independent data), so
-       the child's heap_mapped_up_to must match reality or a later
-       sys_sbrk() would try to remap an already-mapped page. */
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;
 
-    /* Inherit open file descriptors -- real fork() semantics share the
-       underlying file position between parent and child; ours just
-       copies it (a simplification: they'll diverge independently on
-       further reads instead of sharing one offset, documented as a
-       known limitation). */
-    for (int i = 0; i < MAX_FDS; i++) p->fds[i] = parent->fds[i];
+    /* Inherit open files with shared reference counts */
+    for (int i = 0; i < MAX_FDS; i++) {
+        p->fds[i] = parent->fds[i];
+        if (p->fds[i]) {
+            open_file_ref(p->fds[i]);
+        }
+    }
+
+    int c = 0;
+    while (parent->cwd[c] && c < 63) {
+        p->cwd[c] = parent->cwd[c];
+        c++;
+    }
+    p->cwd[c] = '\0';
 
     int i = 0; for (; parent->name[i] && i < 26; i++) p->name[i] = parent->name[i];
     p->name[i] = 0;

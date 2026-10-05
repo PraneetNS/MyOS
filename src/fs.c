@@ -126,3 +126,101 @@ int fs_read_range(const fs_entry_t* entry, uint32_t offset, uint8_t* buffer, uin
     }
     return (int) done;
 }
+
+#include "vfs.h"
+
+static int myfs_read(vnode_t* node, uint32_t offset, uint8_t* buf, uint32_t count) {
+    const fs_entry_t* entry = (const fs_entry_t*) node->fs_data;
+    return fs_read_range(entry, offset, buf, count);
+}
+
+static int myfs_stat(vnode_t* node, struct stat* st) {
+    st->st_dev = 0;
+    st->st_ino = 100;
+    st->st_mode = S_IFREG | 0444;
+    st->st_nlink = 1;
+    st->st_size = node->size;
+    st->st_blksize = 512;
+    st->st_blocks = (node->size + 511) / 512;
+    return 0;
+}
+
+static const struct fs_ops myfs_file_ops = {
+    .lookup = 0,
+    .read = myfs_read,
+    .write = 0,
+    .create = 0,
+    .mkdir = 0,
+    .unlink = 0,
+    .rmdir = 0,
+    .rename = 0,
+    .readdir = 0,
+    .truncate = 0,
+    .stat = myfs_stat,
+};
+
+static int myfs_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    (void) dir;
+    const fs_entry_t* e = fs_find(name);
+    if (!e) return -ENOENT;
+
+    vnode_t* vn = vnode_alloc(VNODE_FILE, &myfs_file_ops, (void*) e);
+    if (!vn) return -ENOMEM;
+    vn->size = e->size_bytes;
+    *out = vn;
+    return 0;
+}
+
+static int myfs_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* dent) {
+    (void) dir;
+    if ((int)index >= entry_count) return 0;
+    dent->d_ino = 100 + index;
+    dent->d_type = 1;
+    dent->d_size = entries[index].size_bytes;
+    int j = 0;
+    while (entries[index].name[j] && j < 63) {
+        dent->d_name[j] = entries[index].name[j];
+        j++;
+    }
+    dent->d_name[j] = '\0';
+    return 1;
+}
+
+static int myfs_dir_stat(vnode_t* dir, struct stat* st) {
+    (void) dir;
+    st->st_dev = 0;
+    st->st_ino = 1;
+    st->st_mode = S_IFDIR | 0555;
+    st->st_nlink = 2;
+    st->st_size = entry_count * 64;
+    st->st_blksize = 512;
+    st->st_blocks = 1;
+    return 0;
+}
+
+static const struct fs_ops myfs_root_ops = {
+    .lookup = myfs_dir_lookup,
+    .read = 0,
+    .write = 0,
+    .create = 0,
+    .mkdir = 0,
+    .unlink = 0,
+    .rmdir = 0,
+    .rename = 0,
+    .readdir = myfs_dir_readdir,
+    .truncate = 0,
+    .stat = myfs_dir_stat,
+};
+
+static vnode_t myfs_root_vnode = {
+    .type = VNODE_DIR,
+    .size = 0,
+    .fs_data = 0,
+    .ops = &myfs_root_ops,
+    .refcount = 1000,
+    .parent = 0,
+};
+
+vnode_t* myfs_get_root_vnode(void) {
+    return &myfs_root_vnode;
+}

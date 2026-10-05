@@ -17,6 +17,7 @@
 #include "serial.h"
 #include "multiboot2.h"
 #include "bcache.h"
+#include "vfs.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -84,7 +85,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     bcache_init();
     kprintf("[ok] Buffer cache initialized\n");
 
+    vfs_init();
+    kprintf("[ok] VFS initialized\n");
+
     fs_init();
+    vfs_mount("/", myfs_get_root_vnode());
+    kprintf("[ok] Root filesystem mounted at /\n");
 
     pipe_init();
     kprintf("[ok] Pipe (IPC) initialized\n");
