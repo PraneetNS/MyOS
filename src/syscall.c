@@ -9,6 +9,8 @@
 #include "elf.h"
 #include "usermode.h"
 #include "vmm.h"
+#include "serial.h"
+#include "keyboard.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -47,14 +49,35 @@ static process_t* spawn_child(const char* name, int parent_pid) {
 
 static void syscall_handler(struct registers* regs) {
     switch (regs->eax) {
-        case SYS_WRITE:
-            /* regs->ebx = pointer to a NUL-terminated string, set by the
-               caller in EBX before `int 0x80` (see userland/libc.h) */
-            terminal_writestring((const char*) regs->ebx);
+        case SYS_WRITE: {
+            int fd = (int) regs->ebx;
+            const char* buf = (const char*) regs->ecx;
+            uint32_t len = regs->edx;
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd].in_use) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+
+            if (fd == 1 || fd == 2) {
+                uint32_t saved_eflags;
+                asm volatile ("pushf; pop %0; cli" : "=r"(saved_eflags));
+                for (uint32_t i = 0; i < len; i++) {
+                    terminal_putchar(buf[i]);
+                    serial_putc(buf[i]);
+                }
+                if (saved_eflags & 0x200) asm volatile ("sti");
+                regs->eax = len;
+            } else {
+                /* Regular files in MyFS are currently read-only */
+                regs->eax = (uint32_t)-1;
+            }
             break;
+        }
 
         case SYS_EXIT:
-            terminal_writestring("[ok] process exited\n");
+            kprintf("[ok] process exited\n");
             /* Tears the process down and switch_task()s into whatever's
                next in the round-robin rotation. Because this goes
                through switch_task's popf (not a bare function call),
@@ -74,7 +97,7 @@ static void syscall_handler(struct registers* regs) {
 
             process_t* me = scheduler_current();
             int slot = -1;
-            for (int i = 0; i < MAX_FDS; i++) if (!me->fds[i].in_use) { slot = i; break; }
+            for (int i = 3; i < MAX_FDS; i++) if (!me->fds[i].in_use) { slot = i; break; }
             if (slot < 0) { regs->eax = (uint32_t)-1; break; }
 
             me->fds[slot].entry = e;
@@ -90,19 +113,34 @@ static void syscall_handler(struct registers* regs) {
             uint32_t len = regs->edx;
 
             process_t* me = scheduler_current();
-            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd].in_use) { regs->eax = (uint32_t)-1; break; }
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd].in_use) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
 
-            int n = fs_read_range(me->fds[fd].entry, me->fds[fd].offset, buf, len);
-            if (n > 0) me->fds[fd].offset += (uint32_t) n;
-            regs->eax = (uint32_t) n;
+            if (fd == 0) {
+                /* fd 0 (stdin): keyboard line-buffered stdin */
+                int n = keyboard_read_line((char*)buf, len);
+                regs->eax = (uint32_t) n;
+            } else if (fd == 1 || fd == 2) {
+                regs->eax = (uint32_t)-1;
+            } else {
+                int n = fs_read_range(me->fds[fd].entry, me->fds[fd].offset, buf, len);
+                if (n > 0) me->fds[fd].offset += (uint32_t) n;
+                regs->eax = (uint32_t) n;
+            }
             break;
         }
 
         case SYS_CLOSE: {
             int fd = (int) regs->ebx;
             process_t* me = scheduler_current();
-            if (fd >= 0 && fd < MAX_FDS) me->fds[fd].in_use = 0;
-            regs->eax = 0;
+            if (fd >= 3 && fd < MAX_FDS) {
+                me->fds[fd].in_use = 0;
+                regs->eax = 0;
+            } else {
+                regs->eax = (uint32_t)-1;
+            }
             break;
         }
 

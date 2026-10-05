@@ -34,4 +34,8 @@ void scheduler_wait_for(int child_pid);
 void scheduler_wait_for_pipe(void);
 void scheduler_wake_pipe_waiters(void);
 
+/* Stage 12: blocking on keyboard/stdin line availability */
+void scheduler_wait_for_stdin(void);
+void scheduler_wake_stdin_waiters(void);
+
 #endif

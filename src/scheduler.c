@@ -2,6 +2,8 @@
 #include "tss.h"
 #include "vmm.h"
 #include "vga.h"
+#include "serial.h"
+#include "keyboard.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -23,9 +25,9 @@ static int process_index(process_t* p) {
 static process_t* pick_next_from(int idx) {
     for (int step = 1; step <= MAX_PROCESSES; step++) {
         process_t* p = process_table_entry((idx + step) % MAX_PROCESSES);
-        if (p->state == PROC_READY) return p;
+        if (p && p->state == PROC_READY) return p;
     }
-    return process_get_shell(); /* the shell is always READY; safety net */
+    return 0;
 }
 
 static void enter_process(process_t* next) {
@@ -45,11 +47,17 @@ static void wake_waiters_for(int pid) {
 
 void scheduler_tick(void) {
     if (!started) return;
+
+    while (serial_received()) {
+        char c = serial_read();
+        keyboard_handle_char(c);
+    }
+
     if (++tick_counter < SWITCH_EVERY_N_TICKS) return;
     tick_counter = 0;
 
     process_t* next = pick_next_from(process_index(current));
-    if (next == current) return;
+    if (!next || next == current) return;
 
     process_t* prev = current;
     current = next;
@@ -75,8 +83,17 @@ void scheduler_exit_current(void) {
 
     wake_waiters_for(exiting_pid); /* let any parent blocked in sys_spawn_wait proceed */
 
-    process_t* next = pick_next_from(idx); /* find a successor while p's slot is still identifiable */
-    process_destroy(p);                     /* reclaim its frames and kernel stack */
+    process_t* next = pick_next_from(idx);
+    while (!next) {
+        while (serial_received()) {
+            char c = serial_read();
+            keyboard_handle_char(c);
+        }
+        asm volatile ("sti; hlt");
+        next = pick_next_from(idx);
+    }
+
+    process_destroy(p); /* reclaim its frames and kernel stack */
 
     current = next;
     enter_process(next);
@@ -85,15 +102,29 @@ void scheduler_exit_current(void) {
     for (;;) asm volatile ("hlt"); /* unreachable */
 }
 
+static void wait_or_idle(process_t* me) {
+    process_t* next = pick_next_from(process_index(me));
+    if (next) {
+        current = next;
+        enter_process(next);
+        switch_task(&me->esp, next->esp);
+    } else {
+        while (me->state == PROC_WAITING) {
+            while (serial_received()) {
+                char c = serial_read();
+                keyboard_handle_char(c);
+            }
+            if (me->state != PROC_WAITING) break;
+            asm volatile ("sti; hlt");
+        }
+    }
+}
+
 void scheduler_wait_for(int child_pid) {
     process_t* me = current;
     me->state = PROC_WAITING;
     me->waiting_for_pid = child_pid;
-
-    process_t* next = pick_next_from(process_index(me));
-    current = next;
-    enter_process(next);
-    switch_task(&me->esp, next->esp); /* returns here once woken (state back to READY) and rescheduled */
+    wait_or_idle(me);
 }
 
 #define PIPE_WAIT_SENTINEL (-2) /* distinct from any real pid (>=0) and from -1 ("not waiting") */
@@ -102,17 +133,32 @@ void scheduler_wait_for_pipe(void) {
     process_t* me = current;
     me->state = PROC_WAITING;
     me->waiting_for_pid = PIPE_WAIT_SENTINEL;
-
-    process_t* next = pick_next_from(process_index(me));
-    current = next;
-    enter_process(next);
-    switch_task(&me->esp, next->esp); /* returns here once woken by pipe_write() */
+    wait_or_idle(me);
 }
 
 void scheduler_wake_pipe_waiters(void) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
         if (p->state == PROC_WAITING && p->waiting_for_pid == PIPE_WAIT_SENTINEL) {
+            p->state = PROC_READY;
+            p->waiting_for_pid = -1;
+        }
+    }
+}
+
+#define STDIN_WAIT_SENTINEL (-3)
+
+void scheduler_wait_for_stdin(void) {
+    process_t* me = current;
+    me->state = PROC_WAITING;
+    me->waiting_for_pid = STDIN_WAIT_SENTINEL;
+    wait_or_idle(me);
+}
+
+void scheduler_wake_stdin_waiters(void) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table_entry(i);
+        if (p->state == PROC_WAITING && p->waiting_for_pid == STDIN_WAIT_SENTINEL) {
             p->state = PROC_READY;
             p->waiting_for_pid = -1;
         }

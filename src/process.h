@@ -8,7 +8,7 @@
 
 #define MAX_PROCESSES 4
 #define PROC_KERNEL_STACK_SIZE 8192
-#define MAX_FDS 4
+#define MAX_FDS 16               /* Stage 12: 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 #define HEAP_BASE 0x900000u      /* 9MB -- clear of code at 0x800000 and the 0xC0000000 stack region */
 #define HEAP_MAX  (HEAP_BASE + 0x100000u) /* cap growth at 1MB per process */
 

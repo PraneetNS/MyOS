@@ -8,22 +8,29 @@
 
 void _start(void) {
     int mypid = sys_getpid();
-    sys_write("[parent] pid ");
+    const char* m1 = "[parent] pid ";
+    const char* m2 = " starting.\n";
+    sys_write(1, m1, strlen(m1));
     print_uint((unsigned int) mypid);
-    sys_write(" starting.\n");
+    sys_write(1, m2, strlen(m2));
 
-    sys_write("[parent] spawning hello.elf as a child and WAITING for it...\n");
+    const char* m3 = "[parent] spawning hello.elf as a child and WAITING for it...\n";
+    sys_write(1, m3, strlen(m3));
     int child_pid = sys_spawn_wait("hello.elf");
 
     if (child_pid < 0) {
-        sys_write("[parent] spawn failed!\n");
+        const char* err = "[parent] spawn failed!\n";
+        sys_write(1, err, strlen(err));
     } else {
-        sys_write("[parent] child (pid ");
+        const char* m4 = "[parent] child (pid ";
+        const char* m5 = ") finished -- back in parent now.\n";
+        sys_write(1, m4, strlen(m4));
         print_uint((unsigned int) child_pid);
-        sys_write(") finished -- back in parent now.\n");
+        sys_write(1, m5, strlen(m5));
     }
 
-    sys_write("[parent] exiting.\n");
+    const char* m6 = "[parent] exiting.\n";
+    sys_write(1, m6, strlen(m6));
     sys_exit();
 
     for (;;) { }

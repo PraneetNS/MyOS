@@ -11,9 +11,11 @@ static void delay(void) {
 }
 
 void _start(void) {
-    sys_write("[producer] pid ");
+    const char* m1 = "[producer] pid ";
+    const char* m2 = " starting, will write 3 messages to the pipe.\n";
+    sys_write(1, m1, strlen(m1));
     print_uint((unsigned int) sys_getpid());
-    sys_write(" starting, will write 3 messages to the pipe.\n");
+    sys_write(1, m2, strlen(m2));
 
     const char* messages[3] = {
         "first message from producer\n",
@@ -23,16 +25,19 @@ void _start(void) {
 
     for (int i = 0; i < 3; i++) {
         delay();
-        sys_write("[producer] writing message ");
+        const char* mw1 = "[producer] writing message ";
+        const char* mw2 = " to pipe...\n";
+        sys_write(1, mw1, strlen(mw1));
         print_uint((unsigned int) (i + 1));
-        sys_write(" to pipe...\n");
+        sys_write(1, mw2, strlen(mw2));
         const char* m = messages[i];
         unsigned int len = 0;
         while (m[len]) len++;
         sys_pipe_write(m, len);
     }
 
-    sys_write("[producer] done, exiting.\n");
+    const char* md = "[producer] done, exiting.\n";
+    sys_write(1, md, strlen(md));
     sys_exit();
 
     for (;;) { }
