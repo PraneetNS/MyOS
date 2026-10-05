@@ -25,12 +25,7 @@ static uint32_t page_tables[NUM_TABLES][1024] __attribute__((aligned(4096)));
 extern void paging_flush(uint32_t page_directory_phys);
 extern void paging_enable(void);
 
-static void print_hex(uint32_t v) {
-    char hex[9]; hex[8] = '\0';
-    const char* digits = "0123456789ABCDEF";
-    for (int i = 7; i >= 0; i--) { hex[i] = digits[v & 0xF]; v >>= 4; }
-    terminal_writestring(hex);
-}
+#include "serial.h"
 
 static void page_fault_handler(struct registers* regs) {
     uint32_t faulting_addr;
@@ -38,15 +33,10 @@ static void page_fault_handler(struct registers* regs) {
 
     int from_usermode = (regs->cs & 0x3) == 3; /* RPL bits of the faulting CS */
 
-    terminal_writestring("\n*** PAGE FAULT at 0x");
-    print_hex(faulting_addr);
-    terminal_writestring(" (err=0x");
-    print_hex(regs->err_code);
-    terminal_writestring(", ");
-    terminal_writestring((regs->err_code & 0x4) ? "user-mode" : "kernel-mode");
-    terminal_writestring(", ");
-    terminal_writestring((regs->err_code & 0x2) ? "write" : "read");
-    terminal_writestring(") ***\n");
+    kprintf("\n*** PAGE FAULT at 0x%08x (err=0x%08x, %s, %s) ***\n",
+            faulting_addr, regs->err_code,
+            (regs->err_code & 0x4) ? "user-mode" : "kernel-mode",
+            (regs->err_code & 0x2) ? "write" : "read");
 
     if (from_usermode) {
         /* A user process touched memory it has no mapping for -- exactly
@@ -56,11 +46,11 @@ static void page_fault_handler(struct registers* regs) {
            whatever's next in the rotation run. Kernel-space entry 0 is
            supervisor-only in every process's page directory, so this
            fault is expected and recoverable, not a bug. */
-        terminal_writestring("Process terminated (illegal memory access).\n");
+        kprintf("Process terminated (illegal memory access).\n");
         scheduler_exit_current(); /* never returns */
     }
 
-    terminal_writestring("Kernel-mode page fault -- this is a real kernel bug. System halted.\n");
+    kprintf("Kernel-mode page fault -- this is a real kernel bug. System halted.\n");
     asm volatile ("cli");
     for (;;) asm volatile ("hlt");
 }

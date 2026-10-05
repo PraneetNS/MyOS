@@ -117,6 +117,8 @@ static const char* exception_messages[32] = {
     "Reserved", "Reserved", "Reserved", "Reserved",
 };
 
+#include "serial.h"
+
 /* Called from isr_common_stub in isr.s for CPU exceptions (vectors 0-31) */
 void isr_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no] != 0) {
@@ -124,9 +126,9 @@ void isr_handler(struct registers* regs) {
         return;
     }
 
-    terminal_writestring("\n*** KERNEL PANIC: ");
-    terminal_writestring(exception_messages[regs->int_no]);
-    terminal_writestring(" ***\nSystem halted.\n");
+    kprintf("\n*** KERNEL PANIC: %s (vec=%u, err=0x%x) ***\nSystem halted.\n",
+            (regs->int_no < 32) ? exception_messages[regs->int_no] : "Unknown",
+            regs->int_no, regs->err_code);
     asm volatile ("cli");
     for (;;) asm volatile ("hlt");
 }
