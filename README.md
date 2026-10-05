@@ -551,22 +551,77 @@ properly (a temporary kernel mapping for high frames) before pushing
 memory usage much further, rather than continuing to rely on scale not
 yet having exposed it.
 
-## Stage 12 (next): what's left
+## Stage 12 (done): Serial debug, stdin/stdout/stderr, argv/envp, userland shell, and test suite
 
-1. **A real per-instance `pipe()` syscall** -- replacing Stage 9's
-   single global buffer with fd-integrated, per-call pipes.
-2. **A writable filesystem** -- MyFS is still read-only, built entirely
-   at compile time.
+Stage 12 transforms MyOS from an in-kernel demo loop into a true Unix-like userspace system with serial console, standard file descriptors, System V i386 argument passing, a ring-3 interactive shell, and automated headless test harnesses.
+
+### 1. Serial Debug & Headless Automation (Step 1)
+- **COM1 Driver (`src/serial.c`, `src/serial.h`)**: Initializes UART 16550 at `0x3F8` to 115200 baud, 8 data bits, no parity, 1 stop bit (8N1).
+- **Dual Console Mirroring**: All `kprintf` output, exception/fault dumps, and user-space outputs on stdout/stderr mirror to COM1 as well as VGA text mode.
+- **Headless Target (`make test`)**: Runs QEMU headlessly with `-serial stdio -display none -no-reboot` bounded by a 10s timeout.
+- **Boot Sentinel**: Prints `BOOT OK` upon completing kernel initialization so test runners can grep for boot success.
+
+### 2. Standard File Descriptors (stdin, stdout, stderr) (Step 2)
+- **Process FD Table**: Raised `MAX_FDS` to 16. Descriptors 0–2 are permanently reserved:
+  - **`fd 0` (stdin)**: Line-buffered keyboard and serial input.
+  - **`fd 1` (stdout)**: Console output (VGA text memory + COM1 serial).
+  - **`fd 2` (stderr)**: Diagnostic output (VGA text memory + COM1 serial).
+  - **`fd >= 3`**: Allocated dynamically by `sys_open()` for file access on disk.
+- **Blocking Input**: `sys_read(0, buf, len)` places the calling process in `PROC_WAITING` state until a complete line ending in `\n` is entered. Either the PS/2 keyboard interrupt (IRQ1) or the COM1 serial receiver buffer awakens waiting processes via `scheduler_wake_stdin_waiters()`.
+- **Syscall API Update**: Both `SYS_WRITE` and `SYS_READ` take `(fd, buf, len)` instead of implicit console streams. All userland binaries and `userland/libc.h` were updated accordingly.
+
+### 3. Argument Passing & ABI Stack Layout (Step 3)
+- **System V i386 ABI**: The ELF loader (`src/elf.c`) and `sys_exec` (`src/syscall.c`) construct the initial user stack at the top of memory (`0xBFFFF000`–`0xC0000000`):
+  1. String content for argument strings (`argv[0]`, `argv[1]`, ...).
+  2. 16-byte stack alignment padding.
+  3. `envp` NULL sentinel (`0x00000000`).
+  4. `argv` NULL sentinel (`0x00000000`).
+  5. Pointers to argument strings (`argv[i]`).
+  6. Argument count (`argc`) placed at `%esp`.
+- **C Runtime Startup (`userland/crt0.s`)**: Reads `argc` from `(%esp)` and `argv` from `4(%esp)`, aligns the stack to 16 bytes per the Sys V ABI requirement, calls `main(int argc, char** argv)`, and forwards the return value to `sys_exit()`.
+- **Exec Argument Preservation**: `sys_exec` copies userland argument strings into kernel buffers prior to destroying the existing address space.
+
+### 4. Userland Ring-3 Shell (`userland/sh.c`) (Step 4)
+- **Ring 3 Execution**: A standalone interactive shell runs entirely in ring 3 with privilege separation.
+- **Command Loop**: Emits prompt `sh$ `, reads input via `sys_read(0, ...)`, tokenizes arguments, and handles:
+  - Builtins: `help`, `ls`, `cd` (stub), `cat <file>`, `exit`.
+  - External executables: executes via `sys_fork()` + `sys_exec()` + `sys_wait()`.
+- **PID 1 Bootstrapping**: The kernel boots directly into `sh.elf` as PID 1, while PID 0 serves as the kernel idle task (`kernel_idle_task`).
+- **Debugging Boot Flag (`kshell`)**: The original in-kernel shell remains accessible by passing the `kshell` Multiboot2 command-line flag (available in `boot/grub.cfg`).
+
+### 5. Test Suite & Verification (Step 5)
+- **`userland/argtest.c`**: Verifies `argc` and `argv` argument parsing by printing each argument back to stdout.
+- **`tools/test_boot.sh`**: Headless test runner feeding commands into QEMU serial stdio and asserting `BOOT OK`, shell responsiveness, and `argtest` argument echoing.
+- **Zero Regressions**: All previous stage userland programs (`hello.elf`, `reader.elf`, `forktest.elf`, `forkexec.elf`, `heaptest.elf`, `badwrite.elf`) run without errors.
+
+---
+
+## Syscall Reference Table
+
+| Syscall | Vector | ID (`eax`) | Arguments | Return (`eax`) | Description |
+|---|---|---|---|---|---|
+| `SYS_EXIT` | `0x80` | `0` | none | does not return | Terminates the calling process, wakes waiting parent, and reclaims address space. |
+| `SYS_WRITE` | `0x80` | `1` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes written (`-1` on error) | Writes buffer to specified file descriptor (1 and 2 write to VGA + COM1 serial). |
+| `SYS_GETPID` | `0x80` | `2` | none | PID (`uint32_t`) | Returns caller's process ID. |
+| `SYS_OPEN` | `0x80` | `3` | `ebx` = filename | fd >= 3 (`-1` on error) | Opens file on MyFS, allocating the lowest available file descriptor (>= 3). |
+| `SYS_READ` | `0x80` | `4` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes read (`-1` on error) | Reads from fd (fd 0 blocks until a line is available). |
+| `SYS_CLOSE` | `0x80` | `5` | `ebx` = fd | `0` on success, `-1` on error | Closes file descriptor (descriptors 0–2 are reserved). |
+| `SYS_SPAWN_WAIT` | `0x80` | `6` | `ebx` = filename | child exit code / 0 | Legacy synchronous spawn-and-wait syscall. |
+| `SYS_FORK` | `0x80` | `7` | none | child PID in parent, `0` in child | Clones current process address space, file table, and registers. |
+| `SYS_PIPE_WRITE` | `0x80` | `8` | `ebx` = buf, `ecx` = len | bytes written | Writes data to kernel pipe buffer and wakes blocked readers. |
+| `SYS_PIPE_READ` | `0x80` | `9` | `ebx` = buf, `ecx` = maxlen | bytes read | Reads data from kernel pipe buffer; blocks if pipe is empty. |
+| `SYS_EXEC` | `0x80` | `10` | `ebx` = filename, `ecx` = argv | `-1` on failure, no return on success | Replaces caller's address space with target ELF and passes `argv`. |
+| `SYS_WAIT` | `0x80` | `11` | `ebx` = pid | `0` | Blocks caller until process `pid` terminates. |
+| `SYS_SBRK` | `0x80` | `12` | `ebx` = increment | previous heap break | Adjusts program break by signed `increment` bytes; pages in memory on demand. |
+
+---
+
+## Stage 13 (next): what's left
+
+1. **A real per-instance `pipe()` syscall** -- replacing Stage 9's single global buffer with fd-integrated, per-call pipes.
+2. **A writable filesystem** -- MyFS is still read-only, built entirely at compile time.
 3. **Signals** and **zombie/reap semantics** for `wait()`.
-4. **Fixing the sub-16MB physical-frame constraint** noted above --
-   the most valuable "hardening" pass available at this point, as
-   opposed to a new feature.
-
-At this point the system is functionally a small, real, coherent Unix-
-like kernel: privilege separation, paging-based process isolation,
-preemptive multitasking, a filesystem, ELF loading, and the classic
-`fork()`/`exec()`/`wait()` process model with a working heap. Everything
-left is extension and hardening, not new hard mechanisms.
+4. **Fixing the sub-16MB physical-frame constraint** -- temporary kernel mapping for high frames to remove the 16MB ceiling on physical allocations.
 
 ## Notes on the toolchain choices made here
 
