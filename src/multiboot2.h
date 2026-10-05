@@ -9,7 +9,14 @@ struct mb2_tag {
 };
 
 #define MB2_TAG_TYPE_END      0
+#define MB2_TAG_TYPE_CMDLINE  1
 #define MB2_TAG_TYPE_MMAP     6
+
+struct mb2_tag_string {
+    uint32_t type;
+    uint32_t size;
+    char string[];
+};
 
 struct mb2_mmap_entry {
     uint64_t addr;

@@ -15,6 +15,33 @@
 #include "pipe.h"
 
 #include "serial.h"
+#include "multiboot2.h"
+
+static int check_boot_flag_kshell(uint32_t mb_info_addr) {
+    if (!mb_info_addr) return 0;
+    uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
+    uint32_t total_size = *(uint32_t*) ptr;
+    uint8_t* end = ptr + total_size;
+    uint8_t* tag_ptr = ptr + 8;
+
+    while (tag_ptr < end) {
+        struct mb2_tag* tag = (struct mb2_tag*) tag_ptr;
+        if (tag->type == MB2_TAG_TYPE_END) break;
+
+        if (tag->type == MB2_TAG_TYPE_CMDLINE) {
+            struct mb2_tag_string* cmd = (struct mb2_tag_string*) tag;
+            const char* s = cmd->string;
+            const char* needle = "kshell";
+            for (int i = 0; s[i]; i++) {
+                int j = 0;
+                while (needle[j] && s[i + j] == needle[j]) j++;
+                if (!needle[j]) return 1;
+            }
+        }
+        tag_ptr += (tag->size + 7) & ~7u;
+    }
+    return 0;
+}
 
 void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     (void) magic;
@@ -58,14 +85,23 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     pipe_init();
     kprintf("[ok] Pipe (IPC) initialized\n");
 
-    process_init_table();
-    kprintf("[ok] Process table initialized (shell = process 0)\n");
+    int use_kshell = check_boot_flag_kshell(mb_info_addr);
+    process_init_table(use_kshell);
+    if (use_kshell) {
+        kprintf("[ok] Process table initialized (kshell = process 0)\n");
+    } else {
+        kprintf("[ok] Process table initialized (idle = process 0)\n");
+        process_t* sh = process_spawn_by_name("sh.elf", 0);
+        if (sh) {
+            kprintf("[ok] Spawned sh.elf (PID %d)\n", sh->pid);
+        } else {
+            kprintf("[err] Failed to spawn sh.elf\n");
+        }
+    }
 
     kprintf("BOOT OK\n");
 
-    scheduler_start(); /* never returns -- becomes the shell, and from here
-                           on, processes launched via 'run' are real,
-                           independently scheduled tasks */
+    scheduler_start(); /* never returns -- enters ring 3 sh.elf (or kshell if flag set) */
 
     for (;;) { asm volatile ("hlt"); }
 }

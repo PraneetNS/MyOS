@@ -6,7 +6,7 @@
 #include "fs.h"
 #include "idt.h" /* struct registers -- forked children resume from a saved snapshot of it */
 
-#define MAX_PROCESSES 4
+#define MAX_PROCESSES 8
 #define PROC_KERNEL_STACK_SIZE 8192
 #define MAX_FDS 16               /* Stage 12: 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 #define HEAP_BASE 0x900000u      /* 9MB -- clear of code at 0x800000 and the 0xC0000000 stack region */
@@ -28,7 +28,7 @@ typedef struct process {
     uint32_t entry_point;       /* read by process_trampoline on this process's first run */
     uint32_t user_stack_top;
     proc_state_t state;
-    int is_kernel_task;         /* process 0 (the shell) runs in ring0, in the kernel's own address space */
+    int is_kernel_task;         /* process 0 (the shell/idle) runs in ring0, in the kernel's own address space */
     char name[32];
 
     int pid;
@@ -44,14 +44,17 @@ typedef struct process {
     uint32_t heap_mapped_up_to; /* how far the heap has actually been paged in (<= heap_end, rounded to a page) */
 } process_t;
 
-/* Sets up the fixed process table with slot 0 as the always-resident
-   shell (ring0, kernel address space, entry = shell_run, pid 0). Call
-   once, before scheduler_start(). */
-void process_init_table(void);
+/* Sets up the fixed process table with slot 0 as either the resident
+   kshell (if use_kshell is 1) or the kernel idle task (if 0). */
+void process_init_table(int use_kshell);
 
 process_t* process_get_shell(void);
 process_t* process_table_entry(int i);
 process_t* process_find_by_pid(int pid);
+void kernel_idle_task(void);
+
+/* Spawns an ELF executable by filesystem name. */
+process_t* process_spawn_by_name(const char* name, int parent_pid);
 
 /* Loads an ELF into a fresh process slot + fresh address space and
    marks it READY to run. `parent_pid` becomes the new process's ppid.
