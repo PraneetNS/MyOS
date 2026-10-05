@@ -118,5 +118,9 @@ open_file_t* vfs_get_console_stderr(void);
 int vfs_read(open_file_t* of, void* buf, uint32_t count);
 int vfs_write(open_file_t* of, const void* buf, uint32_t count);
 int vfs_close(open_file_t* of);
+int vfs_lseek(open_file_t* of, int offset, int whence);
+int vfs_readdir(open_file_t* of, struct dirent* entry);
+int vfs_stat(vnode_t* vn, struct stat* st);
+void vfs_path_canonical(const char* path, const char* cwd, char* out, int max);
 
 #endif

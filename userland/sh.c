@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
                 const char* cat_usage = "usage: cat <file>\n";
                 sys_write(1, cat_usage, strlen(cat_usage));
             } else {
-                int fd = sys_open(cmd_args[1]);
+                int fd = sys_open(cmd_args[1], O_RDONLY, 0);
                 if (fd < 0) {
                     const char* cat_err = "cat: cannot open file\n";
                     sys_write(1, cat_err, strlen(cat_err));

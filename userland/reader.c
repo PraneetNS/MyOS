@@ -12,7 +12,7 @@ int main(int argc, char** argv) {
     print_uint((unsigned int) sys_getpid());
     sys_write(1, m2, strlen(m2));
 
-    int fd = sys_open("hello.txt");
+    int fd = sys_open("hello.txt", O_RDONLY, 0);
     if (fd < 0) {
         const char* err = "[reader] open failed!\n";
         sys_write(1, err, strlen(err));
