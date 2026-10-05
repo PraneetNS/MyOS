@@ -107,6 +107,12 @@ static inline void* sys_sbrk(int increment) {
     return (void*) ret;
 }
 
+static inline int sys_sync(void) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(13));
+    return ret;
+}
+
 /* Tiny freestanding helpers -- no libc means no <stdio.h>/<string.h>. */
 
 static inline void print_uint(unsigned int n) {

@@ -4,6 +4,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "keyboard.h"
+#include "bcache.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -108,6 +109,10 @@ void scheduler_exit_current(void) {
     int idx = process_index(p);
     int exiting_pid = p->pid;
     p->state = PROC_EXITED;
+
+    if (exiting_pid == 1) {
+        bcache_sync();
+    }
 
     wake_waiters_for(exiting_pid); /* let any parent blocked in sys_spawn_wait proceed */
 
