@@ -86,6 +86,12 @@ void shell_run(void) {
 
         char line[128];
         keyboard_read_line(line, sizeof(line));
+        for (int i = 0; line[i]; i++) {
+            if (line[i] == '\r' || line[i] == '\n') {
+                line[i] = '\0';
+                break;
+            }
+        }
 
         char* arg = split_arg(line);
         const char* cmd = line;

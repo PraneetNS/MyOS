@@ -7,45 +7,60 @@
 #include "libc.h"
 
 void _start(void) {
-    sys_write("[forkexec] pid ");
+    const char* m1 = "[forkexec] pid ";
+    const char* m2 = ": calling fork()...\n";
+    sys_write(1, m1, strlen(m1));
     print_uint((unsigned int) sys_getpid());
-    sys_write(": calling fork()...\n");
+    sys_write(1, m2, strlen(m2));
 
     int child = sys_fork();
 
     if (child == 0) {
         /* CHILD: still running a full copy of forkexec's own code at
            this point -- exec() is what turns it into hello.elf. */
-        sys_write("[forkexec] child (pid ");
+        const char* mc1 = "[forkexec] child (pid ";
+        const char* mc2 = "): about to exec(\"hello.elf\") -- my own code is\n";
+        const char* mc3 = "[forkexec] child: about to be replaced entirely...\n";
+        sys_write(1, mc1, strlen(mc1));
         print_uint((unsigned int) sys_getpid());
-        sys_write("): about to exec(\"hello.elf\") -- my own code is\n");
-        sys_write("[forkexec] child: about to be replaced entirely...\n");
+        sys_write(1, mc2, strlen(mc2));
+        sys_write(1, mc3, strlen(mc3));
 
         sys_exec("hello.elf"); /* does not return on success */
 
         /* Only reached if exec() failed. */
-        sys_write("[forkexec] child: exec FAILED!\n");
+        const char* err = "[forkexec] child: exec FAILED!\n";
+        sys_write(1, err, strlen(err));
         sys_exit();
     } else if (child > 0) {
         /* PARENT: unchanged, still forkexec's own code. */
-        sys_write("[forkexec] parent (pid ");
+        const char* mp1 = "[forkexec] parent (pid ";
+        const char* mp2 = "): waiting for child pid ";
+        const char* mp3 = "...\n";
+        sys_write(1, mp1, strlen(mp1));
         print_uint((unsigned int) sys_getpid());
-        sys_write("): waiting for child pid ");
+        sys_write(1, mp2, strlen(mp2));
         print_uint((unsigned int) child);
-        sys_write("...\n");
+        sys_write(1, mp3, strlen(mp3));
 
         sys_wait(child);
 
-        sys_write("[forkexec] parent: child finished. That output above\n");
-        sys_write("[forkexec] parent: came from hello.elf, not forkexec --\n");
-        sys_write("[forkexec] parent: the child really did become a different program.\n");
+        const char* mp4 = "[forkexec] parent: child finished. That output above\n";
+        const char* mp5 = "[forkexec] parent: came from hello.elf, not forkexec --\n";
+        const char* mp6 = "[forkexec] parent: the child really did become a different program.\n";
+        sys_write(1, mp4, strlen(mp4));
+        sys_write(1, mp5, strlen(mp5));
+        sys_write(1, mp6, strlen(mp6));
     } else {
-        sys_write("[forkexec] fork() failed!\n");
+        const char* err = "[forkexec] fork() failed!\n";
+        sys_write(1, err, strlen(err));
     }
 
-    sys_write("[forkexec] pid ");
+    const char* me1 = "[forkexec] pid ";
+    const char* me2 = " exiting.\n";
+    sys_write(1, me1, strlen(me1));
     print_uint((unsigned int) sys_getpid());
-    sys_write(" exiting.\n");
+    sys_write(1, me2, strlen(me2));
     sys_exit();
 
     for (;;) { }

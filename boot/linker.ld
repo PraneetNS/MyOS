@@ -15,7 +15,7 @@ SECTIONS
     }
 
     .rodata ALIGN(4K) : {
-        *(.rodata)
+        *(.rodata*)
     }
 
     .data ALIGN(4K) : {
@@ -29,4 +29,10 @@ SECTIONS
 
     . = ALIGN(4K);
     kernel_end = .;   /* first free byte after the kernel image -- pmm/heap use this */
+
+    /DISCARD/ : {
+        *(.comment)
+        *(.note*)
+        *(.eh_frame)
+    }
 }

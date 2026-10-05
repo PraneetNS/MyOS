@@ -50,8 +50,24 @@ static void fabricate_initial_frame(process_t* p, void (*entry)(void)) {
     p->esp = (uint32_t) sp;
 }
 
-static void clear_fds(process_t* p) {
-    for (int i = 0; i < MAX_FDS; i++) p->fds[i].in_use = 0;
+static void init_fds(process_t* p) {
+    p->fds[0].in_use = 1; /* stdin */
+    p->fds[0].entry = 0;
+    p->fds[0].offset = 0;
+
+    p->fds[1].in_use = 1; /* stdout */
+    p->fds[1].entry = 0;
+    p->fds[1].offset = 0;
+
+    p->fds[2].in_use = 1; /* stderr */
+    p->fds[2].entry = 0;
+    p->fds[2].offset = 0;
+
+    for (int i = 3; i < MAX_FDS; i++) {
+        p->fds[i].in_use = 0;
+        p->fds[i].entry = 0;
+        p->fds[i].offset = 0;
+    }
 }
 
 void process_init_table(void) {
@@ -72,7 +88,7 @@ void process_init_table(void) {
     shell->is_forked = 0;
     shell->heap_end = HEAP_BASE;
     shell->heap_mapped_up_to = HEAP_BASE;
-    clear_fds(shell);
+    init_fds(shell);
 
     const char* n = "shell";
     int i = 0; for (; n[i] && i < 31; i++) shell->name[i] = n[i]; shell->name[i] = '\0';
@@ -127,7 +143,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->is_forked = 0;
     p->heap_end = HEAP_BASE;
     p->heap_mapped_up_to = HEAP_BASE;
-    clear_fds(p);
+    init_fds(p);
 
     int i = 0; for (; name[i] && i < 31; i++) p->name[i] = name[i]; p->name[i] = '\0';
 

@@ -4,8 +4,16 @@
 /* MyOS's syscall convention: eax = number, ebx/ecx/edx = up to 3 args,
    return value comes back in eax. See src/syscall.c for the kernel side. */
 
-static inline void sys_write(const char* s) {
-    asm volatile ("int $0x80" : : "a"(1), "b"(s));
+static inline unsigned int strlen(const char* s) {
+    unsigned int len = 0;
+    while (s && s[len]) len++;
+    return len;
+}
+
+static inline int sys_write(int fd, const void* buf, unsigned int len) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(1), "b"(fd), "c"(buf), "d"(len));
+    return ret;
 }
 
 static inline void sys_exit(void) {
@@ -103,16 +111,16 @@ static inline void* sys_sbrk(int increment) {
 
 static inline void print_uint(unsigned int n) {
     char buf[11]; int i = 10; buf[10] = '\0';
-    if (n == 0) { sys_write("0"); return; }
+    if (n == 0) { sys_write(1, "0", 1); return; }
     while (n > 0 && i > 0) { buf[--i] = '0' + (n % 10); n /= 10; }
-    sys_write(&buf[i]);
+    sys_write(1, &buf[i], 10 - i);
 }
 
 static inline void print_hex(unsigned int v) {
     char hex[11] = "0x00000000";
     const char* digits = "0123456789ABCDEF";
     for (int i = 9; i >= 2; i--) { hex[i] = digits[v & 0xF]; v >>= 4; }
-    sys_write(hex);
+    sys_write(1, hex, 10);
 }
 
 #endif

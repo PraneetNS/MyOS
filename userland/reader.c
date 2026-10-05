@@ -5,33 +5,40 @@
 #include "libc.h"
 
 void _start(void) {
-    sys_write("[reader] pid ");
+    const char* m1 = "[reader] pid ";
+    const char* m2 = ": opening hello.txt via sys_open...\n";
+    sys_write(1, m1, strlen(m1));
     print_uint((unsigned int) sys_getpid());
-    sys_write(": opening hello.txt via sys_open...\n");
+    sys_write(1, m2, strlen(m2));
 
     int fd = sys_open("hello.txt");
     if (fd < 0) {
-        sys_write("[reader] open failed!\n");
+        const char* err = "[reader] open failed!\n";
+        sys_write(1, err, strlen(err));
         sys_exit();
     }
 
-    sys_write("[reader] got fd ");
+    const char* m3 = "[reader] got fd ";
+    const char* m4 = ", reading in 32-byte chunks via sys_read:\n---\n";
+    sys_write(1, m3, strlen(m3));
     print_uint((unsigned int) fd);
-    sys_write(", reading in 32-byte chunks via sys_read:\n---\n");
+    sys_write(1, m4, strlen(m4));
 
     char buf[33];
     int n;
     int total = 0;
     while ((n = sys_read(fd, buf, sizeof(buf) - 1)) > 0) {
         buf[n] = '\0';
-        sys_write(buf);
+        sys_write(1, buf, (unsigned int)n);
         total += n;
     }
 
     sys_close(fd);
-    sys_write("\n---\n[reader] done, ");
+    const char* m5 = "\n---\n[reader] done, ";
+    const char* m6 = " bytes read via syscalls.\n";
+    sys_write(1, m5, strlen(m5));
     print_uint((unsigned int) total);
-    sys_write(" bytes read via syscalls.\n");
+    sys_write(1, m6, strlen(m6));
     sys_exit();
 
     for (;;) { }

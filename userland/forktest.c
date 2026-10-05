@@ -9,9 +9,11 @@
 #include "libc.h"
 
 void _start(void) {
-    sys_write("[forktest] pid ");
+    const char* m1 = "[forktest] pid ";
+    const char* m2 = ": about to fork()...\n";
+    sys_write(1, m1, strlen(m1));
     print_uint((unsigned int) sys_getpid());
-    sys_write(": about to fork()...\n");
+    sys_write(1, m2, strlen(m2));
 
     int result = sys_fork();
 
@@ -19,23 +21,31 @@ void _start(void) {
         /* This code runs in the CHILD -- a completely separate process,
            with its own copy of every page, that happens to have started
            life mid-way through this same function. */
-        sys_write("[forktest] I am the CHILD, pid ");
+        const char* mc1 = "[forktest] I am the CHILD, pid ";
+        const char* mc2 = ". My parent saw my pid as its return value.\n";
+        sys_write(1, mc1, strlen(mc1));
         print_uint((unsigned int) sys_getpid());
-        sys_write(". My parent saw my pid as its return value.\n");
+        sys_write(1, mc2, strlen(mc2));
     } else if (result > 0) {
         /* This code runs in the ORIGINAL (parent) process. */
-        sys_write("[forktest] I am the PARENT, pid ");
+        const char* mp1 = "[forktest] I am the PARENT, pid ";
+        const char* mp2 = ". fork() gave me child pid ";
+        const char* mp3 = ".\n";
+        sys_write(1, mp1, strlen(mp1));
         print_uint((unsigned int) sys_getpid());
-        sys_write(". fork() gave me child pid ");
+        sys_write(1, mp2, strlen(mp2));
         print_uint((unsigned int) result);
-        sys_write(".\n");
+        sys_write(1, mp3, strlen(mp3));
     } else {
-        sys_write("[forktest] fork() failed!\n");
+        const char* err = "[forktest] fork() failed!\n";
+        sys_write(1, err, strlen(err));
     }
 
-    sys_write("[forktest] pid ");
+    const char* me1 = "[forktest] pid ";
+    const char* me2 = " exiting.\n";
+    sys_write(1, me1, strlen(me1));
     print_uint((unsigned int) sys_getpid());
-    sys_write(" exiting.\n");
+    sys_write(1, me2, strlen(me2));
     sys_exit();
 
     for (;;) { }
