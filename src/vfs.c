@@ -358,3 +358,124 @@ int vfs_close(open_file_t* of) {
     open_file_unref(of);
     return 0;
 }
+
+int vfs_lseek(open_file_t* of, int offset, int whence) {
+    if (!of) return -EBADF;
+    if (of->type == OPEN_FILE_CONSOLE || of->type == OPEN_FILE_PIPE) return -ESPIPE;
+    if (of->type != OPEN_FILE_VNODE || !of->vnode) return -EBADF;
+
+    int new_offset;
+    if (whence == SEEK_SET) {
+        new_offset = offset;
+    } else if (whence == SEEK_CUR) {
+        new_offset = (int)of->offset + offset;
+    } else if (whence == SEEK_END) {
+        new_offset = (int)of->vnode->size + offset;
+    } else {
+        return -EINVAL;
+    }
+
+    if (new_offset < 0) return -EINVAL;
+    of->offset = (uint32_t) new_offset;
+    return new_offset;
+}
+
+int vfs_readdir(open_file_t* of, struct dirent* entry) {
+    if (!of) return -EBADF;
+    if (of->type != OPEN_FILE_VNODE || !of->vnode) return -EBADF;
+    if (of->vnode->type != VNODE_DIR) return -ENOTDIR;
+    if (!of->vnode->ops || !of->vnode->ops->readdir) return -ENOSYS;
+
+    int ret = of->vnode->ops->readdir(of->vnode, of->offset, entry);
+    if (ret == 1) {
+        of->offset++;
+        return 1;
+    }
+    return ret;
+}
+
+int vfs_stat(vnode_t* vn, struct stat* st) {
+    if (!vn || !st) return -EINVAL;
+    if (vn->ops && vn->ops->stat) {
+        return vn->ops->stat(vn, st);
+    }
+    st->st_dev = 0;
+    st->st_ino = 1;
+    st->st_mode = (vn->type == VNODE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+    st->st_nlink = 1;
+    st->st_size = vn->size;
+    st->st_blksize = 512;
+    st->st_blocks = (vn->size + 511) / 512;
+    return 0;
+}
+
+void vfs_path_canonical(const char* path, const char* cwd, char* out, int max) {
+    if (!out || max <= 1) return;
+    char combined[128];
+    int p = 0;
+    if (path && path[0] == '/') {
+        while (path[p] && p < 126) {
+            combined[p] = path[p];
+            p++;
+        }
+        combined[p] = '\0';
+    } else {
+        const char* c = (cwd && *cwd) ? cwd : "/";
+        while (c[p] && p < 120) {
+            combined[p] = c[p];
+            p++;
+        }
+        if (p > 0 && combined[p - 1] != '/') {
+            combined[p++] = '/';
+        }
+        int j = 0;
+        while (path && path[j] && p < 126) {
+            combined[p++] = path[j++];
+        }
+        combined[p] = '\0';
+    }
+
+    char segs[16][32];
+    int nsegs = 0;
+    int i = 0;
+    while (combined[i]) {
+        while (combined[i] == '/') i++;
+        if (!combined[i]) break;
+        char tok[32];
+        int tlen = 0;
+        while (combined[i] && combined[i] != '/' && tlen < 31) {
+            tok[tlen++] = combined[i++];
+        }
+        tok[tlen] = '\0';
+        while (combined[i] && combined[i] != '/') i++;
+
+        if (tok[0] == '.' && tok[1] == '\0') {
+            continue;
+        } else if (tok[0] == '.' && tok[1] == '.' && tok[2] == '\0') {
+            if (nsegs > 0) nsegs--;
+        } else {
+            if (nsegs < 16) {
+                int k = 0;
+                while (tok[k]) { segs[nsegs][k] = tok[k]; k++; }
+                segs[nsegs][k] = '\0';
+                nsegs++;
+            }
+        }
+    }
+
+    if (nsegs == 0) {
+        out[0] = '/';
+        out[1] = '\0';
+        return;
+    }
+
+    int pos = 0;
+    for (int s = 0; s < nsegs; s++) {
+        if (pos < max - 1) out[pos++] = '/';
+        int k = 0;
+        while (segs[s][k] && pos < max - 1) {
+            out[pos++] = segs[s][k++];
+        }
+    }
+    out[pos] = '\0';
+}

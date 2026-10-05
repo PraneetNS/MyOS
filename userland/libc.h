@@ -1,8 +1,47 @@
 #ifndef LIBC_H
 #define LIBC_H
 
-/* MyOS's syscall convention: eax = number, ebx/ecx/edx = up to 3 args,
-   return value comes back in eax. See src/syscall.c for the kernel side. */
+#include "../src/errno.h"
+
+/* Open flags */
+#define O_RDONLY    0x0000
+#define O_WRONLY    0x0001
+#define O_RDWR      0x0002
+#define O_CREAT     0x0040
+#define O_TRUNC     0x0200
+#define O_APPEND    0x0400
+
+/* Seek constants */
+#define SEEK_SET    0
+#define SEEK_CUR    1
+#define SEEK_END    2
+
+/* File modes */
+#define S_IFMT      0xF000
+#define S_IFREG     0x8000
+#define S_IFDIR     0x4000
+#define S_IFCHR     0x2000
+
+#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+#define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
+#define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
+
+struct stat {
+    unsigned int st_dev;
+    unsigned int st_ino;
+    unsigned int st_mode;
+    unsigned int st_nlink;
+    unsigned int st_size;
+    unsigned int st_blksize;
+    unsigned int st_blocks;
+};
+
+struct dirent {
+    unsigned int d_ino;
+    char d_name[64];
+    unsigned int d_type; /* 1 = file, 2 = dir */
+    unsigned int d_size;
+};
 
 static inline unsigned int strlen(const char* s) {
     unsigned int len = 0;
@@ -16,8 +55,17 @@ static inline int sys_write(int fd, const void* buf, unsigned int len) {
     return ret;
 }
 
+static inline int write(int fd, const void* buf, unsigned int len) {
+    return sys_write(fd, buf, len);
+}
+
 static inline void sys_exit(void) {
     asm volatile ("int $0x80" : : "a"(0));
+}
+
+static inline void exit(int status) {
+    (void) status;
+    sys_exit();
 }
 
 static inline int sys_getpid(void) {
@@ -26,10 +74,18 @@ static inline int sys_getpid(void) {
     return ret;
 }
 
-static inline int sys_open(const char* name) {
+static inline int getpid(void) {
+    return sys_getpid();
+}
+
+static inline int sys_open(const char* name, int flags, int mode) {
     int ret;
-    asm volatile ("int $0x80" : "=a"(ret) : "a"(3), "b"(name));
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(3), "b"(name), "c"(flags), "d"(mode));
     return ret;
+}
+
+static inline int open(const char* name, int flags, ...) {
+    return sys_open(name, flags, 0);
 }
 
 static inline int sys_read(int fd, void* buf, unsigned int len) {
@@ -38,32 +94,36 @@ static inline int sys_read(int fd, void* buf, unsigned int len) {
     return ret;
 }
 
-static inline void sys_close(int fd) {
-    asm volatile ("int $0x80" : : "a"(5), "b"(fd));
+static inline int read(int fd, void* buf, unsigned int len) {
+    return sys_read(fd, buf, len);
 }
 
-/* Spawns `name` as a child process and BLOCKS until it exits -- unlike
-   the shell's `run`, which is fire-and-forget. Returns the child's pid,
-   or -1 if it couldn't be spawned (bad name, out of process slots, etc). */
+static inline int sys_close(int fd) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(5), "b"(fd));
+    return ret;
+}
+
+static inline int close(int fd) {
+    return sys_close(fd);
+}
+
 static inline int sys_spawn_wait(const char* name) {
     int ret;
     asm volatile ("int $0x80" : "=a"(ret) : "a"(6), "b"(name));
     return ret;
 }
 
-/* Classic fork() semantics: duplicates the calling process (address
-   space and all). Returns the child's pid to the parent, 0 to the
-   child, or -1 on failure. The syscall "returns twice" -- both
-   processes resume at the instruction right after this call. */
 static inline int sys_fork(void) {
     int ret;
     asm volatile ("int $0x80" : "=a"(ret) : "a"(7));
     return ret;
 }
 
-/* One global, system-wide pipe (see src/pipe.c). Write never blocks
-   (drops data if the 256-byte ring buffer is full); read blocks until
-   a writer provides data. */
+static inline int fork(void) {
+    return sys_fork();
+}
+
 static inline unsigned int sys_pipe_write(const void* buf, unsigned int len) {
     unsigned int ret;
     asm volatile ("int $0x80" : "=a"(ret) : "a"(8), "b"(buf), "c"(len));
@@ -76,35 +136,32 @@ static inline unsigned int sys_pipe_read(void* buf, unsigned int maxlen) {
     return ret;
 }
 
-/* Replaces the CALLING process's own code/data with a freshly loaded
-   ELF, keeping its pid/ppid/open files. Only returns (with -1) on
-   failure -- on success there is no "returning": the old program's
-   code is gone. This is the missing piece that makes fork() genuinely
-   useful: fork() to create a new process, then exec() to turn it into
-   a different program. */
 static inline int sys_exec(const char* name, const char* const* argv) {
     int ret;
     asm volatile ("int $0x80" : "=a"(ret) : "a"(10), "b"(name), "c"(argv));
     return ret;
 }
 
-/* Blocks until the process with this pid exits (or returns immediately
-   if it already has, or never existed). Unlike sys_spawn_wait(), this
-   doesn't spawn anything -- it's for waiting on a child you already
-   have, e.g. one created via sys_fork(). */
+static inline int exec(const char* name, const char* const* argv) {
+    return sys_exec(name, argv);
+}
+
 static inline void sys_wait(int pid) {
     asm volatile ("int $0x80" : : "a"(11), "b"(pid));
 }
 
-/* Classic sbrk(): grows (or queries, with increment=0) this process's
-   heap by `increment` bytes, returning the PREVIOUS break -- so the
-   newly available memory is [return value, return value + increment).
-   Returns (void*)-1 (cast here to a plain int -1) on failure. New pages
-   are zero-initialized. */
+static inline void wait(int pid) {
+    sys_wait(pid);
+}
+
 static inline void* sys_sbrk(int increment) {
     int ret;
     asm volatile ("int $0x80" : "=a"(ret) : "a"(12), "b"(increment));
     return (void*) ret;
+}
+
+static inline void* sbrk(int increment) {
+    return sys_sbrk(increment);
 }
 
 static inline int sys_sync(void) {
@@ -113,7 +170,109 @@ static inline int sys_sync(void) {
     return ret;
 }
 
-/* Tiny freestanding helpers -- no libc means no <stdio.h>/<string.h>. */
+static inline int sync(void) {
+    return sys_sync();
+}
+
+static inline int sys_lseek(int fd, int offset, int whence) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(14), "b"(fd), "c"(offset), "d"(whence));
+    return ret;
+}
+
+static inline int lseek(int fd, int offset, int whence) {
+    return sys_lseek(fd, offset, whence);
+}
+
+static inline int sys_stat(const char* path, struct stat* st) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(15), "b"(path), "c"(st));
+    return ret;
+}
+
+static inline int stat(const char* path, struct stat* st) {
+    return sys_stat(path, st);
+}
+
+static inline int sys_fstat(int fd, struct stat* st) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(16), "b"(fd), "c"(st));
+    return ret;
+}
+
+static inline int fstat(int fd, struct stat* st) {
+    return sys_fstat(fd, st);
+}
+
+static inline int sys_getdents(int fd, struct dirent* dirp, unsigned int count) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(17), "b"(fd), "c"(dirp), "d"(count));
+    return ret;
+}
+
+static inline int getdents(int fd, struct dirent* dirp, unsigned int count) {
+    return sys_getdents(fd, dirp, count);
+}
+
+static inline int sys_mkdir(const char* path, int mode) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(18), "b"(path), "c"(mode));
+    return ret;
+}
+
+static inline int mkdir(const char* path, int mode) {
+    return sys_mkdir(path, mode);
+}
+
+static inline int sys_rmdir(const char* path) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(19), "b"(path));
+    return ret;
+}
+
+static inline int rmdir(const char* path) {
+    return sys_rmdir(path);
+}
+
+static inline int sys_unlink(const char* path) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(20), "b"(path));
+    return ret;
+}
+
+static inline int unlink(const char* path) {
+    return sys_unlink(path);
+}
+
+static inline int sys_rename(const char* oldpath, const char* newpath) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(21), "b"(oldpath), "c"(newpath));
+    return ret;
+}
+
+static inline int rename(const char* oldpath, const char* newpath) {
+    return sys_rename(oldpath, newpath);
+}
+
+static inline int sys_chdir(const char* path) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(22), "b"(path));
+    return ret;
+}
+
+static inline int chdir(const char* path) {
+    return sys_chdir(path);
+}
+
+static inline char* sys_getcwd(char* buf, unsigned int size) {
+    char* ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(23), "b"(buf), "c"(size));
+    return ret;
+}
+
+static inline char* getcwd(char* buf, unsigned int size) {
+    return sys_getcwd(buf, size);
+}
 
 static inline void print_uint(unsigned int n) {
     char buf[11]; int i = 10; buf[10] = '\0';
