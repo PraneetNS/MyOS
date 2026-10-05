@@ -108,15 +108,40 @@ void process_init_table(int use_kshell) {
 }
 
 process_t* process_spawn_by_name(const char* name, int parent_pid) {
-    const fs_entry_t* e = fs_find(name);
-    if (!e) return 0;
+    vnode_t* vn = 0;
+    if (vfs_resolve_path(name, "/", &vn) != 0 || !vn) {
+        char bin_path[64];
+        bin_path[0] = '/';
+        int l = 0;
+        while (name[l] && l < 60) {
+            bin_path[l + 1] = name[l];
+            l++;
+        }
+        bin_path[l + 1] = '\0';
+        if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
+            bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
+            l = 0;
+            while (name[l] && l < 50) {
+                bin_path[5 + l] = name[l];
+                l++;
+            }
+            bin_path[5 + l] = '\0';
+            if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
+                return 0;
+            }
+        }
+    }
 
-    uint32_t alloc_size = ((e->size_bytes + 511) / 512) * 512;
+    uint32_t size = vn->size;
+    if (size == 0) { vnode_unref(vn); return 0; }
+
+    uint32_t alloc_size = ((size + 511) / 512) * 512;
     uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
-    if (!buf) return 0;
+    if (!buf) { vnode_unref(vn); return 0; }
 
-    int n = fs_read_file(e, buf);
-    if (n < 0) { kfree(buf); return 0; }
+    int n = vn->ops->read(vn, 0, buf, size);
+    vnode_unref(vn);
+    if (n <= 0) { kfree(buf); return 0; }
 
     process_t* child = process_spawn_from_elf(name, buf, (uint32_t) n, parent_pid);
     kfree(buf);

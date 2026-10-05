@@ -178,8 +178,22 @@ static void syscall_handler(struct registers* regs) {
             const char* name = (const char*) regs->ebx;
             const char* const* uargv = (const char* const*) regs->ecx;
 
-            const fs_entry_t* e = fs_find(name);
-            if (!e) { regs->eax = (uint32_t)-1; break; }
+            process_t* me = scheduler_current();
+            vnode_t* vn = 0;
+            if (vfs_resolve_path(name, me->cwd, &vn) != 0 || !vn) {
+                char bin_path[64];
+                bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
+                int l = 0;
+                while (name[l] && l < 50) {
+                    bin_path[5 + l] = name[l];
+                    l++;
+                }
+                bin_path[5 + l] = '\0';
+                if (vfs_resolve_path(bin_path, me->cwd, &vn) != 0 || !vn) {
+                    regs->eax = (uint32_t)-1;
+                    break;
+                }
+            }
 
             /* Copy arguments from user space before tearing down address space */
             int argc = 0;
@@ -210,12 +224,13 @@ static void syscall_handler(struct registers* regs) {
             }
             kargv[argc] = 0;
 
-            uint32_t alloc_size = ((e->size_bytes + 511) / 512) * 512;
+            uint32_t alloc_size = ((vn->size + 511) / 512) * 512;
             uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
-            if (!buf) { regs->eax = (uint32_t)-1; break; }
+            if (!buf) { vnode_unref(vn); regs->eax = (uint32_t)-1; break; }
 
-            int n = fs_read_file(e, buf);
-            if (n < 0) { kfree(buf); regs->eax = (uint32_t)-1; break; }
+            int n = vn->ops->read(vn, 0, buf, vn->size);
+            vnode_unref(vn);
+            if (n <= 0) { kfree(buf); regs->eax = (uint32_t)-1; break; }
 
             /* Build the NEW program's address space fully before
                touching the old one -- if anything fails, the calling
@@ -234,7 +249,7 @@ static void syscall_handler(struct registers* regs) {
             }
             kfree(buf);
 
-            process_t* me = scheduler_current();
+            me = scheduler_current();
             vmm_destroy_address_space(&me->as); /* old program's memory reclaimed here */
             me->as = new_as;
             me->entry_point = entry;
