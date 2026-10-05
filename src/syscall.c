@@ -41,28 +41,17 @@ static void syscall_handler(struct registers* regs) {
     switch (regs->eax) {
         case SYS_WRITE: {
             int fd = (int) regs->ebx;
-            const char* buf = (const char*) regs->ecx;
+            const void* buf = (const void*) regs->ecx;
             uint32_t len = regs->edx;
 
             process_t* me = scheduler_current();
-            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd].in_use) {
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
                 regs->eax = (uint32_t)-1;
                 break;
             }
 
-            if (fd == 1 || fd == 2) {
-                uint32_t saved_eflags;
-                asm volatile ("pushf; pop %0; cli" : "=r"(saved_eflags));
-                for (uint32_t i = 0; i < len; i++) {
-                    terminal_putchar(buf[i]);
-                    serial_putc(buf[i]);
-                }
-                if (saved_eflags & 0x200) asm volatile ("sti");
-                regs->eax = len;
-            } else {
-                /* Regular files in MyFS are currently read-only */
-                regs->eax = (uint32_t)-1;
-            }
+            int n = vfs_write(me->fds[fd], buf, len);
+            regs->eax = (uint32_t) n;
             break;
         }
 
@@ -81,52 +70,54 @@ static void syscall_handler(struct registers* regs) {
             break;
 
         case SYS_OPEN: {
-            const char* name = (const char*) regs->ebx;
-            const fs_entry_t* e = fs_find(name);
-            if (!e) { regs->eax = (uint32_t)-1; break; }
-
+            const char* path = (const char*) regs->ebx;
             process_t* me = scheduler_current();
             int slot = -1;
-            for (int i = 3; i < MAX_FDS; i++) if (!me->fds[i].in_use) { slot = i; break; }
+            for (int i = 3; i < MAX_FDS; i++) {
+                if (!me->fds[i]) { slot = i; break; }
+            }
             if (slot < 0) { regs->eax = (uint32_t)-1; break; }
 
-            me->fds[slot].entry = e;
-            me->fds[slot].offset = 0;
-            me->fds[slot].in_use = 1;
+            vnode_t* vn = 0;
+            if (vfs_resolve_path(path, me->cwd, &vn) != 0 || !vn) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+
+            open_file_t* of = open_file_alloc(OPEN_FILE_VNODE, vn, O_RDONLY);
+            if (!of) {
+                vnode_unref(vn);
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+
+            me->fds[slot] = of;
             regs->eax = (uint32_t) slot;
             break;
         }
 
         case SYS_READ: {
             int fd = (int) regs->ebx;
-            uint8_t* buf = (uint8_t*) regs->ecx;
+            void* buf = (void*) regs->ecx;
             uint32_t len = regs->edx;
 
             process_t* me = scheduler_current();
-            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd].in_use) {
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
                 regs->eax = (uint32_t)-1;
                 break;
             }
 
-            if (fd == 0) {
-                /* fd 0 (stdin): keyboard line-buffered stdin */
-                int n = keyboard_read_line((char*)buf, len);
-                regs->eax = (uint32_t) n;
-            } else if (fd == 1 || fd == 2) {
-                regs->eax = (uint32_t)-1;
-            } else {
-                int n = fs_read_range(me->fds[fd].entry, me->fds[fd].offset, buf, len);
-                if (n > 0) me->fds[fd].offset += (uint32_t) n;
-                regs->eax = (uint32_t) n;
-            }
+            int n = vfs_read(me->fds[fd], buf, len);
+            regs->eax = (uint32_t) n;
             break;
         }
 
         case SYS_CLOSE: {
             int fd = (int) regs->ebx;
             process_t* me = scheduler_current();
-            if (fd >= 3 && fd < MAX_FDS) {
-                me->fds[fd].in_use = 0;
+            if (fd >= 3 && fd < MAX_FDS && me->fds[fd]) {
+                vfs_close(me->fds[fd]);
+                me->fds[fd] = 0;
                 regs->eax = 0;
             } else {
                 regs->eax = (uint32_t)-1;

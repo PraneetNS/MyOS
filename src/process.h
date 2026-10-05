@@ -12,13 +12,9 @@
 #define HEAP_BASE 0x900000u      /* 9MB -- clear of code at 0x800000 and the 0xC0000000 stack region */
 #define HEAP_MAX  (HEAP_BASE + 0x100000u) /* cap growth at 1MB per process */
 
-typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_EXITED } proc_state_t;
+#include "vfs.h"
 
-typedef struct {
-    const fs_entry_t* entry;
-    uint32_t offset;
-    int in_use;
-} fd_entry_t;
+typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_EXITED } proc_state_t;
 
 typedef struct process {
     address_space_t as;
@@ -35,7 +31,8 @@ typedef struct process {
     int ppid;
     int waiting_for_pid;        /* valid when state == PROC_WAITING */
 
-    fd_entry_t fds[MAX_FDS];    /* Stage 8: per-process open file table, backed by fs.c */
+    open_file_t* fds[MAX_FDS];  /* Stage 13: VFS open_file pointers, refcounted */
+    char cwd[64];               /* Current working directory */
 
     int is_forked;              /* Stage 9: resumes via resume_saved_state(&saved_regs), not process_trampoline */
     struct registers saved_regs;

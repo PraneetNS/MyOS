@@ -6,7 +6,7 @@
 .set CHECKSUM, -(MAGIC + ARCH + HEADER_LEN)
 
 /* --- Multiboot2 header: GRUB scans the first 32KB for this --- */
-.section .multiboot
+.section .multiboot, "a"
 .align 8
 header_start:
     .long MAGIC

@@ -23,4 +23,7 @@ int fs_read_file(const fs_entry_t* entry, uint8_t* buffer);
    actually read (0 at end-of-file), or -1 on error. */
 int fs_read_range(const fs_entry_t* entry, uint32_t offset, uint8_t* buffer, uint32_t maxlen);
 
+struct vnode;
+struct vnode* myfs_get_root_vnode(void);
+
 #endif
