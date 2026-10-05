@@ -11,6 +11,7 @@
 #include "vmm.h"
 #include "serial.h"
 #include "keyboard.h"
+#include "bcache.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -25,6 +26,7 @@
 #define SYS_EXEC       10
 #define SYS_WAIT       11
 #define SYS_SBRK       12
+#define SYS_SYNC       13
 
 extern void isr128(void); /* defined in isr.s */
 
@@ -308,6 +310,11 @@ static void syscall_handler(struct registers* regs) {
 
             me->heap_end = new_break;
             regs->eax = old_break;
+            break;
+        }
+
+        case SYS_SYNC: {
+            regs->eax = (uint32_t) bcache_sync();
             break;
         }
 

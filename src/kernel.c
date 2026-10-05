@@ -16,6 +16,7 @@
 
 #include "serial.h"
 #include "multiboot2.h"
+#include "bcache.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -79,6 +80,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     syscall_install();
     kprintf("[ok] Syscall interface installed (int 0x80)\n");
+
+    bcache_init();
+    kprintf("[ok] Buffer cache initialized\n");
 
     fs_init();
 
