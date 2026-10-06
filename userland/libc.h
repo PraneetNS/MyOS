@@ -327,6 +327,22 @@ static inline int fcntl(int fd, int cmd, ...) {
     return sys_fcntl(fd, cmd, arg);
 }
 
+static inline int sys_sleep(unsigned int seconds) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(27), "b"(seconds));
+    return ret;
+}
+
+static inline unsigned int sleep(unsigned int seconds) {
+    return (unsigned int) sys_sleep(seconds);
+}
+
+static inline unsigned int sys_ticks(void) {
+    unsigned int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(28));
+    return ret;
+}
+
 static inline void print_uint(unsigned int n) {
     char buf[11]; int i = 10; buf[10] = '\0';
     if (n == 0) { sys_write(1, "0", 1); return; }

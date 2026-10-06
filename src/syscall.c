@@ -14,6 +14,7 @@
 #include "bcache.h"
 #include "vfs.h"
 #include "errno.h"
+#include "timer.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -40,6 +41,8 @@
 #define SYS_DUP        24
 #define SYS_DUP2       25
 #define SYS_FCNTL      26
+#define SYS_SLEEP      27
+#define SYS_TICKS      28
 
 #define WNOHANG        1
 
@@ -883,6 +886,22 @@ static void syscall_handler(struct registers* regs) {
             } else {
                 regs->eax = (uint32_t) -EINVAL;
             }
+            break;
+        }
+
+        case SYS_SLEEP: {
+            uint32_t sec = regs->ebx;
+            uint32_t start = timer_get_ticks();
+            uint32_t target = start + sec * 100;
+            while (timer_get_ticks() < target) {
+                scheduler_yield();
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_TICKS: {
+            regs->eax = timer_get_ticks();
             break;
         }
 
