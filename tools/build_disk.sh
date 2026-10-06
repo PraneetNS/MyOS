@@ -40,5 +40,9 @@ echo "Hello from FAT16 on MyOS!" > /tmp/fat_hello.txt
 mcopy -i "$IMAGE" /tmp/fat_hello.txt "::/fat.txt"
 rm -f /tmp/fat_hello.txt
 
+python3 -c "print('LARGE_FILE_START_' + 'X'*4000 + '_LARGE_FILE_END')" > /tmp/large.txt
+mcopy -i "$IMAGE" /tmp/large.txt "::/large.txt"
+rm -f /tmp/large.txt
+
 echo "Disk image built successfully:"
 mdir -i "$IMAGE" ::

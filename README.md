@@ -551,48 +551,75 @@ properly (a temporary kernel mapping for high frames) before pushing
 memory usage much further, rather than continuing to rely on scale not
 yet having exposed it.
 
-## Stage 12 (done): Serial debug, stdin/stdout/stderr, argv/envp, userland shell, and test suite
+## Stage 13 (done): VFS + Writable FAT16 Filesystem
 
-Stage 12 transforms MyOS from an in-kernel demo loop into a true Unix-like userspace system with serial console, standard file descriptors, System V i386 argument passing, a ring-3 interactive shell, and automated headless test harnesses.
+Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-back buffer cache with ATA PIO writes, a complete read/write FAT16 filesystem driver, POSIX-style file system syscalls with user pointer validation, modular userland utilities (`ls`, `cat`, `echo`, `mkdir`, `rmdir`, `rm`, `cp`, `mv`, `touch`, `pwd`), a feature-rich userland shell with `/bin` PATH lookup and PID 1 respawn, and automated reboot persistence testing verified by host-side `fsck.fat`.
 
-### 1. Serial Debug & Headless Automation (Step 1)
-- **COM1 Driver (`src/serial.c`, `src/serial.h`)**: Initializes UART 16550 at `0x3F8` to 115200 baud, 8 data bits, no parity, 1 stop bit (8N1).
-- **Dual Console Mirroring**: All `kprintf` output, exception/fault dumps, and user-space outputs on stdout/stderr mirror to COM1 as well as VGA text mode.
-- **Headless Target (`make test`)**: Runs QEMU headlessly with `-serial stdio -display none -no-reboot` bounded by a 10s timeout.
-- **Boot Sentinel**: Prints `BOOT OK` upon completing kernel initialization so test runners can grep for boot success.
+### 1. Block Layer + ATA Write & Buffer Cache (Step 1)
+- **ATA LBA28 PIO Writes (`src/ata.c`, `src/ata.h`)**: Added `ata_write_sector()` utilizing ATA command `0x30` with `rep outsw`, plus ATA cache flush `0xE7` (`ata_flush()`).
+- **Buffer Cache (`src/bcache.c`, `src/bcache.h`)**: Implemented a 64-block (32KB) LRU buffer cache for 512-byte disk sectors:
+  - `bcache_read(lba, buf)` / `bcache_write(lba, buf)`
+  - Write-back policy with dirty flags (`bcache_sync()` flushes all dirty buffers and flushes the drive cache).
+  - Explicit synchronization on shutdown and process exit.
+- **`SYS_SYNC` (Syscall 13)**: Userspace `sync()` syscall flushing all dirty cache buffers to disk.
 
-### 2. Standard File Descriptors (stdin, stdout, stderr) (Step 2)
-- **Process FD Table**: Raised `MAX_FDS` to 16. Descriptors 0–2 are permanently reserved:
-  - **`fd 0` (stdin)**: Line-buffered keyboard and serial input.
-  - **`fd 1` (stdout)**: Console output (VGA text memory + COM1 serial).
-  - **`fd 2` (stderr)**: Diagnostic output (VGA text memory + COM1 serial).
-  - **`fd >= 3`**: Allocated dynamically by `sys_open()` for file access on disk.
-- **Blocking Input**: `sys_read(0, buf, len)` places the calling process in `PROC_WAITING` state until a complete line ending in `\n` is entered. Either the PS/2 keyboard interrupt (IRQ1) or the COM1 serial receiver buffer awakens waiting processes via `scheduler_wake_stdin_waiters()`.
-- **Syscall API Update**: Both `SYS_WRITE` and `SYS_READ` take `(fd, buf, len)` instead of implicit console streams. All userland binaries and `userland/libc.h` were updated accordingly.
+### 2. VFS Core Architecture (Step 2)
+- **Vnode & Filesystem Operations (`src/vfs.c`, `src/vfs.h`)**:
+  - `struct vnode`: Represents filesystem nodes (`VNODE_FILE`, `VNODE_DIR`, `VNODE_CONSOLE`, `VNODE_PIPE`) with reference counting, sizes, and driver operations pointers.
+  - `struct fs_ops`: Pluggable filesystem interface: `lookup`, `read`, `write`, `create`, `mkdir`, `unlink`, `rmdir`, `rename`, `readdir`, `truncate`, `stat`.
+  - Mount table supporting filesystem mounting at arbitrary paths (root mounted at `/`).
+- **Path Resolution**: `vfs_resolve_path()` and `vfs_resolve_parent()` resolve absolute and relative paths, normalizing `.`, `..`, and repeated slashes `/`.
+- **Open File Table & Refcounting**:
+  - `struct open_file`: Tracks `vnode*`, file offset, access flags (`O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`), and reference count.
+  - Processes share `open_file` entries across `fork()` (`refcount++`), preserve them across `exec()`, and decrement/free them on `close()` and `exit()`.
+  - File descriptors 0, 1, 2 map to shared `OPEN_FILE_CONSOLE` entries.
+- **Per-Process CWD**: Current working directory stored in each PCB (`process_t->cwd`), inherited on `fork()`.
 
-### 3. Argument Passing & ABI Stack Layout (Step 3)
-- **System V i386 ABI**: The ELF loader (`src/elf.c`) and `sys_exec` (`src/syscall.c`) construct the initial user stack at the top of memory (`0xBFFFF000`–`0xC0000000`):
-  1. String content for argument strings (`argv[0]`, `argv[1]`, ...).
-  2. 16-byte stack alignment padding.
-  3. `envp` NULL sentinel (`0x00000000`).
-  4. `argv` NULL sentinel (`0x00000000`).
-  5. Pointers to argument strings (`argv[i]`).
-  6. Argument count (`argc`) placed at `%esp`.
-- **C Runtime Startup (`userland/crt0.s`)**: Reads `argc` from `(%esp)` and `argv` from `4(%esp)`, aligns the stack to 16 bytes per the Sys V ABI requirement, calls `main(int argc, char** argv)`, and forwards the return value to `sys_exit()`.
-- **Exec Argument Preservation**: `sys_exec` copies userland argument strings into kernel buffers prior to destroying the existing address space.
+### 3. FAT16 Filesystem Driver (Step 3)
+- **FAT16 Driver (`src/fat16.c`, `src/fat16.h`)**: Full implementation of `fs_ops` for FAT16:
+  - BIOS Parameter Block (BPB) and Extended Boot Record parsing.
+  - File Allocation Table cluster allocation, chain reading, extending, and freeing.
+  - Root directory and hierarchical subdirectory traversal and entry allocation.
+  - 8.3 filename parsing and creation (case-insensitive matching, uppercase on-disk storage, skipping LFN entries).
+- **Disk Image Generator (`tools/build_disk.sh`)**: Formats 32MB raw image using `mkfs.fat -F 16`, creates `/bin`, and populates binaries and data files using `mcopy`.
 
-### 4. Userland Ring-3 Shell (`userland/sh.c`) (Step 4)
-- **Ring 3 Execution**: A standalone interactive shell runs entirely in ring 3 with privilege separation.
-- **Command Loop**: Emits prompt `sh$ `, reads input via `sys_read(0, ...)`, tokenizes arguments, and handles:
-  - Builtins: `help`, `ls`, `cd` (stub), `cat <file>`, `exit`.
-  - External executables: executes via `sys_fork()` + `sys_exec()` + `sys_wait()`.
-- **PID 1 Bootstrapping**: The kernel boots directly into `sh.elf` as PID 1, while PID 0 serves as the kernel idle task (`kernel_idle_task`).
-- **Debugging Boot Flag (`kshell`)**: The original in-kernel shell remains accessible by passing the `kshell` Multiboot2 command-line flag (available in `boot/grub.cfg`).
+### 4. POSIX Syscall Interface & Pointer Validation (Step 4)
+- **Syscall Suite**:
+  - `open(path, flags, mode)` with `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`
+  - `read(fd, buf, len)`, `write(fd, buf, len)`, `close(fd)`
+  - `lseek(fd, offset, whence)` with `SEEK_SET`, `SEEK_CUR`, `SEEK_END`
+  - `stat(path, st)`, `fstat(fd, st)`
+  - `getdents(fd, dirp, count)` for directory enumeration
+  - `mkdir(path, mode)`, `rmdir(path)`, `unlink(path)`, `rename(old, new)`
+  - `chdir(path)`, `getcwd(buf, size)`, `sync()`
+- **Memory Safety & Pointer Validation**:
+  - Strict validation of user buffers and strings: verifies addresses lie within user bounds (`[0x400000, 0xC0000000)`), validates page directory and table present/user bits, and verifies write permissions for output buffers.
+  - Returns negative errno codes (`-EFAULT`, `-ENOENT`, `-EEXIST`, `-ENOTEMPTY`, `-EBADF`, `-EISDIR`, `-ENOTDIR`, `-EINVAL`, etc.) defined in shared header `src/errno.h`.
+- **Userland Wrappers (`userland/libc.h`)**: Provides standard C function wrappers and structures (`struct stat`, `struct dirent`).
 
-### 5. Test Suite & Verification (Step 5)
-- **`userland/argtest.c`**: Verifies `argc` and `argv` argument parsing by printing each argument back to stdout.
-- **`tools/test_boot.sh`**: Headless test runner feeding commands into QEMU serial stdio and asserting `BOOT OK`, shell responsiveness, and `argtest` argument echoing.
-- **Zero Regressions**: All previous stage userland programs (`hello.elf`, `reader.elf`, `forktest.elf`, `forkexec.elf`, `heaptest.elf`, `badwrite.elf`) run without errors.
+### 5. Modular Userland Utilities & Shell (Step 5)
+- **Independent Binaries (`userland/*.c`)**:
+  - `ls.c`: Lists directory entries; supports `-l` showing directory tags and file sizes.
+  - `cat.c`: Concatenates and prints file contents from path arguments or stdin.
+  - `echo.c`: Echoes arguments to stdout.
+  - `mkdir.c` / `rmdir.c`: Creates and removes directories.
+  - `rm.c`: Unlinks files via `unlink()`.
+  - `cp.c`: Copies files across paths.
+  - `mv.c`: Moves/renames files via `rename()`.
+  - `touch.c`: Creates empty files.
+  - `pwd.c`: Prints current working directory.
+- **Enhanced Shell (`userland/sh.c`)**:
+  - Dynamic prompt displaying current working directory (`sh:<cwd>$ `).
+  - Builtin `cd` modifying process working directory via `chdir()`.
+  - Builtins `cat` and `ls` removed in favor of external binaries.
+  - PATH lookup: checks cwd, then `<cmd>.elf`, then `/bin/<cmd>`, and `/bin/<cmd>.elf`.
+- **PID 1 Shell Respawn**: If PID 1 (`sh.elf`) exits, the kernel detects it, logs a message, and respawns `sh.elf`, ensuring the system never dies.
+
+### 6. Automated Verification & Test Harness (Step 6)
+- **Extended Test Suite (`tools/test_boot.sh`)**:
+  - **Session 1 (Commands & Regression Suite)**: Verifies `pwd`, `mkdir /tmp`, `cd /tmp`, `touch`, `cp`, `mv`, `rm`, `ls -l`, multi-cluster read of 4KB+ `/large.txt`, `fstest` (edge cases: `ENOENT`, `EEXIST`, `ENOTEMPTY`, `EFAULT`, EOF, multi-cluster write/read-back, nested directories, and sync), `hello.elf`, `argtest.elf`, `forktest.elf`, `forkexec.elf`, `heaptest.elf`, `badwrite.elf`, and shell exit respawn.
+  - **Session 2 (Persistence Across Reboot)**: Boots a second QEMU instance with the *same* `disk.img` without rebuilding and asserts files created in Session 1 (`/persist.txt` and `/nest1/nest2/test.txt`) retain their data.
+  - **Session 3 (Host Filesystem Integrity)**: Runs host-side `fsck.fat -n disk.img` to ensure zero filesystem corruption, and cross-checks content via `mdir` and `mtype`.
 
 ---
 
@@ -601,27 +628,62 @@ Stage 12 transforms MyOS from an in-kernel demo loop into a true Unix-like users
 | Syscall | Vector | ID (`eax`) | Arguments | Return (`eax`) | Description |
 |---|---|---|---|---|---|
 | `SYS_EXIT` | `0x80` | `0` | none | does not return | Terminates the calling process, wakes waiting parent, and reclaims address space. |
-| `SYS_WRITE` | `0x80` | `1` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes written (`-1` on error) | Writes buffer to specified file descriptor (1 and 2 write to VGA + COM1 serial). |
+| `SYS_WRITE` | `0x80` | `1` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes written (negative errno on error) | Writes buffer to specified file descriptor (fds 1 & 2 write to VGA + COM1 serial). |
 | `SYS_GETPID` | `0x80` | `2` | none | PID (`uint32_t`) | Returns caller's process ID. |
-| `SYS_OPEN` | `0x80` | `3` | `ebx` = filename | fd >= 3 (`-1` on error) | Opens file on MyFS, allocating the lowest available file descriptor (>= 3). |
-| `SYS_READ` | `0x80` | `4` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes read (`-1` on error) | Reads from fd (fd 0 blocks until a line is available). |
-| `SYS_CLOSE` | `0x80` | `5` | `ebx` = fd | `0` on success, `-1` on error | Closes file descriptor (descriptors 0–2 are reserved). |
+| `SYS_OPEN` | `0x80` | `3` | `ebx` = path, `ecx` = flags, `edx` = mode | fd >= 3 (negative errno on error) | Opens or creates a file on the VFS with specified access flags. |
+| `SYS_READ` | `0x80` | `4` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes read (negative errno on error) | Reads from fd (fd 0 reads keyboard/serial line buffer). |
+| `SYS_CLOSE` | `0x80` | `5` | `ebx` = fd | `0` on success, negative errno on error | Closes file descriptor and decrements open_file refcount. |
 | `SYS_SPAWN_WAIT` | `0x80` | `6` | `ebx` = filename | child exit code / 0 | Legacy synchronous spawn-and-wait syscall. |
-| `SYS_FORK` | `0x80` | `7` | none | child PID in parent, `0` in child | Clones current process address space, file table, and registers. |
+| `SYS_FORK` | `0x80` | `7` | none | child PID in parent, `0` in child | Clones current process address space, open_files, cwd, and CPU state. |
 | `SYS_PIPE_WRITE` | `0x80` | `8` | `ebx` = buf, `ecx` = len | bytes written | Writes data to kernel pipe buffer and wakes blocked readers. |
 | `SYS_PIPE_READ` | `0x80` | `9` | `ebx` = buf, `ecx` = maxlen | bytes read | Reads data from kernel pipe buffer; blocks if pipe is empty. |
 | `SYS_EXEC` | `0x80` | `10` | `ebx` = filename, `ecx` = argv | `-1` on failure, no return on success | Replaces caller's address space with target ELF and passes `argv`. |
 | `SYS_WAIT` | `0x80` | `11` | `ebx` = pid | `0` | Blocks caller until process `pid` terminates. |
 | `SYS_SBRK` | `0x80` | `12` | `ebx` = increment | previous heap break | Adjusts program break by signed `increment` bytes; pages in memory on demand. |
+| `SYS_SYNC` | `0x80` | `13` | none | `0` | Flushes all dirty buffer cache blocks to disk and flushes drive cache. |
+| `SYS_LSEEK` | `0x80` | `14` | `ebx` = fd, `ecx` = offset, `edx` = whence | new offset (negative errno on error) | Repositions open file offset (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`). |
+| `SYS_STAT` | `0x80` | `15` | `ebx` = path, `ecx` = stat* | `0` on success, negative errno on error | Retrieves file metadata by pathname. |
+| `SYS_FSTAT` | `0x80` | `16` | `ebx` = fd, `ecx` = stat* | `0` on success, negative errno on error | Retrieves file metadata by file descriptor. |
+| `SYS_GETDENTS` | `0x80` | `17` | `ebx` = fd, `ecx` = dirent*, `edx` = count | bytes read / 0 at EOF (negative errno on error) | Reads directory entries sequentially into dirent structure. |
+| `SYS_MKDIR` | `0x80` | `18` | `ebx` = path, `ecx` = mode | `0` on success, negative errno on error | Creates a new directory at specified path. |
+| `SYS_RMDIR` | `0x80` | `19` | `ebx` = path | `0` on success, negative errno on error | Removes an empty directory. |
+| `SYS_UNLINK` | `0x80` | `20` | `ebx` = path | `0` on success, negative errno on error | Unlinks and deletes a file from directory. |
+| `SYS_RENAME` | `0x80` | `21` | `ebx` = oldpath, `ecx` = newpath | `0` on success, negative errno on error | Renames a file or moves it within the filesystem. |
+| `SYS_CHDIR` | `0x80` | `22` | `ebx` = path | `0` on success, negative errno on error | Updates caller's current working directory (PCB `cwd`). |
+| `SYS_GETCWD` | `0x80` | `23` | `ebx` = buf, `ecx` = size | pointer to buf (negative errno on error) | Retrieves caller's current working directory path string. |
 
 ---
 
-## Stage 13 (next): what's left
+## Design Decisions & Known Limitations
 
-1. **A real per-instance `pipe()` syscall** -- replacing Stage 9's single global buffer with fd-integrated, per-call pipes.
-2. **A writable filesystem** -- MyFS is still read-only, built entirely at compile time.
-3. **Signals** and **zombie/reap semantics** for `wait()`.
-4. **Fixing the sub-16MB physical-frame constraint** -- temporary kernel mapping for high frames to remove the 16MB ceiling on physical allocations.
+### Design Decisions
+1. **Buffer Cache LRU with Write-Back**:
+   A 64-entry x 512-byte buffer cache minimizes disk I/O latency for frequent sector reads/writes (FAT tables and directory sectors). All dirty buffers are flushed to ATA media on `sync()`, reboot, and process exit.
+2. **Open File Refcounting & Fork Sharing**:
+   File descriptors point to dynamically allocated `open_file_t` structures with reference counts. Forking duplicate descriptor tables increments open_file references, preserving POSIX offset sharing semantics.
+3. **8.3 FAT Filenames**:
+   Filenames follow 8.3 FAT convention (case-insensitive lookup, uppercase on disk). Long filename (LFN) entries are safely ignored during directory scans.
+4. **VFS Extensibility for IPC**:
+   The `open_file` structure is designed with an `open_file_type_t` tag (`OPEN_FILE_VNODE`, `OPEN_FILE_CONSOLE`, `OPEN_FILE_PIPE`), enabling seamless migration of pipes into standard file descriptors in Stage 14.
+5. **Strict User Pointer Validation**:
+   Kernel checks all userspace pointers against mapped pages in the calling process's page directory to prevent kernel memory corruption and panic on malformed user inputs.
+
+### Known Limitations
+1. **LFN (Long File Names)**:
+   Names longer than 8 characters plus 3 extension characters are truncated or skipped; full VFAT LFN Unicode parsing is deferred.
+2. **Sub-16MB Physical Allocation Ceiling**:
+   Because identity mapping is currently configured for the first 16MB of physical RAM, physical allocations remain under 16MB until high-memory temporary mapping is added.
+3. **Global Pipe vs. Pipe Syscall**:
+   IPC still uses a single global ring buffer (`SYS_PIPE_READ`/`SYS_PIPE_WRITE`); migration to `pipe(int fds[2])` integrated with the VFS table is scheduled for Stage 14.
+
+---
+
+## Stage 14 (next): what's left
+
+1. **VFS-Integrated `pipe(int fds[2])` Syscall** -- replacing global pipes with per-instance VFS file descriptors and shell redirection (`|`, `>`, `<`).
+2. **Signals** (`SIGINT`, `SIGKILL`, `SIGCHLD`) and signal handling frames.
+3. **Zombie and reap semantics** for `waitpid()`.
+4. **Fixing the sub-16MB physical-frame constraint** via high-memory recursive/temporary page table mapping.
 
 ## Notes on the toolchain choices made here
 
@@ -634,3 +696,4 @@ Stage 12 transforms MyOS from an in-kernel demo loop into a true Unix-like users
   complexity to front-load. Getting comfortable in protected mode first,
   then transitioning to long mode once paging is understood, is the more
   common learning path.
+
