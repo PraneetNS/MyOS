@@ -1,6 +1,6 @@
 /* sh.c -- Userland Shell running in Ring 3.
-   Prompts, reads a line via SYS_READ on fd 0 (blocking), tokenizes arguments,
-   handles builtins (cd, exit, help, cat), and otherwise fork + exec + wait. */
+   Prompts with cwd (sh:/dir$ ), reads commands, handles builtins (cd, exit, help),
+   and executes external binaries via fork + exec + wait with /bin PATH lookup. */
 
 #include "libc.h"
 
@@ -48,8 +48,15 @@ int main(int argc, char** argv) {
     char* cmd_args[16];
 
     for (;;) {
-        const char* prompt = "sh$ ";
-        sys_write(1, prompt, strlen(prompt));
+        char cwd[64];
+        if (!getcwd(cwd, sizeof(cwd))) {
+            cwd[0] = '/';
+            cwd[1] = '\0';
+        }
+
+        sys_write(1, "sh:", 3);
+        sys_write(1, cwd, strlen(cwd));
+        sys_write(1, "$ ", 2);
 
         int n = sys_read(0, line, sizeof(line) - 1);
         if (n <= 0) continue;
@@ -70,44 +77,22 @@ int main(int argc, char** argv) {
             const char* help_msg =
                 "Builtins:\n"
                 "  help          show this message\n"
-                "  ls            list files on disk\n"
-                "  cd <dir>      change directory (stub)\n"
-                "  cat <file>    display file contents\n"
+                "  cd <dir>      change directory\n"
                 "  exit          exit the shell\n"
-                "External binaries (loaded via fork + exec + wait):\n"
-                "  hello.elf, argtest.elf, reader.elf, forktest.elf, etc.\n";
+                "External binaries (loaded via fork + exec + wait from cwd or /bin):\n"
+                "  ls, cat, echo, mkdir, rmdir, rm, cp, mv, touch, pwd, hello, argtest, etc.\n";
             sys_write(1, help_msg, strlen(help_msg));
-        } else if (strcmp(cmd_args[0], "ls") == 0) {
-            const char* ls_msg =
-                "hello.txt  hello.elf  badwrite.elf  reader.elf\n"
-                "parent.elf  forktest.elf  producer.elf  consumer.elf\n"
-                "forkexec.elf  heaptest.elf  argtest.elf  sh.elf\n";
-            sys_write(1, ls_msg, strlen(ls_msg));
         } else if (strcmp(cmd_args[0], "cd") == 0) {
-            const char* cd_msg = "cd: not supported on read-only filesystem\n";
-            sys_write(1, cd_msg, strlen(cd_msg));
+            const char* target = (cmd_argc >= 2) ? cmd_args[1] : "/";
+            if (chdir(target) != 0) {
+                sys_write(1, "cd: ", 4);
+                sys_write(1, target, strlen(target));
+                sys_write(1, ": No such file or directory\n", 28);
+            }
         } else if (strcmp(cmd_args[0], "exit") == 0) {
             const char* exit_msg = "Exiting shell.\n";
             sys_write(1, exit_msg, strlen(exit_msg));
             sys_exit();
-        } else if (strcmp(cmd_args[0], "cat") == 0) {
-            if (cmd_argc < 2) {
-                const char* cat_usage = "usage: cat <file>\n";
-                sys_write(1, cat_usage, strlen(cat_usage));
-            } else {
-                int fd = sys_open(cmd_args[1], O_RDONLY, 0);
-                if (fd < 0) {
-                    const char* cat_err = "cat: cannot open file\n";
-                    sys_write(1, cat_err, strlen(cat_err));
-                } else {
-                    char buf[64];
-                    int r;
-                    while ((r = sys_read(fd, buf, sizeof(buf))) > 0) {
-                        sys_write(1, buf, (unsigned int) r);
-                    }
-                    sys_close(fd);
-                }
-            }
         } else {
             /* External binary: fork + exec + wait */
             int pid = sys_fork();
@@ -116,26 +101,44 @@ int main(int argc, char** argv) {
                 sys_write(1, err, strlen(err));
             } else if (pid == 0) {
                 /* Child: try exec directly */
-                int ret = sys_exec(cmd_args[0], (const char* const*)cmd_args);
-                if (ret < 0) {
-                    /* If not found, try appending .elf */
-                    char elf_name[64];
-                    int l = 0;
-                    while (cmd_args[0][l] && l < 58) {
-                        elf_name[l] = cmd_args[0][l];
+                sys_exec(cmd_args[0], (const char* const*)cmd_args);
+
+                /* Try appending .elf */
+                char elf_name[64];
+                int l = 0;
+                while (cmd_args[0][l] && l < 58) {
+                    elf_name[l] = cmd_args[0][l];
+                    l++;
+                }
+                elf_name[l] = '.'; elf_name[l+1] = 'e';
+                elf_name[l+2] = 'l'; elf_name[l+3] = 'f';
+                elf_name[l+4] = '\0';
+                sys_exec(elf_name, (const char* const*)cmd_args);
+
+                /* Try in /bin/ */
+                if (cmd_args[0][0] != '/') {
+                    char bin_path[64];
+                    bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
+                    l = 0;
+                    while (cmd_args[0][l] && l < 50) {
+                        bin_path[5 + l] = cmd_args[0][l];
                         l++;
                     }
-                    elf_name[l] = '.'; elf_name[l+1] = 'e';
-                    elf_name[l+2] = 'l'; elf_name[l+3] = 'f';
-                    elf_name[l+4] = '\0';
-                    sys_exec(elf_name, (const char* const*)cmd_args);
+                    bin_path[5 + l] = '\0';
+                    sys_exec(bin_path, (const char* const*)cmd_args);
 
-                    const char* not_found = "sh: command not found: ";
-                    sys_write(1, not_found, strlen(not_found));
-                    sys_write(1, cmd_args[0], strlen(cmd_args[0]));
-                    sys_write(1, "\n", 1);
-                    sys_exit();
+                    /* Try /bin/<cmd>.elf */
+                    bin_path[5 + l] = '.'; bin_path[5 + l + 1] = 'e';
+                    bin_path[5 + l + 2] = 'l'; bin_path[5 + l + 3] = 'f';
+                    bin_path[5 + l + 4] = '\0';
+                    sys_exec(bin_path, (const char* const*)cmd_args);
                 }
+
+                const char* not_found = "sh: command not found: ";
+                sys_write(1, not_found, strlen(not_found));
+                sys_write(1, cmd_args[0], strlen(cmd_args[0]));
+                sys_write(1, "\n", 1);
+                sys_exit();
             } else {
                 /* Parent: wait for child */
                 sys_wait(pid);

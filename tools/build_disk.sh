@@ -14,12 +14,20 @@ mkfs.fat -F 16 -n "MYOS" "$IMAGE"
 echo "Creating /bin directory..."
 mmd -i "$IMAGE" "::/bin"
 
+echo "Building userland..."
+bash userland/build.sh
+
 echo "Copying userland executables..."
 for elf in userland/*.elf; do
     if [ -f "$elf" ]; then
         name=$(basename "$elf")
+        base="${name%.elf}"
         mcopy -i "$IMAGE" "$elf" "::/$name"
         mcopy -i "$IMAGE" "$elf" "::/bin/$name"
+        if [ "$base" != "$name" ]; then
+            mcopy -i "$IMAGE" "$elf" "::/$base"
+            mcopy -i "$IMAGE" "$elf" "::/bin/$base"
+        fi
     fi
 done
 
