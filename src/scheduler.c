@@ -169,21 +169,21 @@ void scheduler_wait_for(int child_pid) {
     wait_or_idle(me);
 }
 
-#define PIPE_WAIT_SENTINEL (-2) /* distinct from any real pid (>=0) and from -1 ("not waiting") */
-
-void scheduler_wait_for_pipe(void) {
+void scheduler_wait_channel(void* channel) {
     process_t* me = current;
     me->state = PROC_WAITING;
-    me->waiting_for_pid = PIPE_WAIT_SENTINEL;
+    me->wait_channel = channel;
     wait_or_idle(me);
+    me->wait_channel = 0;
 }
 
-void scheduler_wake_pipe_waiters(void) {
+void scheduler_wake_channel(void* channel) {
+    if (!channel) return;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
-        if (p->state == PROC_WAITING && p->waiting_for_pid == PIPE_WAIT_SENTINEL) {
+        if (p && p->state == PROC_WAITING && p->wait_channel == channel) {
             p->state = PROC_READY;
-            p->waiting_for_pid = -1;
+            p->wait_channel = 0;
         }
     }
 }

@@ -124,16 +124,14 @@ static inline int fork(void) {
     return sys_fork();
 }
 
-static inline unsigned int sys_pipe_write(const void* buf, unsigned int len) {
-    unsigned int ret;
-    asm volatile ("int $0x80" : "=a"(ret) : "a"(8), "b"(buf), "c"(len));
+static inline int sys_pipe(int fds[2]) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(8), "b"(fds));
     return ret;
 }
 
-static inline unsigned int sys_pipe_read(void* buf, unsigned int maxlen) {
-    unsigned int ret;
-    asm volatile ("int $0x80" : "=a"(ret) : "a"(9), "b"(buf), "c"(maxlen));
-    return ret;
+static inline int pipe(int fds[2]) {
+    return sys_pipe(fds);
 }
 
 static inline int sys_exec(const char* name, const char* const* argv) {

@@ -1,38 +1,68 @@
-/* consumer.c -- reads from the global pipe via sys_pipe_read(), which
-   BLOCKS (a real scheduler suspend, not a busy-wait) whenever the pipe
-   is empty. Run this concurrently with producer.elf (launch consumer
-   first from the shell, then producer, while consumer is still
-   running) to see it genuinely wait for data rather than polling. */
+/* consumer.c -- demonstrates pipe() and fork(): parent creates a pipe,
+   forks a producer child, and reads messages from the pipe. */
 
 #include "libc.h"
 
+static void delay(void) {
+    for (volatile unsigned int i = 0; i < 6000000; i++) { }
+}
+
 int main(int argc, char** argv) {
     (void) argc; (void) argv;
-    const char* m1 = "[consumer] pid ";
-    const char* m2 = " starting, will read 3 messages from the pipe (blocking).\n";
-    sys_write(1, m1, strlen(m1));
-    print_uint((unsigned int) sys_getpid());
-    sys_write(1, m2, strlen(m2));
-
-    for (int i = 0; i < 3; i++) {
-        const char* mw1 = "[consumer] waiting for message ";
-        const char* mw2 = "...\n";
-        sys_write(1, mw1, strlen(mw1));
-        print_uint((unsigned int) (i + 1));
-        sys_write(1, mw2, strlen(mw2));
-
-        char buf[64];
-        unsigned int n = sys_pipe_read(buf, sizeof(buf) - 1);
-        buf[n] = '\0';
-
-        const char* mg = "[consumer] got: ";
-        sys_write(1, mg, strlen(mg));
-        sys_write(1, buf, strlen(buf));
+    int fds[2];
+    if (pipe(fds) < 0) {
+        const char* err = "[consumer] pipe failed\n";
+        sys_write(1, err, strlen(err));
+        sys_exit();
     }
 
-    const char* md = "[consumer] done, exiting.\n";
-    sys_write(1, md, strlen(md));
-    sys_exit();
+    int pid = fork();
+    if (pid < 0) {
+        const char* err = "[consumer] fork failed\n";
+        sys_write(1, err, strlen(err));
+        sys_exit();
+    }
 
-    for (;;) { }
+    if (pid == 0) {
+        /* Child: producer */
+        close(fds[0]); /* close read end */
+        const char* messages[3] = {
+            "message 1 from child producer\n",
+            "message 2 from child producer\n",
+            "message 3 from child producer\n"
+        };
+        for (int i = 0; i < 3; i++) {
+            delay();
+            const char* m = messages[i];
+            write(fds[1], m, strlen(m));
+        }
+        close(fds[1]); /* signals EOF to consumer */
+        sys_exit();
+    } else {
+        /* Parent: consumer */
+        close(fds[1]); /* close write end */
+        const char* m1 = "[consumer] pid ";
+        const char* m2 = " starting, will read from pipe (blocking).\n";
+        sys_write(1, m1, strlen(m1));
+        print_uint((unsigned int) sys_getpid());
+        sys_write(1, m2, strlen(m2));
+
+        char buf[64];
+        for (;;) {
+            int n = read(fds[0], buf, sizeof(buf) - 1);
+            if (n <= 0) break;
+            buf[n] = '\0';
+            const char* mg = "[consumer] got: ";
+            sys_write(1, mg, strlen(mg));
+            sys_write(1, buf, strlen(buf));
+        }
+
+        close(fds[0]);
+        wait(pid);
+        const char* md = "[consumer] done, exiting.\n";
+        sys_write(1, md, strlen(md));
+        sys_exit();
+    }
+
+    return 0;
 }

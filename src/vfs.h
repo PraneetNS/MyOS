@@ -86,10 +86,13 @@ typedef struct vnode {
 typedef struct open_file {
     open_file_type_t type;
     vnode_t* vnode;
+    void* pipe;               /* pipe_t* when type == OPEN_FILE_PIPE */
     uint32_t offset;
     int flags;
     int refcount;
 } open_file_t;
+
+int vfs_get_active_open_files(void);
 
 void vfs_init(void);
 int vfs_mount(const char* path, vnode_t* root_vnode);

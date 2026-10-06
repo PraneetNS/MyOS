@@ -30,6 +30,7 @@ typedef struct process {
     int pid;
     int ppid;
     int waiting_for_pid;        /* valid when state == PROC_WAITING */
+    void* wait_channel;         /* Stage 14: sleep channel for blocked pipes/events */
 
     open_file_t* fds[MAX_FDS];  /* Stage 13: VFS open_file pointers, refcounted */
     char cwd[64];               /* Current working directory */

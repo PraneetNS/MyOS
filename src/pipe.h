@@ -3,27 +3,24 @@
 
 #include <stdint.h>
 
-/* A deliberately simple IPC primitive: ONE global, fixed-size ring
-   buffer in the kernel, not a general pipe() syscall returning fd
-   pairs. A real OS's pipes are per-pipe-instance and integrate with
-   the fd table (see SYS_OPEN/READ/CLOSE in syscall.c for what that
-   would look like); this is the simplest thing that demonstrates real
-   blocking producer/consumer IPC between processes without that
-   additional plumbing. */
+#define PIPE_CAPACITY 4096
+
+typedef struct pipe {
+    uint8_t* buffer;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t count;
+    int reader_count;
+    int writer_count;
+    int read_wait;   /* address used as wait channel for blocked readers */
+    int write_wait;  /* address used as wait channel for blocked writers */
+} pipe_t;
 
 void pipe_init(void);
-
-/* Writes `len` bytes into the pipe. Never blocks -- if the ring buffer
-   fills up, remaining bytes are simply dropped (documented limitation;
-   a real implementation would block the writer too). Returns bytes
-   actually written. Wakes any process blocked in pipe_read(). */
-uint32_t pipe_write(const uint8_t* data, uint32_t len);
-
-/* Reads up to `maxlen` bytes from the pipe into `buf`. If the pipe is
-   currently empty, BLOCKS the calling process (via the scheduler) until
-   a writer provides data, then returns whatever became available.
-   Returns bytes read (always > 0 -- this call blocks rather than ever
-   returning 0/EOF, since the pipe never "closes"). */
-uint32_t pipe_read(uint8_t* buf, uint32_t maxlen);
+int pipe_create(pipe_t** out_pipe);
+int pipe_read(pipe_t* p, void* buf, uint32_t count);
+int pipe_write(pipe_t* p, const void* buf, uint32_t count);
+void pipe_close_end(pipe_t* p, int flags);
+int pipe_get_active_count(void);
 
 #endif
