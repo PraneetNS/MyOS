@@ -20,6 +20,13 @@
 #define F_GETFL     3
 #define F_SETFL     4
 
+/* Waitpid constants and macros */
+#define WNOHANG        1
+#define WEXITSTATUS(s) (((s) >> 8) & 0xff)
+#define WTERMSIG(s)    ((s) & 0x7f)
+#define WIFEXITED(s)   (WTERMSIG(s) == 0)
+#define WIFSIGNALED(s) (((unsigned int)(((s) & 0x7f) + 1) >> 1) > 0)
+
 /* Seek constants */
 #define SEEK_SET    0
 #define SEEK_CUR    1
@@ -68,13 +75,16 @@ static inline int write(int fd, const void* buf, unsigned int len) {
     return sys_write(fd, buf, len);
 }
 
+static inline void sys_exit_status(int status) {
+    asm volatile ("int $0x80" : : "a"(0), "b"(status));
+}
+
 static inline void sys_exit(void) {
-    asm volatile ("int $0x80" : : "a"(0));
+    sys_exit_status(0);
 }
 
 static inline void exit(int status) {
-    (void) status;
-    sys_exit();
+    sys_exit_status(status);
 }
 
 static inline int sys_getpid(void) {
@@ -117,11 +127,7 @@ static inline int close(int fd) {
     return sys_close(fd);
 }
 
-static inline int sys_spawn_wait(const char* name) {
-    int ret;
-    asm volatile ("int $0x80" : "=a"(ret) : "a"(6), "b"(name));
-    return ret;
-}
+
 
 static inline int sys_fork(void) {
     int ret;
@@ -153,12 +159,18 @@ static inline int exec(const char* name, const char* const* argv) {
     return sys_exec(name, argv);
 }
 
-static inline void sys_wait(int pid) {
-    asm volatile ("int $0x80" : : "a"(11), "b"(pid));
+static inline int sys_waitpid(int pid, int* status, int options) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(11), "b"(pid), "c"(status), "d"(options));
+    return ret;
 }
 
-static inline void wait(int pid) {
-    sys_wait(pid);
+static inline int waitpid(int pid, int* status, int options) {
+    return sys_waitpid(pid, status, options);
+}
+
+static inline int wait(int* status) {
+    return waitpid(-1, status, 0);
 }
 
 static inline void* sys_sbrk(int increment) {

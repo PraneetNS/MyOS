@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
         }
 
         close(fds[0]);
-        wait(pid);
+        waitpid(pid, 0, 0);
         const char* md = "[consumer] done, exiting.\n";
         sys_write(1, md, strlen(md));
         sys_exit();

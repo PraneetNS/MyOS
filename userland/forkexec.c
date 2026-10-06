@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
         print_uint((unsigned int) child);
         sys_write(1, mp3, strlen(mp3));
 
-        sys_wait(child);
+        waitpid(child, 0, 0);
 
         const char* mp4 = "[forkexec] parent: child finished. That output above\n";
         const char* mp5 = "[forkexec] parent: came from hello.elf, not forkexec --\n";
