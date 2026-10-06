@@ -68,6 +68,10 @@ static void init_fds(process_t* p) {
     p->fds[1] = vfs_get_console_stdout();
     p->fds[2] = vfs_get_console_stderr();
 
+    for (int i = 0; i < MAX_FDS; i++) {
+        p->fd_flags[i] = 0;
+    }
+
     for (int i = 3; i < MAX_FDS; i++) {
         p->fds[i] = 0;
     }
@@ -207,6 +211,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 void process_destroy(process_t* p) {
     if (p->state == PROC_UNUSED) return;
     for (int i = 0; i < MAX_FDS; i++) {
+        p->fd_flags[i] = 0;
         if (p->fds[i]) {
             open_file_unref(p->fds[i]);
             p->fds[i] = 0;
@@ -251,9 +256,10 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;
 
-    /* Inherit open files with shared reference counts */
+    /* Inherit open files with shared reference counts and copy descriptor flags */
     for (int i = 0; i < MAX_FDS; i++) {
         p->fds[i] = parent->fds[i];
+        p->fd_flags[i] = parent->fd_flags[i];
         if (p->fds[i]) {
             open_file_ref(p->fds[i]);
         }

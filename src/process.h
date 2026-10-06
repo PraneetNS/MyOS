@@ -33,6 +33,7 @@ typedef struct process {
     void* wait_channel;         /* Stage 14: sleep channel for blocked pipes/events */
 
     open_file_t* fds[MAX_FDS];  /* Stage 13: VFS open_file pointers, refcounted */
+    uint8_t fd_flags[MAX_FDS];  /* Stage 14: descriptor flags (FD_CLOEXEC) */
     char cwd[64];               /* Current working directory */
 
     int is_forked;              /* Stage 9: resumes via resume_saved_state(&saved_regs), not process_trampoline */

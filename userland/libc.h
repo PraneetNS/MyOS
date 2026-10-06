@@ -10,6 +10,15 @@
 #define O_CREAT     0x0040
 #define O_TRUNC     0x0200
 #define O_APPEND    0x0400
+#define O_CLOEXEC   0x80000
+
+#define FD_CLOEXEC  1
+
+#define F_DUPFD     0
+#define F_GETFD     1
+#define F_SETFD     2
+#define F_GETFL     3
+#define F_SETFL     4
 
 /* Seek constants */
 #define SEEK_SET    0
@@ -270,6 +279,40 @@ static inline char* sys_getcwd(char* buf, unsigned int size) {
 
 static inline char* getcwd(char* buf, unsigned int size) {
     return sys_getcwd(buf, size);
+}
+
+static inline int sys_dup(int fd) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(24), "b"(fd));
+    return ret;
+}
+
+static inline int dup(int fd) {
+    return sys_dup(fd);
+}
+
+static inline int sys_dup2(int oldfd, int newfd) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(25), "b"(oldfd), "c"(newfd));
+    return ret;
+}
+
+static inline int dup2(int oldfd, int newfd) {
+    return sys_dup2(oldfd, newfd);
+}
+
+static inline int sys_fcntl(int fd, int cmd, int arg) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(26), "b"(fd), "c"(cmd), "d"(arg));
+    return ret;
+}
+
+static inline int fcntl(int fd, int cmd, ...) {
+    __builtin_va_list ap;
+    __builtin_va_start(ap, cmd);
+    int arg = __builtin_va_arg(ap, int);
+    __builtin_va_end(ap);
+    return sys_fcntl(fd, cmd, arg);
 }
 
 static inline void print_uint(unsigned int n) {
