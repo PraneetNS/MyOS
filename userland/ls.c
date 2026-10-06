@@ -25,9 +25,9 @@ int main(int argc, char** argv) {
     if (fd < 0) {
         const char* err1 = "ls: cannot access '";
         const char* err2 = "': No such file or directory\n";
-        write(1, err1, strlen(err1));
-        write(1, path, strlen(path));
-        write(1, err2, strlen(err2));
+        write(2, err1, strlen(err1));
+        write(2, path, strlen(path));
+        write(2, err2, strlen(err2));
         return 1;
     }
 
