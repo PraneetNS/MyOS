@@ -38,6 +38,9 @@
 #define SYS_RENAME     21
 #define SYS_CHDIR      22
 #define SYS_GETCWD     23
+#define SYS_DUP        24
+#define SYS_DUP2       25
+#define SYS_FCNTL      26
 
 #define PAGE_PRESENT 0x1
 #define PAGE_WRITE   0x2
@@ -214,6 +217,7 @@ static void syscall_handler(struct registers* regs) {
             }
 
             me->fds[slot] = of;
+            me->fd_flags[slot] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
             regs->eax = (uint32_t) slot;
             break;
         }
@@ -243,6 +247,7 @@ static void syscall_handler(struct registers* regs) {
             if (fd >= 0 && fd < MAX_FDS && me->fds[fd]) {
                 open_file_t* of = me->fds[fd];
                 me->fds[fd] = 0;
+                me->fd_flags[fd] = 0;
                 vfs_close(of);
                 regs->eax = 0;
             } else {
@@ -323,7 +328,9 @@ static void syscall_handler(struct registers* regs) {
             of_write->pipe = p;
 
             me->fds[fd0] = of_read;
+            me->fd_flags[fd0] = 0;
             me->fds[fd1] = of_write;
+            me->fd_flags[fd1] = 0;
 
             user_fds[0] = fd0;
             user_fds[1] = fd1;
@@ -418,6 +425,17 @@ static void syscall_handler(struct registers* regs) {
             kfree(buf);
 
             me = scheduler_current();
+
+            /* Close file descriptors marked with FD_CLOEXEC */
+            for (int fd = 0; fd < MAX_FDS; fd++) {
+                if (me->fds[fd] && (me->fd_flags[fd] & FD_CLOEXEC)) {
+                    open_file_t* of = me->fds[fd];
+                    me->fds[fd] = 0;
+                    me->fd_flags[fd] = 0;
+                    vfs_close(of);
+                }
+            }
+
             vmm_destroy_address_space(&me->as);
             me->as = new_as;
             me->entry_point = entry;
@@ -739,6 +757,97 @@ static void syscall_handler(struct registers* regs) {
                 buf[i] = me->cwd[i];
             }
             regs->eax = (uint32_t) buf;
+            break;
+        }
+
+        case SYS_DUP: {
+            int fd = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            int new_fd = -1;
+            for (int i = 0; i < MAX_FDS; i++) {
+                if (!me->fds[i]) {
+                    new_fd = i;
+                    break;
+                }
+            }
+            if (new_fd < 0) {
+                regs->eax = (uint32_t) -EMFILE;
+                break;
+            }
+            me->fds[new_fd] = me->fds[fd];
+            me->fd_flags[new_fd] = 0;
+            open_file_ref(me->fds[new_fd]);
+            regs->eax = (uint32_t) new_fd;
+            break;
+        }
+
+        case SYS_DUP2: {
+            int oldfd = (int) regs->ebx;
+            int newfd = (int) regs->ecx;
+            process_t* me = scheduler_current();
+            if (oldfd < 0 || oldfd >= MAX_FDS || !me->fds[oldfd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            if (newfd < 0 || newfd >= MAX_FDS) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            if (oldfd == newfd) {
+                regs->eax = (uint32_t) newfd;
+                break;
+            }
+            if (me->fds[newfd]) {
+                open_file_t* old_of = me->fds[newfd];
+                me->fds[newfd] = 0;
+                me->fd_flags[newfd] = 0;
+                vfs_close(old_of);
+            }
+            me->fds[newfd] = me->fds[oldfd];
+            me->fd_flags[newfd] = 0;
+            open_file_ref(me->fds[newfd]);
+            regs->eax = (uint32_t) newfd;
+            break;
+        }
+
+        case SYS_FCNTL: {
+            int fd = (int) regs->ebx;
+            int cmd = (int) regs->ecx;
+            int arg = (int) regs->edx;
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            if (cmd == F_GETFD) {
+                regs->eax = (uint32_t) me->fd_flags[fd];
+            } else if (cmd == F_SETFD) {
+                me->fd_flags[fd] = (uint8_t) (arg & FD_CLOEXEC);
+                regs->eax = 0;
+            } else if (cmd == F_DUPFD) {
+                int min_fd = arg >= 0 ? arg : 0;
+                int new_fd = -1;
+                for (int i = min_fd; i < MAX_FDS; i++) {
+                    if (!me->fds[i]) {
+                        new_fd = i;
+                        break;
+                    }
+                }
+                if (new_fd < 0) {
+                    regs->eax = (uint32_t) -EMFILE;
+                } else {
+                    me->fds[new_fd] = me->fds[fd];
+                    me->fd_flags[new_fd] = 0;
+                    open_file_ref(me->fds[new_fd]);
+                    regs->eax = (uint32_t) new_fd;
+                }
+            } else {
+                regs->eax = (uint32_t) -EINVAL;
+            }
             break;
         }
 
