@@ -6,10 +6,15 @@
    - $? exit status tracking and expansion (e.g. echo $?)
    - Builtins: cd, exit, help, status
    - Redirections: < file, > file, >> file, 2> file, 2>&1
-   - External binaries executed via fork + exec + waitpid with /bin PATH lookup
+   - Pipelines: a | b | c (N stages)
+   - Background jobs: cmd & (non-blocking, reaped via WNOHANG on next prompt)
+   - PATH lookup (/bin/)
 */
 
 #include "libc.h"
+
+#define MAX_STAGES 8
+#define MAX_ARGS 16
 
 static int strcmp(const char* a, const char* b) {
     while (*a && *b) {
@@ -145,7 +150,7 @@ static int tokenize_cmd(const char* str, char* tokens[], int max_tokens, char* b
 }
 
 typedef struct {
-    char* argv[16];
+    char* argv[MAX_ARGS];
     int argc;
     char* stdin_file;
     char* stdout_file;
@@ -199,7 +204,7 @@ static int parse_command(char* tokens[], int ntokens, command_t* cmd) {
         } else if (strcmp(tokens[i], "2>&1") == 0) {
             cmd->stderr_to_stdout = 1;
         } else {
-            if (cmd->argc < 15) {
+            if (cmd->argc < MAX_ARGS - 1) {
                 cmd->argv[cmd->argc++] = tokens[i];
             }
         }
@@ -291,8 +296,8 @@ static void exec_command(const command_t* cmd) {
     exit(127);
 }
 
-static int execute_single_command(command_t* cmd, int* last_status) {
-    if (cmd->argc == 0) return 0;
+static int run_builtin(const command_t* cmd, int* last_status) {
+    if (cmd->argc == 0) return 1;
 
     if (strcmp(cmd->argv[0], "help") == 0) {
         const char* help_msg =
@@ -305,7 +310,7 @@ static int execute_single_command(command_t* cmd, int* last_status) {
             "  ls, cat, echo, mkdir, rmdir, rm, cp, mv, touch, pwd, etc.\n";
         write(1, help_msg, strlen(help_msg));
         *last_status = 0;
-        return 0;
+        return 1;
     }
 
     if (strcmp(cmd->argv[0], "cd") == 0) {
@@ -318,7 +323,7 @@ static int execute_single_command(command_t* cmd, int* last_status) {
         } else {
             *last_status = 0;
         }
-        return 0;
+        return 1;
     }
 
     if (strcmp(cmd->argv[0], "status") == 0) {
@@ -326,7 +331,7 @@ static int execute_single_command(command_t* cmd, int* last_status) {
         int_to_str(*last_status, sbuf);
         write(1, sbuf, strlen(sbuf));
         write(1, "\n", 1);
-        return 0;
+        return 1;
     }
 
     if (strcmp(cmd->argv[0], "exit") == 0) {
@@ -343,22 +348,134 @@ static int execute_single_command(command_t* cmd, int* last_status) {
         exit(code);
     }
 
-    int pid = fork();
-    if (pid < 0) {
-        write(2, "sh: fork failed\n", 16);
-        *last_status = 1;
-        return 1;
+    return 0; /* not a builtin */
+}
+
+static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
+    if (ntok == 0) return;
+
+    int is_background = 0;
+    if (ntok > 0 && strcmp(tokens[ntok - 1], "&") == 0) {
+        is_background = 1;
+        ntok--;
+        tokens[ntok] = 0;
+    }
+    if (ntok == 0) return;
+
+    /* Split stages on '|' */
+    int stage_starts[MAX_STAGES];
+    int stage_lens[MAX_STAGES];
+    int num_stages = 0;
+    stage_starts[0] = 0;
+
+    for (int i = 0; i < ntok; i++) {
+        if (strcmp(tokens[i], "|") == 0) {
+            stage_lens[num_stages] = i - stage_starts[num_stages];
+            num_stages++;
+            if (num_stages < MAX_STAGES) {
+                stage_starts[num_stages] = i + 1;
+            } else {
+                write(2, "sh: too many pipeline stages\n", 29);
+                *last_status = 1;
+                return;
+            }
+        }
+    }
+    stage_lens[num_stages] = ntok - stage_starts[num_stages];
+    num_stages++;
+
+    command_t cmds[MAX_STAGES];
+    for (int s = 0; s < num_stages; s++) {
+        if (parse_command(&tokens[stage_starts[s]], stage_lens[s], &cmds[s]) != 0) {
+            *last_status = 1;
+            return;
+        }
+        if (cmds[s].argc == 0) {
+            write(2, "sh: invalid empty command in pipeline\n", 38);
+            *last_status = 1;
+            return;
+        }
     }
 
-    if (pid == 0) {
-        exec_command(cmd);
-        exit(127);
+    /* Single builtin command in foreground runs in parent */
+    if (num_stages == 1 && !is_background) {
+        if (run_builtin(&cmds[0], last_status)) {
+            return;
+        }
     }
 
-    int raw_status = 0;
-    waitpid(pid, &raw_status, 0);
-    *last_status = WIFEXITED(raw_status) ? WEXITSTATUS(raw_status) : raw_status;
-    return 0;
+    /* Create pipes for N stages */
+    int pipes[MAX_STAGES - 1][2];
+    for (int i = 0; i < num_stages - 1; i++) {
+        if (pipe(pipes[i]) < 0) {
+            write(2, "sh: pipe failed\n", 16);
+            for (int j = 0; j < i; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+            *last_status = 1;
+            return;
+        }
+    }
+
+    int pids[MAX_STAGES];
+    for (int s = 0; s < num_stages; s++) {
+        pids[s] = fork();
+        if (pids[s] < 0) {
+            write(2, "sh: fork failed\n", 16);
+            for (int j = 0; j < num_stages - 1; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+            *last_status = 1;
+            return;
+        }
+
+        if (pids[s] == 0) {
+            /* Child process: connect pipes */
+            if (s > 0) {
+                dup2(pipes[s - 1][0], 0);
+            }
+            if (s < num_stages - 1) {
+                dup2(pipes[s][1], 1);
+            }
+
+            /* Close all pipe file descriptors in child */
+            for (int j = 0; j < num_stages - 1; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+
+            /* Check if builtin inside pipeline */
+            if (run_builtin(&cmds[s], last_status)) {
+                exit(*last_status);
+            }
+
+            exec_command(&cmds[s]);
+            exit(127);
+        }
+    }
+
+    /* Parent process: close all pipe descriptors */
+    for (int j = 0; j < num_stages - 1; j++) {
+        close(pipes[j][0]);
+        close(pipes[j][1]);
+    }
+
+    if (is_background) {
+        write(1, "[", 1);
+        print_uint((unsigned int) pids[num_stages - 1]);
+        write(1, "]\n", 2);
+    } else {
+        /* Wait for all children; status is last stage's exit code */
+        for (int s = 0; s < num_stages; s++) {
+            int raw_status = 0;
+            waitpid(pids[s], &raw_status, 0);
+            if (s == num_stages - 1) {
+                *last_status = WIFEXITED(raw_status) ? WEXITSTATUS(raw_status) : raw_status;
+            }
+        }
+    }
 }
 
 int main(int argc, char** argv) {
@@ -370,10 +487,14 @@ int main(int argc, char** argv) {
 
     char line[256];
     char token_buf[512];
-    char* tokens[32];
+    char* tokens[64];
     int last_status = 0;
 
     for (;;) {
+        /* Non-blocking reap of any background or orphaned zombies before next prompt */
+        int bg_status = 0;
+        while (waitpid(-1, &bg_status, WNOHANG) > 0) { }
+
         char cwd[64];
         if (!getcwd(cwd, sizeof(cwd))) {
             cwd[0] = '/';
@@ -414,12 +535,9 @@ int main(int argc, char** argv) {
             char saved = *end;
             *end = '\0';
 
-            int ntok = tokenize_cmd(cur, tokens, 32, token_buf, sizeof(token_buf), last_status);
+            int ntok = tokenize_cmd(cur, tokens, 64, token_buf, sizeof(token_buf), last_status);
             if (ntok > 0) {
-                command_t cmd;
-                if (parse_command(tokens, ntok, &cmd) == 0) {
-                    execute_single_command(&cmd, &last_status);
-                }
+                execute_pipeline(tokens, ntok, &last_status);
             }
 
             if (saved == ';') {
