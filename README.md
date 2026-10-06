@@ -623,22 +623,58 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 
 ---
 
+## Stage 14 (done): Pipes, dup/dup2, fcntl, waitpid, shell pipelines, and filters
+
+- **Kernel Pipes as File Descriptors (`SYS_PIPE`, ID 8)**:
+  - Replaced the legacy single global pipe with dynamically allocated `pipe_t` objects (`src/pipe.c`, `src/pipe.h`).
+  - 4KB ring buffers allocated via `kmalloc`, tracked by `reader_count` and `writer_count`.
+  - Blocked readers sleep on `read_wait` channel until data arrives or all writers close; empty pipe with 0 writers returns 0 (EOF).
+  - Blocked writers sleep on `write_wait` channel until buffer space opens up; writing with 0 readers returns `-EPIPE`.
+  - `pipe(int fds[2])` installs two distinct `open_file_t` entries (`OPEN_FILE_PIPE`, read and write) in the calling process's descriptor table.
+  - Pipe lifetimes track `open_file` refcounts, not raw fd table slots: `fork()` and `dup()` increment open_file references without double-counting reader/writer counts.
+  - Kernel asserts and serial logging monitor open_file and pipe refcounts against going negative or leaking.
+- **`dup()` (ID 24), `dup2()` (ID 25), and `fcntl()` (ID 26)**:
+  - `SYS_DUP(fd)` duplicates an open file into the lowest available fd slot.
+  - `SYS_DUP2(old, new)` closes `new` if currently open, and aliases `old` onto `new` with `open_file_ref()`. Replacing fds 0, 1, 2 is fully supported.
+  - `SYS_FCNTL(fd, cmd, arg)` implements `F_GETFD`, `F_SETFD`, and `F_DUPFD`.
+  - Added per-descriptor `FD_CLOEXEC` flag array in PCB and `O_CLOEXEC` in `SYS_OPEN`. Descriptors marked `FD_CLOEXEC` are closed automatically across `SYS_EXEC`.
+- **`waitpid()` with Exit Status (ID 11)**:
+  - `SYS_WAITPID(pid, status, options)` supports waiting for specific children (`pid > 0`) or any child (`pid == -1`).
+  - Processes exit into `PROC_ZOMBIE` state, preserving their exit code in `pcb->exit_code`.
+  - Reaping process frees zombie PCB, stack, and address space, storing `(exit_code & 0xff) << 8` into userspace `*status`.
+  - Orphaned children are automatically reparented to PID 1.
+  - Implemented `WNOHANG` for non-blocking status polling and deleted the legacy `SYS_SPAWN_WAIT`.
+- **Shell Redirections, Pipelines, and Quotes (`userland/sh.c`)**:
+  - Full redirection support: `< file`, `> file`, `>> file` (append), `2> file`, `2>&1`.
+  - Multi-stage pipelines: `a | b | c ...` supporting up to 8 stages with inter-stage pipes, clean child fd substitution via `dup2`, and parent waiting for all stages with `$?` tracking the last command.
+  - Background execution (`&`) with non-blocking zombie reaping (`waitpid(-1, &status, WNOHANG)`) before each prompt turn.
+  - Robust tokenizer supporting single quotes (`'...'`), double quotes (`"..."`), backslash escapes, and `$?` exit status variable expansion.
+  - Command chaining via semicolon `;`.
+- **Userland Filter Utilities (`userland/`)**:
+  - `wc` (-l, -w, -c), `head` (-n), `tail` (-n), `grep` (fixed string, -v, -n, -i), `sort` (in-memory quicksort), `uniq`, `tee`, `yes` (backpressure testing), `hexdump`, `true`, `false`, `sleep` (`SYS_SLEEP` ID 27, `SYS_TICKS` ID 28), and `diff`.
+  - `stress.elf`: Runs 50 iterations of `pipe() + fork() + exec("true") + waitpid()` and verifies physical frame count returns to baseline (`SYS_FREE_FRAMES` ID 29) with zero memory or descriptor leaks.
+- **Automated Verification (`tools/test_boot.sh`)**:
+  - **Session 1**: Core boot, shell, file utilities, multi-cluster reads, VFS edge-case regression suite.
+  - **Session 2**: Persistence across QEMU reboot on the same disk image.
+  - **Session 3**: Comprehensive Stage 14 test suite: redirection `>`, `>>`, `<`; pipes with `wc -l`; `yes | head -n 5` EPIPE termination; 4-stage pipeline `ls /bin | grep elf | sort | head -n 3`; `tee` and `diff`; `false; echo $?` and `true; echo $?`; stderr redirection `2>`; >64KB transfer through 4KB ring buffer (`cat /big.txt | wc -c`); and 50-iteration zero-leak stress test.
+  - **Session 4**: Host-side `fsck.fat -n disk.img` verification and `mtype` cross-check.
+
+---
+
 ## Syscall Reference Table
 
 | Syscall | Vector | ID (`eax`) | Arguments | Return (`eax`) | Description |
 |---|---|---|---|---|---|
-| `SYS_EXIT` | `0x80` | `0` | none | does not return | Terminates the calling process, wakes waiting parent, and reclaims address space. |
-| `SYS_WRITE` | `0x80` | `1` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes written (negative errno on error) | Writes buffer to specified file descriptor (fds 1 & 2 write to VGA + COM1 serial). |
+| `SYS_EXIT` | `0x80` | `0` | `ebx` = status | does not return | Terminates caller, saves exit status, moves to `PROC_ZOMBIE`, and reparents children to PID 1. |
+| `SYS_WRITE` | `0x80` | `1` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes written (negative errno on error) | Writes buffer to specified file descriptor (file, console, or pipe). |
 | `SYS_GETPID` | `0x80` | `2` | none | PID (`uint32_t`) | Returns caller's process ID. |
-| `SYS_OPEN` | `0x80` | `3` | `ebx` = path, `ecx` = flags, `edx` = mode | fd >= 3 (negative errno on error) | Opens or creates a file on the VFS with specified access flags. |
-| `SYS_READ` | `0x80` | `4` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes read (negative errno on error) | Reads from fd (fd 0 reads keyboard/serial line buffer). |
+| `SYS_OPEN` | `0x80` | `3` | `ebx` = path, `ecx` = flags, `edx` = mode | fd >= 3 (negative errno on error) | Opens or creates a file on the VFS with specified access flags (`O_CLOEXEC` supported). |
+| `SYS_READ` | `0x80` | `4` | `ebx` = fd, `ecx` = buf, `edx` = len | bytes read (negative errno on error) | Reads from fd (file, console stdin, or pipe). |
 | `SYS_CLOSE` | `0x80` | `5` | `ebx` = fd | `0` on success, negative errno on error | Closes file descriptor and decrements open_file refcount. |
-| `SYS_SPAWN_WAIT` | `0x80` | `6` | `ebx` = filename | child exit code / 0 | Legacy synchronous spawn-and-wait syscall. |
-| `SYS_FORK` | `0x80` | `7` | none | child PID in parent, `0` in child | Clones current process address space, open_files, cwd, and CPU state. |
-| `SYS_PIPE_WRITE` | `0x80` | `8` | `ebx` = buf, `ecx` = len | bytes written | Writes data to kernel pipe buffer and wakes blocked readers. |
-| `SYS_PIPE_READ` | `0x80` | `9` | `ebx` = buf, `ecx` = maxlen | bytes read | Reads data from kernel pipe buffer; blocks if pipe is empty. |
-| `SYS_EXEC` | `0x80` | `10` | `ebx` = filename, `ecx` = argv | `-1` on failure, no return on success | Replaces caller's address space with target ELF and passes `argv`. |
-| `SYS_WAIT` | `0x80` | `11` | `ebx` = pid | `0` | Blocks caller until process `pid` terminates. |
+| `SYS_FORK` | `0x80` | `7` | none | child PID in parent, `0` in child | Clones current process address space, open_files (refcount++), cwd, and CPU registers. |
+| `SYS_PIPE` | `0x80` | `8` | `ebx` = int fds[2] | `0` on success, negative errno on error | Creates a 4KB unidirectional IPC pipe and populates read fd (`fds[0]`) and write fd (`fds[1]`). |
+| `SYS_EXEC` | `0x80` | `10` | `ebx` = filename, `ecx` = argv | negative errno on error, does not return on success | Replaces caller's address space with target ELF, closes `FD_CLOEXEC` descriptors, and passes `argv`. |
+| `SYS_WAITPID` | `0x80` | `11` | `ebx` = pid, `ecx` = status*, `edx` = options | reaped PID / 0 on WNOHANG (negative errno on error) | Waits for child process termination, stores exit code in `*status`, and reclaims zombie resources. |
 | `SYS_SBRK` | `0x80` | `12` | `ebx` = increment | previous heap break | Adjusts program break by signed `increment` bytes; pages in memory on demand. |
 | `SYS_SYNC` | `0x80` | `13` | none | `0` | Flushes all dirty buffer cache blocks to disk and flushes drive cache. |
 | `SYS_LSEEK` | `0x80` | `14` | `ebx` = fd, `ecx` = offset, `edx` = whence | new offset (negative errno on error) | Repositions open file offset (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`). |
@@ -651,39 +687,48 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 | `SYS_RENAME` | `0x80` | `21` | `ebx` = oldpath, `ecx` = newpath | `0` on success, negative errno on error | Renames a file or moves it within the filesystem. |
 | `SYS_CHDIR` | `0x80` | `22` | `ebx` = path | `0` on success, negative errno on error | Updates caller's current working directory (PCB `cwd`). |
 | `SYS_GETCWD` | `0x80` | `23` | `ebx` = buf, `ecx` = size | pointer to buf (negative errno on error) | Retrieves caller's current working directory path string. |
+| `SYS_DUP` | `0x80` | `24` | `ebx` = fd | new fd (negative errno on error) | Duplicates fd into lowest available descriptor slot with shared open_file ref. |
+| `SYS_DUP2` | `0x80` | `25` | `ebx` = oldfd, `ecx` = newfd | `newfd` (negative errno on error) | Closes `newfd` if open and duplicates `oldfd` onto `newfd`. |
+| `SYS_FCNTL` | `0x80` | `26` | `ebx` = fd, `ecx` = cmd, `edx` = arg | cmd result (negative errno on error) | Descriptor control (`F_GETFD`, `F_SETFD`, `F_DUPFD`). |
+| `SYS_SLEEP` | `0x80` | `27` | `ebx` = seconds | `0` | Yields CPU until the requested number of seconds has elapsed. |
+| `SYS_TICKS` | `0x80` | `28` | none | timer ticks (`uint32_t`) | Returns PIT timer ticks since boot. |
+| `SYS_FREE_FRAMES` | `0x80` | `29` | none | free physical frames (`uint32_t`) | Returns count of available physical 4KB memory frames. |
 
 ---
 
 ## Design Decisions & Known Limitations
 
 ### Design Decisions
-1. **Buffer Cache LRU with Write-Back**:
-   A 64-entry x 512-byte buffer cache minimizes disk I/O latency for frequent sector reads/writes (FAT tables and directory sectors). All dirty buffers are flushed to ATA media on `sync()`, reboot, and process exit.
-2. **Open File Refcounting & Fork Sharing**:
-   File descriptors point to dynamically allocated `open_file_t` structures with reference counts. Forking duplicate descriptor tables increments open_file references, preserving POSIX offset sharing semantics.
-3. **8.3 FAT Filenames**:
-   Filenames follow 8.3 FAT convention (case-insensitive lookup, uppercase on disk). Long filename (LFN) entries are safely ignored during directory scans.
-4. **VFS Extensibility for IPC**:
-   The `open_file` structure is designed with an `open_file_type_t` tag (`OPEN_FILE_VNODE`, `OPEN_FILE_CONSOLE`, `OPEN_FILE_PIPE`), enabling seamless migration of pipes into standard file descriptors in Stage 14.
-5. **Strict User Pointer Validation**:
-   Kernel checks all userspace pointers against mapped pages in the calling process's page directory to prevent kernel memory corruption and panic on malformed user inputs.
+1. **Pipes as First-Class VFS Open Files**:
+   Kernel pipes are represented via `open_file_t` with `OPEN_FILE_PIPE` type. Closing either end unrefs the open_file; when both reader and writer open_files reach zero references, the pipe ring buffer and metadata are freed.
+2. **Open File Refcounting & Fork/Dup Sharing**:
+   File descriptors point to dynamically allocated `open_file_t` structures. Forking and `dup`/`dup2` increment open_file references, allowing child and parent to share file offsets and pipe ends cleanly.
+3. **Wait Queues for Pipe Synchronization**:
+   Blocked readers and writers sleep on dedicated wait channels within the pipe struct (`read_wait` and `write_wait`). When buffer space changes or pipe ends close, the opposite wait channel is awakened.
+4. **Shell Architecture**:
+   The userland shell parses pipelines and redirections, allocating pipes upfront, cloning via `fork()`, applying `dup2()` and closing unused descriptors before `exec()`. Background jobs run asynchronously and zombies are reaped via non-blocking `waitpid()` with `WNOHANG`.
+5. **Buffer Cache LRU with Write-Back**:
+   A 64-entry x 512-byte buffer cache minimizes disk I/O latency for frequent sector reads/writes. Dirty buffers are flushed to ATA media on `sync()`, reboot, and process exit.
+6. **Strict User Pointer Validation**:
+   Kernel validates all userspace pointers against mapped pages in the calling process's page directory to prevent kernel memory corruption.
 
 ### Known Limitations
-1. **LFN (Long File Names)**:
-   Names longer than 8 characters plus 3 extension characters are truncated or skipped; full VFAT LFN Unicode parsing is deferred.
-2. **Sub-16MB Physical Allocation Ceiling**:
+1. **Signals (SIGPIPE, SIGCHLD, SIGINT)**:
+   Signal delivery is deferred to a future stage. Writing to a pipe with no readers returns `-EPIPE` instead of sending `SIGPIPE`.
+2. **Job Control**:
+   Background jobs run asynchronously with `&`, but full POSIX job control (`Ctrl+Z`, `fg`, `bg`, terminal process groups) is not yet implemented.
+3. **Sub-16MB Physical Allocation Ceiling**:
    Because identity mapping is currently configured for the first 16MB of physical RAM, physical allocations remain under 16MB until high-memory temporary mapping is added.
-3. **Global Pipe vs. Pipe Syscall**:
-   IPC still uses a single global ring buffer (`SYS_PIPE_READ`/`SYS_PIPE_WRITE`); migration to `pipe(int fds[2])` integrated with the VFS table is scheduled for Stage 14.
+4. **LFN (Long File Names)**:
+   Filenames follow 8.3 FAT conventions; full VFAT LFN Unicode parsing is deferred.
 
 ---
 
-## Stage 14 (next): what's left
+## Stage 15 (next): what's left
 
-1. **VFS-Integrated `pipe(int fds[2])` Syscall** -- replacing global pipes with per-instance VFS file descriptors and shell redirection (`|`, `>`, `<`).
-2. **Signals** (`SIGINT`, `SIGKILL`, `SIGCHLD`) and signal handling frames.
-3. **Zombie and reap semantics** for `waitpid()`.
-4. **Fixing the sub-16MB physical-frame constraint** via high-memory recursive/temporary page table mapping.
+1. **Signals (`SIGINT`, `SIGTERM`, `SIGKILL`, `SIGCHLD`, `SIGPIPE`)** and signal handling trampolines.
+2. **Terminal Process Groups & Job Control** (`tcsetpgrp`, `fg`, `bg`, `Ctrl+C`, `Ctrl+Z`).
+3. **Fixing the sub-16MB physical-frame constraint** via high-memory recursive/temporary page table mapping.
 
 ## Notes on the toolchain choices made here
 

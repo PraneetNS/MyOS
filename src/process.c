@@ -10,11 +10,26 @@
 #include "serial.h"
 #include "keyboard.h"
 
+int respawn_shell_needed = 0;
+
 void kernel_idle_task(void) {
     for (;;) {
         while (serial_received()) {
             char c = serial_read();
             keyboard_handle_char(c);
+        }
+        if (respawn_shell_needed) {
+            int old_pid = respawn_shell_needed;
+            respawn_shell_needed = 0;
+            process_t* old_sh = process_find_by_pid(old_pid);
+            if (old_sh) {
+                process_destroy(old_sh);
+            }
+            kprintf("[init] shell exited, respawning sh.elf...\n");
+            process_t* sh = process_spawn_by_name("sh.elf", 0);
+            if (sh) {
+                kprintf("[init] respawned sh.elf (PID %d)\n", sh->pid);
+            }
         }
         scheduler_yield();
         asm volatile ("sti; hlt");

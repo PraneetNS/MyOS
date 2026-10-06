@@ -169,11 +169,16 @@ static void to_dos_name(const char* src, char* dst) {
     }
 }
 
+static char to_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return (char)(c - 'A' + 'a');
+    return c;
+}
+
 static void from_dos_name(const char* src, char* dst) {
     int len = 0;
     for (int i = 0; i < 8; i++) {
         if (src[i] == ' ') break;
-        dst[len++] = src[i];
+        dst[len++] = to_lower(src[i]);
     }
     int has_ext = 0;
     for (int i = 8; i < 11; i++) {
@@ -183,7 +188,7 @@ static void from_dos_name(const char* src, char* dst) {
         dst[len++] = '.';
         for (int i = 8; i < 11; i++) {
             if (src[i] == ' ') break;
-            dst[len++] = src[i];
+            dst[len++] = to_lower(src[i]);
         }
     }
     dst[len] = '\0';

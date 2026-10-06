@@ -343,6 +343,12 @@ static inline unsigned int sys_ticks(void) {
     return ret;
 }
 
+static inline unsigned int sys_free_frames(void) {
+    unsigned int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(29));
+    return ret;
+}
+
 static inline void print_uint(unsigned int n) {
     char buf[11]; int i = 10; buf[10] = '\0';
     if (n == 0) { sys_write(1, "0", 1); return; }
