@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
         }
 
         close(fds[1]); /* signals EOF to consumer */
-        wait(pid);
+        waitpid(pid, 0, 0);
         const char* md = "[producer] done, exiting.\n";
         sys_write(1, md, strlen(md));
         sys_exit();

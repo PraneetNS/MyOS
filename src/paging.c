@@ -47,7 +47,7 @@ static void page_fault_handler(struct registers* regs) {
            supervisor-only in every process's page directory, so this
            fault is expected and recoverable, not a bug. */
         kprintf("Process terminated (illegal memory access).\n");
-        scheduler_exit_current(); /* never returns */
+        scheduler_exit_current(139); /* never returns */
     }
 
     kprintf("Kernel-mode page fault -- this is a real kernel bug. System halted.\n");

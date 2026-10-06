@@ -96,6 +96,7 @@ void process_init_table(int use_kshell) {
     shell->ppid = -1;
     shell->waiting_for_pid = -1;
     shell->wait_channel = 0;
+    shell->exit_code = 0;
     shell->is_forked = 0;
     shell->heap_end = HEAP_BASE;
     shell->heap_mapped_up_to = HEAP_BASE;
@@ -195,6 +196,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->ppid = parent_pid;
     p->waiting_for_pid = -1;
     p->wait_channel = 0;
+    p->exit_code = 0;
     p->is_forked = 0;
     p->heap_end = HEAP_BASE;
     p->heap_mapped_up_to = HEAP_BASE;
@@ -222,6 +224,7 @@ void process_destroy(process_t* p) {
     if (p->kernel_stack_base) { kfree(p->kernel_stack_base); p->kernel_stack_base = 0; }
     p->waiting_for_pid = -1;
     p->wait_channel = 0;
+    p->exit_code = 0;
     p->state = PROC_UNUSED;
 }
 
@@ -252,6 +255,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->ppid = parent->pid;
     p->waiting_for_pid = -1;
     p->wait_channel = 0;
+    p->exit_code = 0;
 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;

@@ -141,7 +141,8 @@ int main(int argc, char** argv) {
                 sys_exit();
             } else {
                 /* Parent: wait for child */
-                sys_wait(pid);
+                int status = 0;
+                waitpid(pid, &status, 0);
             }
         }
     }

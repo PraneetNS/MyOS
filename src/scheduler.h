@@ -14,7 +14,7 @@ void scheduler_tick(void);
    current process down via process_destroy() and switches to whatever
    process is next in the round-robin rotation (always at least the
    shell, which never exits). Never returns. */
-void scheduler_exit_current(void);
+void scheduler_exit_current(int exit_status);
 
 /* The process currently executing -- used by process.c's trampoline to
    find its own entry point/stack on a brand-new process's first run. */

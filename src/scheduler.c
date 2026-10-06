@@ -43,7 +43,7 @@ static void enter_process(process_t* next) {
 static void wake_waiters_for(int pid) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
-        if (p->state == PROC_WAITING && p->waiting_for_pid == pid) {
+        if (p && p->state == PROC_WAITING && (p->waiting_for_pid == pid || p->waiting_for_pid == -1)) {
             p->state = PROC_READY;
             p->waiting_for_pid = -1;
         }
@@ -104,23 +104,48 @@ void scheduler_start(void) {
     for (;;) asm volatile ("hlt"); /* unreachable */
 }
 
-void scheduler_exit_current(void) {
+void scheduler_exit_current(int exit_status) {
     process_t* p = current;
     int idx = process_index(p);
     int exiting_pid = p->pid;
-    p->state = PROC_EXITED;
 
     if (exiting_pid == 1) {
         bcache_sync();
     }
 
-    wake_waiters_for(exiting_pid); /* let any parent blocked in sys_spawn_wait proceed */
+    /* Reparent children to PID 1 (init / shell) */
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* child = process_table_entry(i);
+        if (child && child->state != PROC_UNUSED && child->ppid == exiting_pid) {
+            child->ppid = 1;
+        }
+    }
+
+    /* Close all open descriptors */
+    for (int i = 0; i < MAX_FDS; i++) {
+        p->fd_flags[i] = 0;
+        if (p->fds[i]) {
+            open_file_unref(p->fds[i]);
+            p->fds[i] = 0;
+        }
+    }
+
+    /* Release user address space */
+    if (!p->is_kernel_task && p->as.directory) {
+        vmm_destroy_address_space(&p->as);
+        p->as.directory = 0;
+    }
+
+    p->exit_code = exit_status;
+    p->state = PROC_ZOMBIE;
+
+    wake_waiters_for(exiting_pid);
 
     vmm_switch_to_kernel();
-    process_destroy(p); /* reclaim its frames and kernel stack */
 
     if (exiting_pid == 1) {
         kprintf("[init] shell exited, respawning sh.elf...\n");
+        process_destroy(p);
         process_t* sh = process_spawn_by_name("sh.elf", 0);
         if (sh) {
             kprintf("[init] respawned sh.elf (PID %d)\n", sh->pid);

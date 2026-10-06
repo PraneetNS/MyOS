@@ -21,11 +21,10 @@
 #define SYS_OPEN       3
 #define SYS_READ       4
 #define SYS_CLOSE      5
-#define SYS_SPAWN_WAIT 6
 #define SYS_FORK       7
 #define SYS_PIPE       8
 #define SYS_EXEC       10
-#define SYS_WAIT       11
+#define SYS_WAITPID    11
 #define SYS_SBRK       12
 #define SYS_SYNC       13
 #define SYS_LSEEK      14
@@ -41,6 +40,8 @@
 #define SYS_DUP        24
 #define SYS_DUP2       25
 #define SYS_FCNTL      26
+
+#define WNOHANG        1
 
 #define PAGE_PRESENT 0x1
 #define PAGE_WRITE   0x2
@@ -113,12 +114,7 @@ static int validate_user_string(const char* s) {
     }
 }
 
-/* Spawns `name` as a new child of the calling process and reads its
-   file in from disk -- the same steps shell.c's cmd_run performs, just
-   triggered by a process instead of the shell. */
-static process_t* spawn_child(const char* name, int parent_pid) {
-    return process_spawn_by_name(name, parent_pid);
-}
+
 
 static void syscall_handler(struct registers* regs) {
     switch (regs->eax) {
@@ -141,10 +137,12 @@ static void syscall_handler(struct registers* regs) {
             break;
         }
 
-        case SYS_EXIT:
+        case SYS_EXIT: {
+            int status = (int) regs->ebx;
             kprintf("[ok] process exited\n");
-            scheduler_exit_current(); /* never returns */
+            scheduler_exit_current(status); /* never returns */
             break;
+        }
 
         case SYS_GETPID:
             regs->eax = (uint32_t) scheduler_current()->pid;
@@ -256,19 +254,7 @@ static void syscall_handler(struct registers* regs) {
             break;
         }
 
-        case SYS_SPAWN_WAIT: {
-            const char* name = (const char*) regs->ebx;
-            int err = validate_user_string(name);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
 
-            process_t* me = scheduler_current();
-            process_t* child = spawn_child(name, me->pid);
-            if (!child) { regs->eax = (uint32_t)-1; break; }
-
-            regs->eax = (uint32_t) child->pid;
-            scheduler_wait_for(child->pid); /* blocks; returns once child exits */
-            break;
-        }
 
         case SYS_FORK: {
             process_t* me = scheduler_current();
@@ -450,13 +436,62 @@ static void syscall_handler(struct registers* regs) {
             break;
         }
 
-        case SYS_WAIT: {
+        case SYS_WAITPID: {
             int pid = (int) regs->ebx;
-            process_t* target = process_find_by_pid(pid);
-            if (!target) { regs->eax = 0; break; }
+            int* user_status = (int*) regs->ecx;
+            int options = (int) regs->edx;
 
-            regs->eax = 0;
-            scheduler_wait_for(pid);
+            if (user_status) {
+                int err = validate_user_buffer(user_status, sizeof(int), 1);
+                if (err != 0) {
+                    regs->eax = (uint32_t) err;
+                    break;
+                }
+            }
+
+            process_t* me = scheduler_current();
+
+            for (;;) {
+                int has_children = 0;
+                process_t* zombie = 0;
+
+                for (int i = 0; i < MAX_PROCESSES; i++) {
+                    process_t* child = process_table_entry(i);
+                    if (!child || child->state == PROC_UNUSED) continue;
+                    if (child->ppid != me->pid) continue;
+
+                    if (pid == -1 || child->pid == pid) {
+                        has_children = 1;
+                        if (child->state == PROC_ZOMBIE) {
+                            zombie = child;
+                            break;
+                        }
+                    }
+                }
+
+                if (!has_children) {
+                    regs->eax = (uint32_t) -ECHILD;
+                    break;
+                }
+
+                if (zombie) {
+                    int reaped_pid = zombie->pid;
+                    int exit_code = zombie->exit_code;
+                    if (user_status) {
+                        *user_status = (exit_code & 0xff) << 8;
+                    }
+                    process_destroy(zombie);
+                    regs->eax = (uint32_t) reaped_pid;
+                    break;
+                }
+
+                if (options & WNOHANG) {
+                    regs->eax = 0;
+                    break;
+                }
+
+                scheduler_wait_for(pid);
+            }
             break;
         }
 

@@ -14,7 +14,7 @@
 
 #include "vfs.h"
 
-typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_EXITED } proc_state_t;
+typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_ZOMBIE, PROC_EXITED } proc_state_t;
 
 typedef struct process {
     address_space_t as;
@@ -31,6 +31,7 @@ typedef struct process {
     int ppid;
     int waiting_for_pid;        /* valid when state == PROC_WAITING */
     void* wait_channel;         /* Stage 14: sleep channel for blocked pipes/events */
+    int exit_code;              /* Stage 14: exit status code */
 
     open_file_t* fds[MAX_FDS];  /* Stage 13: VFS open_file pointers, refcounted */
     uint8_t fd_flags[MAX_FDS];  /* Stage 14: descriptor flags (FD_CLOEXEC) */
