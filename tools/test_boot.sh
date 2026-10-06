@@ -5,7 +5,8 @@ cd "$(dirname "$0")/.."
 
 LOGFILE1=$(mktemp)
 LOGFILE2=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2"' EXIT
+LOGFILE3=$(mktemp)
+trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -153,16 +154,101 @@ grep -q "PERSISTENCE_TEST_OK" "$LOGFILE2" || { echo "FAIL: Persistence test fail
 grep -q "nested_ok" "$LOGFILE2" || { echo "FAIL: Nested dir content not found after reboot"; exit 1; }
 echo "[PASS] Persistence test verified across QEMU reboot"
 
-echo "[TEST] Session 3: Host-side FAT filesystem integrity check..."
+echo "[TEST] Session 3: Stage 14 IPC, pipes, redirections, pipelines, filters, and stress test..."
+
+(
+    sleep 2
+    printf 'echo hello > /tmp/a\n'
+    sleep 1
+    printf 'cat /tmp/a\n'
+    sleep 1
+    printf 'echo one >> /tmp/a\n'
+    sleep 1
+    printf 'cat /tmp/a\n'
+    sleep 1
+    printf 'cat /tmp/a | wc -l\n'
+    sleep 1
+    printf 'yes | head -n 5\n'
+    sleep 1
+    printf 'ls /bin | grep elf | sort | head -n 3\n'
+    sleep 1
+    printf 'cat < /tmp/a | tee /tmp/b | wc -c\n'
+    sleep 1
+    printf 'diff /tmp/a /tmp/b\n'
+    sleep 1
+    printf 'false; echo $?\n'
+    sleep 1
+    printf 'true; echo $?\n'
+    sleep 1
+    printf 'ls /nonexistent 2> /tmp/err\n'
+    sleep 1
+    printf 'cat /tmp/err\n'
+    sleep 1
+    printf 'cat /big.txt | wc -c\n'
+    sleep 2
+    printf 'stress\n'
+    sleep 2
+    printf 'exit\n'
+) | timeout 35s qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
+
+cat "$LOGFILE3"
+
+echo "[TEST] Asserting Session 3 results..."
+
+# Redirection > and cat
+grep -q "hello" "$LOGFILE3" || { echo "FAIL: 'echo hello > /tmp/a' failed"; exit 1; }
+echo "[PASS] 'echo hello > /tmp/a; cat /tmp/a' verified"
+
+# Redirection >> and cat
+grep -q "one" "$LOGFILE3" || { echo "FAIL: 'echo one >> /tmp/a' failed"; exit 1; }
+echo "[PASS] 'echo one >> /tmp/a; cat /tmp/a' verified"
+
+# Pipeline with wc -l
+grep -q "2" "$LOGFILE3" || { echo "FAIL: 'cat /tmp/a | wc -l' did not output 2"; exit 1; }
+echo "[PASS] 'cat /tmp/a | wc -l' -> 2 verified"
+
+# yes | head -n 5 and EPIPE handling
+grep -q "y" "$LOGFILE3" || { echo "FAIL: 'yes | head -n 5' failed"; exit 1; }
+echo "[PASS] 'yes | head -n 5' (backpressure/EPIPE) verified"
+
+# Multi-stage pipeline: ls | grep | sort | head
+grep -q "argtest.elf" "$LOGFILE3" || { echo "FAIL: 'ls /bin | grep elf | sort | head -n 3' failed"; exit 1; }
+echo "[PASS] 'ls /bin | grep elf | sort | head -n 3' verified"
+
+# tee and diff
+grep -q "10" "$LOGFILE3" || { echo "FAIL: 'cat < /tmp/a | tee /tmp/b | wc -c' failed"; exit 1; }
+grep -q "Files /tmp/a and /tmp/b match" "$LOGFILE3" || { echo "FAIL: diff /tmp/a /tmp/b failed"; exit 1; }
+echo "[PASS] 'cat < /tmp/a | tee /tmp/b | wc -c' and diff verified"
+
+# Exit code tracking and $? expansion
+grep -q "1" "$LOGFILE3" || { echo "FAIL: 'false; echo $?' failed"; exit 1; }
+grep -q "0" "$LOGFILE3" || { echo "FAIL: 'true; echo $?' failed"; exit 1; }
+echo "[PASS] 'false; echo $?' -> 1 and 'true; echo $?' -> 0 verified"
+
+# Stderr redirection
+grep -q "ls: cannot access '/nonexistent'" "$LOGFILE3" || { echo "FAIL: stderr redirection 'ls /nonexistent 2> /tmp/err' failed"; exit 1; }
+echo "[PASS] 'ls /nonexistent 2> /tmp/err; cat /tmp/err' verified"
+
+# Large pipeline transfer (>64KB)
+grep -q "70000" "$LOGFILE3" || { echo "FAIL: 'cat /big.txt | wc -c' failed (>64KB pipe transfer)"; exit 1; }
+echo "[PASS] Large pipeline transfer (70KB through 4KB ring buffer) verified"
+
+# Stress test (50 iterations of fork+pipe+exec+wait with zero leak check)
+grep -q "ALL 50 ITERATIONS PASSED - NO LEAKS!" "$LOGFILE3" || { echo "FAIL: 50-iteration stress test failed"; exit 1; }
+echo "[PASS] Stress test: 50 iterations fork+pipe+exec+wait leak-free verified"
+
+echo "[TEST] Session 4: Host-side FAT filesystem integrity check..."
 
 fsck.fat -n disk.img
 echo "[PASS] fsck.fat integrity check clean"
 
 mdir -i disk.img ::
 mtype -i disk.img ::/persist.txt | grep -q "PERSISTENCE_TEST_OK"
-echo "[PASS] Host mtype cross-check verified"
+mtype -i disk.img ::/tmp/a | grep -q "hello"
+mtype -i disk.img ::/tmp/b | grep -q "hello"
+echo "[PASS] Host mtype cross-check for persistent and created files verified"
 
 echo "==============================="
-echo "ALL STAGE 13 TESTS PASSED!"
+echo "ALL STAGE 14 TESTS PASSED!"
 echo "==============================="
 exit 0

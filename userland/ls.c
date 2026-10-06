@@ -48,12 +48,8 @@ int main(int argc, char** argv) {
             write(1, "\n", 1);
         } else {
             write(1, de.d_name, strlen(de.d_name));
-            write(1, "  ", 2);
+            write(1, "\n", 1);
         }
-    }
-
-    if (!long_mode) {
-        write(1, "\n", 1);
     }
 
     close(fd);

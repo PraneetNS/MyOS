@@ -15,6 +15,7 @@
 #include "vfs.h"
 #include "errno.h"
 #include "timer.h"
+#include "pmm.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -43,6 +44,7 @@
 #define SYS_FCNTL      26
 #define SYS_SLEEP      27
 #define SYS_TICKS      28
+#define SYS_FREE_FRAMES 29
 
 #define WNOHANG        1
 
@@ -902,6 +904,11 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_TICKS: {
             regs->eax = timer_get_ticks();
+            break;
+        }
+
+        case SYS_FREE_FRAMES: {
+            regs->eax = pmm_free_frame_count();
             break;
         }
 

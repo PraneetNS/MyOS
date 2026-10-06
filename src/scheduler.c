@@ -143,13 +143,9 @@ void scheduler_exit_current(int exit_status) {
 
     vmm_switch_to_kernel();
 
+    extern int respawn_shell_needed;
     if (exiting_pid == 1) {
-        kprintf("[init] shell exited, respawning sh.elf...\n");
-        process_destroy(p);
-        process_t* sh = process_spawn_by_name("sh.elf", 0);
-        if (sh) {
-            kprintf("[init] respawned sh.elf (PID %d)\n", sh->pid);
-        }
+        respawn_shell_needed = 1;
     }
 
     process_t* next = pick_next_from(idx);

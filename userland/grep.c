@@ -11,11 +11,23 @@ static int strcmp(const char* a, const char* b) {
     return *a - *b;
 }
 
-static const char* strstr_match(const char* haystack, const char* needle) {
+static char to_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
+    return c;
+}
+
+static const char* strstr_match(const char* haystack, const char* needle, int ignore_case) {
     if (!needle || !*needle) return haystack;
     for (int i = 0; haystack[i]; i++) {
         int j = 0;
-        while (needle[j] && haystack[i + j] == needle[j]) {
+        while (needle[j]) {
+            char hc = haystack[i + j];
+            char nc = needle[j];
+            if (ignore_case) {
+                hc = to_lower(hc);
+                nc = to_lower(nc);
+            }
+            if (hc != nc) break;
             j++;
         }
         if (!needle[j]) return &haystack[i];
@@ -26,6 +38,7 @@ static const char* strstr_match(const char* haystack, const char* needle) {
 int main(int argc, char** argv) {
     int invert_match = 0;
     int line_number = 0;
+    int ignore_case = 0;
     const char* pattern = 0;
     const char* filename = 0;
 
@@ -34,6 +47,8 @@ int main(int argc, char** argv) {
             invert_match = 1;
         } else if (strcmp(argv[i], "-n") == 0) {
             line_number = 1;
+        } else if (strcmp(argv[i], "-i") == 0) {
+            ignore_case = 1;
         } else if (strcmp(argv[i], "-vn") == 0 || strcmp(argv[i], "-nv") == 0) {
             invert_match = 1;
             line_number = 1;
@@ -67,7 +82,7 @@ int main(int argc, char** argv) {
     while (read(fd, &c, 1) == 1) {
         if (c == '\n') {
             line[len] = '\0';
-            int has_match = (strstr_match(line, pattern) != 0);
+            int has_match = (strstr_match(line, pattern, ignore_case) != 0);
             if (invert_match) has_match = !has_match;
 
             if (has_match) {
@@ -90,7 +105,7 @@ int main(int argc, char** argv) {
 
     if (len > 0) {
         line[len] = '\0';
-        int has_match = (strstr_match(line, pattern) != 0);
+        int has_match = (strstr_match(line, pattern, ignore_case) != 0);
         if (invert_match) has_match = !has_match;
 
         if (has_match) {
