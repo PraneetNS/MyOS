@@ -116,6 +116,17 @@ void scheduler_exit_current(void) {
 
     wake_waiters_for(exiting_pid); /* let any parent blocked in sys_spawn_wait proceed */
 
+    vmm_switch_to_kernel();
+    process_destroy(p); /* reclaim its frames and kernel stack */
+
+    if (exiting_pid == 1) {
+        kprintf("[init] shell exited, respawning sh.elf...\n");
+        process_t* sh = process_spawn_by_name("sh.elf", 0);
+        if (sh) {
+            kprintf("[init] respawned sh.elf (PID %d)\n", sh->pid);
+        }
+    }
+
     process_t* next = pick_next_from(idx);
     while (!next) {
         while (serial_received()) {
@@ -125,8 +136,6 @@ void scheduler_exit_current(void) {
         asm volatile ("sti; hlt");
         next = pick_next_from(idx);
     }
-
-    process_destroy(p); /* reclaim its frames and kernel stack */
 
     current = next;
     enter_process(next);
