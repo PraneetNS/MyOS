@@ -3,10 +3,17 @@
 #include "serial.h"
 #include "keyboard.h"
 #include "kheap.h"
+#include "pipe.h"
 
 #define MAX_MOUNTS 4
 #define VNODE_POOL_SIZE 128
 #define OPEN_FILE_POOL_SIZE 64
+
+static int active_open_files = 0;
+
+int vfs_get_active_open_files(void) {
+    return active_open_files;
+}
 
 typedef struct {
     char path[64];
@@ -145,10 +152,12 @@ open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
         if (of_pool[i].refcount == 0) {
             of_pool[i].type = type;
             of_pool[i].vnode = vn;
+            of_pool[i].pipe = 0;
             of_pool[i].flags = flags;
             of_pool[i].offset = 0;
             of_pool[i].refcount = 1;
             if (vn) vnode_ref(vn);
+            active_open_files++;
             return &of_pool[i];
         }
     }
@@ -156,18 +165,32 @@ open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
 }
 
 void open_file_ref(open_file_t* of) {
-    if (of) of->refcount++;
+    if (!of) return;
+    if (of->refcount <= 0) {
+        kprintf("[vfs] ASSERTION FAILED: open_file %p refcount <= 0 in ref (%d)\n", of, of->refcount);
+    }
+    of->refcount++;
 }
 
 void open_file_unref(open_file_t* of) {
-    if (of && of->refcount > 0) {
-        of->refcount--;
-        if (of->refcount == 0) {
-            if (of->vnode) {
-                vnode_unref(of->vnode);
-                of->vnode = 0;
-            }
-            of->type = OPEN_FILE_NONE;
+    if (!of) return;
+    if (of->refcount <= 0) {
+        kprintf("[vfs] ASSERTION FAILED: open_file %p refcount <= 0 in unref (%d)\n", of, of->refcount);
+        return;
+    }
+    of->refcount--;
+    if (of->refcount == 0) {
+        if (of->type == OPEN_FILE_VNODE && of->vnode) {
+            vnode_unref(of->vnode);
+            of->vnode = 0;
+        } else if (of->type == OPEN_FILE_PIPE && of->pipe) {
+            pipe_close_end((pipe_t*) of->pipe, of->flags);
+            of->pipe = 0;
+        }
+        of->type = OPEN_FILE_NONE;
+        active_open_files--;
+        if (active_open_files < 0) {
+            kprintf("[vfs] ASSERTION FAILED: active_open_files negative: %d\n", active_open_files);
         }
     }
 }
@@ -326,6 +349,10 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
     if (of->type == OPEN_FILE_CONSOLE) {
         return console_read(of->vnode, 0, (uint8_t*) buf, count);
     }
+    if (of->type == OPEN_FILE_PIPE) {
+        if ((of->flags & 3) == O_WRONLY) return -EBADF;
+        return pipe_read((pipe_t*) of->pipe, buf, count);
+    }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
         if (!of->vnode->ops || !of->vnode->ops->read) return -EINVAL;
@@ -341,6 +368,10 @@ int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
 
     if (of->type == OPEN_FILE_CONSOLE) {
         return console_write(of->vnode, 0, (const uint8_t*) buf, count);
+    }
+    if (of->type == OPEN_FILE_PIPE) {
+        if ((of->flags & 3) == O_RDONLY) return -EBADF;
+        return pipe_write((pipe_t*) of->pipe, buf, count);
     }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
         if (of->vnode->type == VNODE_DIR) return -EISDIR;

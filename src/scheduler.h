@@ -28,11 +28,9 @@ process_t* scheduler_current(void);
    return. */
 void scheduler_wait_for(int child_pid);
 
-/* Stage 9: same blocking mechanism as scheduler_wait_for(), but for a
-   process waiting on pipe data rather than a specific child's exit
-   (see src/pipe.c). */
-void scheduler_wait_for_pipe(void);
-void scheduler_wake_pipe_waiters(void);
+/* Stage 14: generic channel sleep/wakeup mechanism for blocked pipes/events */
+void scheduler_wait_channel(void* channel);
+void scheduler_wake_channel(void* channel);
 
 /* Stage 12: blocking on keyboard/stdin line availability */
 void scheduler_wait_for_stdin(void);

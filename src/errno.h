@@ -25,6 +25,7 @@
 #define ENOSPC      28   /* No space left on device */
 #define ESPIPE      29   /* Illegal seek */
 #define EROFS       30   /* Read-only file system */
+#define EPIPE       32   /* Broken pipe */
 #define ERANGE      34   /* Math result not representable */
 #define ENAMETOOLONG 36  /* File name too long */
 #define ENOSYS      38   /* Function not implemented */

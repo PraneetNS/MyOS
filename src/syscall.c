@@ -23,8 +23,7 @@
 #define SYS_CLOSE      5
 #define SYS_SPAWN_WAIT 6
 #define SYS_FORK       7
-#define SYS_PIPE_WRITE 8
-#define SYS_PIPE_READ  9
+#define SYS_PIPE       8
 #define SYS_EXEC       10
 #define SYS_WAIT       11
 #define SYS_SBRK       12
@@ -273,21 +272,62 @@ static void syscall_handler(struct registers* regs) {
             break;
         }
 
-        case SYS_PIPE_WRITE: {
-            const uint8_t* buf = (const uint8_t*) regs->ebx;
-            uint32_t len = regs->ecx;
-            int err = validate_user_buffer(buf, len, 0);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
-            regs->eax = pipe_write(buf, len);
-            break;
-        }
+        case SYS_PIPE: {
+            int* user_fds = (int*) regs->ebx;
+            int err = validate_user_buffer(user_fds, sizeof(int) * 2, 1);
+            if (err != 0) {
+                regs->eax = (uint32_t) err;
+                break;
+            }
 
-        case SYS_PIPE_READ: {
-            uint8_t* buf = (uint8_t*) regs->ebx;
-            uint32_t maxlen = regs->ecx;
-            int err = validate_user_buffer(buf, maxlen, 1);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
-            regs->eax = pipe_read(buf, maxlen);
+            process_t* me = scheduler_current();
+            int fd0 = -1, fd1 = -1;
+            for (int i = 0; i < MAX_FDS; i++) {
+                if (!me->fds[i]) {
+                    if (fd0 < 0) fd0 = i;
+                    else if (fd1 < 0) { fd1 = i; break; }
+                }
+            }
+
+            if (fd0 < 0 || fd1 < 0) {
+                regs->eax = (uint32_t) -EMFILE;
+                break;
+            }
+
+            pipe_t* p = 0;
+            err = pipe_create(&p);
+            if (err != 0) {
+                regs->eax = (uint32_t) err;
+                break;
+            }
+
+            open_file_t* of_read = open_file_alloc(OPEN_FILE_PIPE, 0, O_RDONLY);
+            if (!of_read) {
+                pipe_close_end(p, O_RDONLY);
+                pipe_close_end(p, O_WRONLY);
+                regs->eax = (uint32_t) -ENFILE;
+                break;
+            }
+
+            open_file_t* of_write = open_file_alloc(OPEN_FILE_PIPE, 0, O_WRONLY);
+            if (!of_write) {
+                of_read->pipe = 0;
+                open_file_unref(of_read);
+                pipe_close_end(p, O_RDONLY);
+                pipe_close_end(p, O_WRONLY);
+                regs->eax = (uint32_t) -ENFILE;
+                break;
+            }
+
+            of_read->pipe = p;
+            of_write->pipe = p;
+
+            me->fds[fd0] = of_read;
+            me->fds[fd1] = of_write;
+
+            user_fds[0] = fd0;
+            user_fds[1] = fd1;
+            regs->eax = 0;
             break;
         }
 
