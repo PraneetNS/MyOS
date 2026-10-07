@@ -3,6 +3,7 @@
 #include "kheap.h"
 #include "vga.h"
 #include "serial.h"
+#include "rtc.h"
 
 #define FAT_ATTR_READONLY   0x01
 #define FAT_ATTR_HIDDEN     0x02
@@ -423,7 +424,25 @@ static int fat16_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint3
         }
     }
 
-    if (offset + done > node->size) {
+    if (done > 0 && fnode->dir_sector) {
+        fat_dirent_t e;
+        uint8_t sbuf[512];
+        if (bcache_read(fnode->dir_sector, sbuf) == 0) {
+            e = *(fat_dirent_t*)&sbuf[fnode->dir_offset];
+            if (offset + done > node->size) {
+                node->size = offset + done;
+                fnode->file_size = node->size;
+                e.file_size = node->size;
+                e.fst_clus_lo = fnode->first_cluster;
+            }
+            uint16_t cur_date, cur_time;
+            epoch_to_fat_datetime(rtc_get_epoch(), &cur_date, &cur_time);
+            e.wrt_date = cur_date;
+            e.wrt_time = cur_time;
+            *(fat_dirent_t*)&sbuf[fnode->dir_offset] = e;
+            bcache_write(fnode->dir_sector, sbuf);
+        }
+    } else if (offset + done > node->size) {
         node->size = offset + done;
         fnode->file_size = node->size;
 
@@ -460,13 +479,15 @@ static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
     for (int i = 0; i < 11; i++) e.name[i] = name_83[i];
     e.attr = FAT_ATTR_ARCHIVE;
     e.nt_res = 0;
+    uint16_t cur_date, cur_time;
+    epoch_to_fat_datetime(rtc_get_epoch(), &cur_date, &cur_time);
     e.crt_time_tenth = 0;
-    e.crt_time = 0;
-    e.crt_date = 0;
-    e.lst_acc_date = 0;
+    e.crt_time = cur_time;
+    e.crt_date = cur_date;
+    e.lst_acc_date = cur_date;
     e.fst_clus_hi = 0;
-    e.wrt_time = 0;
-    e.wrt_date = 0;
+    e.wrt_time = cur_time;
+    e.wrt_date = cur_date;
     e.fst_clus_lo = 0;
     e.file_size = 0;
 
@@ -525,13 +546,15 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     for (int i = 0; i < 11; i++) e.name[i] = name_83[i];
     e.attr = FAT_ATTR_DIRECTORY;
     e.nt_res = 0;
+    uint16_t cur_date, cur_time;
+    epoch_to_fat_datetime(rtc_get_epoch(), &cur_date, &cur_time);
     e.crt_time_tenth = 0;
-    e.crt_time = 0;
-    e.crt_date = 0;
-    e.lst_acc_date = 0;
+    e.crt_time = cur_time;
+    e.crt_date = cur_date;
+    e.lst_acc_date = cur_date;
     e.fst_clus_hi = 0;
-    e.wrt_time = 0;
-    e.wrt_date = 0;
+    e.wrt_time = cur_time;
+    e.wrt_date = cur_date;
     e.fst_clus_lo = new_clus;
     e.file_size = 0;
 
@@ -638,6 +661,10 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
 
     fat_dirent_t new_e = old_e;
     for (int i = 0; i < 11; i++) new_e.name[i] = new_83[i];
+    uint16_t cur_date, cur_time;
+    epoch_to_fat_datetime(rtc_get_epoch(), &cur_date, &cur_time);
+    new_e.wrt_date = cur_date;
+    new_e.wrt_time = cur_time;
     write_dir_entry(new_sec, new_off, &new_e);
 
     /* Remove old entry */
@@ -704,6 +731,20 @@ static int fat16_stat(vnode_t* node, struct stat* st) {
     st->st_size = node->size;
     st->st_blksize = 512;
     st->st_blocks = (node->size + 511) / 512;
+
+    uint32_t mtime = 0;
+    uint32_t ctime = 0;
+    if (fnode->dir_sector) {
+        uint8_t sbuf[512];
+        if (bcache_read(fnode->dir_sector, sbuf) == 0) {
+            fat_dirent_t* e = (fat_dirent_t*)&sbuf[fnode->dir_offset];
+            mtime = fat_datetime_to_epoch(e->wrt_date, e->wrt_time);
+            ctime = fat_datetime_to_epoch(e->crt_date, e->crt_time);
+        }
+    }
+    st->st_mtime = mtime ? mtime : rtc_get_boot_epoch();
+    st->st_ctime = ctime ? ctime : st->st_mtime;
+    st->st_atime = st->st_mtime;
     return 0;
 }
 

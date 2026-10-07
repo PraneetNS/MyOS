@@ -10,6 +10,7 @@
 #include "scheduler.h"
 #include "serial.h"
 #include "keyboard.h"
+#include "timer.h"
 
 int respawn_shell_needed = 0;
 
@@ -118,6 +119,10 @@ void process_init_table(int use_kshell) {
     shell->heap_end = HEAP_BASE;
     shell->heap_mapped_up_to = HEAP_BASE;
     shell->vma_list = NULL;
+    shell->sleep_deadline = 0;
+    shell->sleep_next = 0;
+    shell->cpu_ticks = 0;
+    shell->nice = 0;
     init_fds(shell);
     signal_init_proc(shell);
 
@@ -230,6 +235,10 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->wait_channel = 0;
     p->exit_code = 0;
     p->is_forked = 0;
+    p->sleep_deadline = 0;
+    p->sleep_next = 0;
+    p->cpu_ticks = 0;
+    p->nice = (parent_pid > 0 && process_find_by_pid(parent_pid)) ? process_find_by_pid(parent_pid)->nice : 0;
     p->heap_end = HEAP_BASE;
     p->heap_mapped_up_to = HEAP_BASE;
     init_fds(p);
@@ -245,6 +254,9 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 
 void process_destroy(process_t* p) {
     if (p->state == PROC_UNUSED) return;
+    timer_sleep_dequeue(p);
+    p->sleep_deadline = 0;
+    p->sleep_next = 0;
     for (int i = 0; i < MAX_FDS; i++) {
         p->fd_flags[i] = 0;
         if (p->fds[i]) {
@@ -296,6 +308,10 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->sid = parent->sid;
     p->waiting_for_pid = -999;
     p->wait_channel = 0;
+    p->sleep_deadline = 0;
+    p->sleep_next = 0;
+    p->cpu_ticks = 0;
+    p->nice = parent->nice;
     p->exit_code = 0;
     p->sig_pending = 0;
     p->sig_blocked = parent->sig_blocked;

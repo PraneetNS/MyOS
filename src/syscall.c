@@ -22,6 +22,7 @@
 #include "tty.h"
 #include "devfs.h"
 #include "signal.h"
+#include "rtc.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -68,6 +69,11 @@
 #define SYS_SIGRETURN  119
 #define SYS_PAUSE      70
 #define SYS_ALARM      71
+#define SYS_TIME       72
+#define SYS_GETTIMEOFDAY 73
+#define SYS_CLOCK_GETTIME 74
+#define SYS_NANOSLEEP  75
+#define SYS_NICE       77
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -1031,17 +1037,17 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_SLEEP: {
             uint32_t sec = regs->ebx;
-            uint32_t start = timer_get_ticks();
-            uint32_t target = start + sec * 100;
             process_t* me = scheduler_current();
-            while (timer_get_ticks() < target) {
-                if (signal_has_deliverable(me)) {
-                    regs->eax = (uint32_t) -EINTR;
-                    break;
-                }
-                scheduler_yield();
-            }
-            if (timer_get_ticks() >= target) {
+            if (sec == 0) { regs->eax = 0; break; }
+            uint32_t start = timer_get_ticks();
+            uint32_t deadline = start + sec * 100u;
+            timer_sleep_enqueue(me, deadline);
+            scheduler_wait_channel(&me->sleep_deadline);
+            timer_sleep_dequeue(me);
+            uint32_t now = timer_get_ticks();
+            if (now < deadline) {
+                regs->eax = (uint32_t) -EINTR;
+            } else {
                 regs->eax = 0;
             }
             break;
@@ -1359,6 +1365,110 @@ static void syscall_handler(struct registers* regs) {
         case SYS_ALARM: {
             unsigned int sec = (unsigned int) regs->ebx;
             regs->eax = (uint32_t) sys_alarm(sec);
+            break;
+        }
+
+        case SYS_TIME: {
+            uint32_t* tloc = (uint32_t*) regs->ebx;
+            uint32_t cur = rtc_get_epoch();
+            if (tloc) {
+                int err = validate_user_buffer(tloc, sizeof(uint32_t), 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+                copy_to_user(tloc, &cur, sizeof(uint32_t));
+            }
+            regs->eax = cur;
+            break;
+        }
+
+        case SYS_GETTIMEOFDAY: {
+            struct timeval* tv = (struct timeval*) regs->ebx;
+            struct timezone* tz = (struct timezone*) regs->ecx;
+            if (tv) {
+                int err = validate_user_buffer(tv, sizeof(struct timeval), 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+                uint32_t ticks = timer_get_ticks();
+                struct timeval ktv;
+                ktv.tv_sec = rtc_get_boot_epoch() + (ticks / 100u);
+                ktv.tv_usec = (ticks % 100u) * 10000u;
+                copy_to_user(tv, &ktv, sizeof(struct timeval));
+            }
+            if (tz) {
+                int err = validate_user_buffer(tz, sizeof(struct timezone), 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+                struct timezone ktz = { 0, 0 };
+                copy_to_user(tz, &ktz, sizeof(struct timezone));
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_CLOCK_GETTIME: {
+            int clk_id = (int) regs->ebx;
+            struct timespec* tp = (struct timespec*) regs->ecx;
+            int err = validate_user_buffer(tp, sizeof(struct timespec), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            uint32_t ticks = timer_get_ticks();
+            struct timespec ktp;
+            if (clk_id == CLOCK_REALTIME) {
+                ktp.tv_sec = rtc_get_boot_epoch() + (ticks / 100u);
+                ktp.tv_nsec = (ticks % 100u) * 10000000u;
+            } else if (clk_id == CLOCK_MONOTONIC) {
+                ktp.tv_sec = ticks / 100u;
+                ktp.tv_nsec = (ticks % 100u) * 10000000u;
+            } else {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            copy_to_user(tp, &ktp, sizeof(struct timespec));
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_NANOSLEEP: {
+            const struct timespec* req = (const struct timespec*) regs->ebx;
+            struct timespec* rem = (struct timespec*) regs->ecx;
+            int err = validate_user_buffer(req, sizeof(struct timespec), 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            struct timespec kreq;
+            copy_from_user(&kreq, req, sizeof(struct timespec));
+            if (kreq.tv_nsec >= 1000000000u) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            uint32_t ticks = kreq.tv_sec * 100u + (kreq.tv_nsec + 9999999u) / 10000000u;
+            process_t* me = scheduler_current();
+            if (ticks == 0) { regs->eax = 0; break; }
+            uint32_t start = timer_get_ticks();
+            uint32_t deadline = start + ticks;
+            timer_sleep_enqueue(me, deadline);
+            scheduler_wait_channel(&me->sleep_deadline);
+            timer_sleep_dequeue(me);
+            uint32_t now = timer_get_ticks();
+            if (now < deadline) {
+                if (rem) {
+                    err = validate_user_buffer(rem, sizeof(struct timespec), 1);
+                    if (err == 0) {
+                        uint32_t rem_ticks = deadline - now;
+                        struct timespec krem;
+                        krem.tv_sec = rem_ticks / 100u;
+                        krem.tv_nsec = (rem_ticks % 100u) * 10000000u;
+                        copy_to_user(rem, &krem, sizeof(struct timespec));
+                    }
+                }
+                regs->eax = (uint32_t) -EINTR;
+            } else {
+                regs->eax = 0;
+            }
+            break;
+        }
+
+        case SYS_NICE: {
+            int inc = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            me->nice += inc;
+            if (me->nice < -20) me->nice = -20;
+            if (me->nice > 19) me->nice = 19;
+            regs->eax = (uint32_t) me->nice;
             break;
         }
 

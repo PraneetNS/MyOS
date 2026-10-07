@@ -4,6 +4,7 @@
 #include "errno.h"
 #include "serial.h"
 #include "uaccess.h"
+#include "timer.h"
 
 typedef enum {
     ACT_TERM,
@@ -77,6 +78,7 @@ int sig_send(process_t* proc, int sig) {
                 }
                 proc->state = PROC_READY;
                 proc->wait_channel = 0;
+                timer_sleep_dequeue(proc);
             }
         }
     }
