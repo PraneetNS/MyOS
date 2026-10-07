@@ -33,5 +33,9 @@ int vma_insert(vma_t** list_head, vma_t* vma);
 vma_t* vma_find(struct process* proc, uint32_t addr);
 vma_t* vma_clone_list(vma_t* head);
 void vma_free_list(vma_t* head);
+int vma_overlaps(struct process* proc, uint32_t start, uint32_t end);
+uint32_t vma_find_free_gap(struct process* proc, uint32_t len);
+int vma_unmap_range(struct process* proc, uint32_t start, uint32_t len);
+int vma_mprotect(struct process* proc, uint32_t start, uint32_t len, int prot);
 
 #endif

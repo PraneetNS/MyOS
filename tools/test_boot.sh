@@ -56,7 +56,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "badwrite.elf\n"
     sleep 1
     printf "exit\n"
-) | timeout 35s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 45s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 

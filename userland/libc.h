@@ -363,4 +363,187 @@ static inline void print_hex(unsigned int v) {
     sys_write(1, hex, 10);
 }
 
+#define PROT_NONE       0x0
+#define PROT_READ       0x1
+#define PROT_WRITE      0x2
+#define PROT_EXEC       0x4
+
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x10
+#define MAP_ANON        0x20
+#define MAP_ANONYMOUS   0x20
+#define MAP_FAILED      ((void*)-1)
+
+static inline void* sys_mmap(void* addr, unsigned int len, int prot, int flags, int fd, unsigned int offset) {
+    int ret;
+    asm volatile (
+        "pushl %6\n\t"
+        "pushl %%ebp\n\t"
+        "movl 4(%%esp), %%ebp\n\t"
+        "int $0x80\n\t"
+        "popl %%ebp\n\t"
+        "addl $4, %%esp\n\t"
+        : "=a"(ret)
+        : "a"(30), "b"(addr), "c"(len), "d"(prot), "S"(flags), "m"(offset), "D"(fd)
+        : "memory"
+    );
+    return (void*) ret;
+}
+
+static inline void* mmap(void* addr, unsigned int len, int prot, int flags, int fd, unsigned int offset) {
+    return sys_mmap(addr, len, prot, flags, fd, offset);
+}
+
+static inline int sys_munmap(void* addr, unsigned int len) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(31), "b"(addr), "c"(len));
+    return ret;
+}
+
+static inline int munmap(void* addr, unsigned int len) {
+    return sys_munmap(addr, len);
+}
+
+static inline int sys_mprotect(void* addr, unsigned int len, int prot) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(32), "b"(addr), "c"(len), "d"(prot));
+    return ret;
+}
+
+static inline int mprotect(void* addr, unsigned int len, int prot) {
+    return sys_mprotect(addr, len, prot);
+}
+
+#define MMAP_THRESHOLD  65536
+
+typedef struct malloc_chunk {
+    unsigned int size;           /* Usable payload size in bytes */
+    unsigned int total_size;     /* Total allocation size including header, or mmap size */
+    unsigned int is_mmap;        /* 1 if mmap'd, 0 if sbrk-allocated */
+    struct malloc_chunk* next;   /* Next block in free list (when free) */
+} malloc_chunk_t;
+
+static malloc_chunk_t* __libc_free_list = 0;
+
+static inline void* malloc(unsigned int size) {
+    if (size == 0) return 0;
+
+    size = (size + 7) & ~7u;
+
+    if (size >= MMAP_THRESHOLD) {
+        unsigned int total = sizeof(malloc_chunk_t) + size;
+        total = (total + 4095) & ~4095u;
+        void* p = mmap(0, total, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (p == MAP_FAILED) return 0;
+        malloc_chunk_t* chunk = (malloc_chunk_t*) p;
+        chunk->size = size;
+        chunk->total_size = total;
+        chunk->is_mmap = 1;
+        chunk->next = 0;
+        return (void*)(chunk + 1);
+    }
+
+    malloc_chunk_t* prev = 0;
+    malloc_chunk_t* curr = __libc_free_list;
+
+    while (curr) {
+        if (curr->size >= size) {
+            if (curr->size >= size + sizeof(malloc_chunk_t) + 16) {
+                unsigned int orig_size = curr->size;
+                curr->size = size;
+                malloc_chunk_t* split = (malloc_chunk_t*) ((char*)(curr + 1) + size);
+                split->size = orig_size - size - sizeof(malloc_chunk_t);
+                split->total_size = split->size + sizeof(malloc_chunk_t);
+                split->is_mmap = 0;
+                split->next = curr->next;
+                if (prev) {
+                    prev->next = split;
+                } else {
+                    __libc_free_list = split;
+                }
+            } else {
+                if (prev) {
+                    prev->next = curr->next;
+                } else {
+                    __libc_free_list = curr->next;
+                }
+            }
+            curr->is_mmap = 0;
+            curr->next = 0;
+            return (void*)(curr + 1);
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    unsigned int req = sizeof(malloc_chunk_t) + size;
+    unsigned int chunk_alloc = (req < 4096) ? 4096 : ((req + 4095) & ~4095u);
+    void* p = sbrk(chunk_alloc);
+    if (p == (void*)-1) return 0;
+
+    malloc_chunk_t* chunk = (malloc_chunk_t*) p;
+    chunk->size = size;
+    chunk->total_size = chunk_alloc;
+    chunk->is_mmap = 0;
+    chunk->next = 0;
+
+    if (chunk_alloc >= req + sizeof(malloc_chunk_t) + 16) {
+        malloc_chunk_t* rem = (malloc_chunk_t*) ((char*)(chunk + 1) + size);
+        rem->size = chunk_alloc - req - sizeof(malloc_chunk_t);
+        rem->total_size = chunk_alloc - req;
+        rem->is_mmap = 0;
+        rem->next = __libc_free_list;
+        __libc_free_list = rem;
+    }
+
+    return (void*)(chunk + 1);
+}
+
+static inline void free(void* ptr) {
+    if (!ptr) return;
+    malloc_chunk_t* chunk = ((malloc_chunk_t*) ptr) - 1;
+    if (chunk->is_mmap) {
+        munmap((void*)chunk, chunk->total_size);
+    } else {
+        chunk->next = __libc_free_list;
+        __libc_free_list = chunk;
+    }
+}
+
+static inline void* realloc(void* ptr, unsigned int new_size) {
+    if (!ptr) return malloc(new_size);
+    if (new_size == 0) {
+        free(ptr);
+        return 0;
+    }
+    malloc_chunk_t* chunk = ((malloc_chunk_t*) ptr) - 1;
+    if (chunk->size >= new_size) {
+        return ptr;
+    }
+    void* new_ptr = malloc(new_size);
+    if (!new_ptr) return 0;
+
+    unsigned char* src = (unsigned char*) ptr;
+    unsigned char* dst = (unsigned char*) new_ptr;
+    unsigned int copy_len = chunk->size;
+    for (unsigned int i = 0; i < copy_len; i++) {
+        dst[i] = src[i];
+    }
+    free(ptr);
+    return new_ptr;
+}
+
+static inline void* calloc(unsigned int nmemb, unsigned int size) {
+    unsigned int total = nmemb * size;
+    void* ptr = malloc(total);
+    if (ptr) {
+        unsigned char* p = (unsigned char*) ptr;
+        for (unsigned int i = 0; i < total; i++) {
+            p[i] = 0;
+        }
+    }
+    return ptr;
+}
+
 #endif

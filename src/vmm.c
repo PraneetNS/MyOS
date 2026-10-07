@@ -76,6 +76,19 @@ void vmm_unmap_user_page(address_space_t* as, uint32_t vaddr) {
         table[table_index] = 0;
         pmm_unref(frame_phys);
         asm volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
+
+        /* Check if page table is now empty */
+        int empty = 1;
+        for (int i = 0; i < 1024; i++) {
+            if (table[i] & PAGE_PRESENT) {
+                empty = 0;
+                break;
+            }
+        }
+        if (empty) {
+            as->directory[dir_index] = 0;
+            pmm_unref(table_phys);
+        }
     }
 }
 
