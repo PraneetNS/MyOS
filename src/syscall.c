@@ -434,20 +434,21 @@ static void syscall_handler(struct registers* regs) {
             if (!buf) { vnode_unref(vn); regs->eax = (uint32_t)-1; break; }
 
             int n = vn->ops->read(vn, 0, buf, vn->size);
-            vnode_unref(vn);
-            if (n <= 0) { kfree(buf); regs->eax = (uint32_t)-1; break; }
+            if (n <= 0) { vnode_unref(vn); kfree(buf); regs->eax = (uint32_t)-1; break; }
 
             address_space_t new_as = vmm_create_address_space();
-            if (!new_as.directory) { kfree(buf); regs->eax = (uint32_t)-1; break; }
+            if (!new_as.directory) { vnode_unref(vn); kfree(buf); regs->eax = (uint32_t)-1; break; }
 
             uint32_t entry, stack_top;
             vma_t* new_vmas = NULL;
-            if (elf_load_into(buf, (uint32_t) n, &new_as, argc, kargv, &entry, &stack_top, &new_vmas) != 0) {
+            if (elf_load_into(buf, (uint32_t) n, vn, &new_as, argc, kargv, &entry, &stack_top, &new_vmas) != 0) {
+                vnode_unref(vn);
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
                 regs->eax = (uint32_t)-1;
                 break;
             }
+            vnode_unref(vn);
             kfree(buf);
 
             me = scheduler_current();
@@ -546,26 +547,23 @@ static void syscall_handler(struct registers* regs) {
 
             uint32_t old_break = me->heap_end;
             uint32_t new_break = old_break + increment;
-            int failed = 0;
 
             if (increment > 0) {
                 if (new_break > HEAP_MAX || new_break < old_break) {
-                    failed = 1;
-                } else {
-                    uint32_t target = (new_break + 4095u) & ~4095u;
-                    while (!failed && me->heap_mapped_up_to < target) {
-                        uint32_t frame_phys = vmm_map_user_page(&me->as, me->heap_mapped_up_to);
-                        if (!frame_phys) { failed = 1; break; }
-                        uint8_t* frame = (uint8_t*) P2V(frame_phys);
-                        for (int i = 0; i < 4096; i++) frame[i] = 0;
-                        me->heap_mapped_up_to += 4096;
-                    }
+                    regs->eax = (uint32_t) -1;
+                    break;
                 }
-            } else if (new_break < HEAP_BASE) {
-                new_break = HEAP_BASE;
+            } else if (increment < 0) {
+                if (new_break < HEAP_BASE) {
+                    new_break = HEAP_BASE;
+                }
+                /* Shrinking: unmap pages above new_break */
+                uint32_t old_page = (old_break + 4095u) & ~4095u;
+                uint32_t new_page = (new_break + 4095u) & ~4095u;
+                for (uint32_t va = new_page; va < old_page; va += 4096) {
+                    vmm_unmap_user_page(&me->as, va);
+                }
             }
-
-            if (failed) { regs->eax = (uint32_t)-1; break; }
 
             me->heap_end = new_break;
             if (me->vma_list) {

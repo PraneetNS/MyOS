@@ -3,15 +3,8 @@
 #include "paging.h"
 #include "vga.h"
 
-static void track_frame(address_space_t* as, uint32_t frame_phys) {
-    if (as->owned_count < VMM_MAX_OWNED_FRAMES)
-        as->owned_frames[as->owned_count++] = frame_phys;
-    else
-        terminal_writestring("[vmm] warning: owned-frame tracking table full, frame not tracked (will leak on exit)\n");
-}
-
 address_space_t vmm_create_address_space(void) {
-    address_space_t as = {0, 0, {0}, 0};
+    address_space_t as = {0, 0};
 
     uint32_t dir_phys = pmm_alloc_frame();
     if (!dir_phys) {
@@ -29,46 +22,85 @@ address_space_t vmm_create_address_space(void) {
 
     as.directory = dir;
     as.directory_phys = dir_phys;
-    track_frame(&as, dir_phys);
     return as;
 }
 
-uint32_t vmm_map_user_page(address_space_t* as, uint32_t vaddr) {
+int vmm_map_page(address_space_t* as, uint32_t vaddr, uint32_t frame_phys, uint32_t pte_flags) {
     uint32_t dir_index   = vaddr >> 22;
     uint32_t table_index = (vaddr >> 12) & 0x3FF;
 
-    if (dir_index >= 768) {
-        terminal_writestring("[vmm] refused: cannot map into kernel space (>= 0xC0000000)\n");
-        return 0;
-    }
+    if (dir_index >= 768 || !as || !as->directory) return -1;
 
     uint32_t* dir = as->directory;
     uint32_t* table;
 
     if (!(dir[dir_index] & PAGE_PRESENT)) {
         uint32_t table_phys = pmm_alloc_frame();
-        if (!table_phys) { terminal_writestring("[vmm] out of physical memory for page table\n"); return 0; }
+        if (!table_phys) return -1;
         table = (uint32_t*) P2V(table_phys);
         for (int i = 0; i < 1024; i++) table[i] = 0;
         dir[dir_index] = table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-        track_frame(as, table_phys);
     } else {
         uint32_t table_phys = dir[dir_index] & ~0xFFFu;
         table = (uint32_t*) P2V(table_phys);
     }
 
-    uint32_t frame_phys = pmm_alloc_frame();
-    if (!frame_phys) { terminal_writestring("[vmm] out of physical memory for a page frame\n"); return 0; }
+    table[table_index] = (frame_phys & ~0xFFFu) | pte_flags;
+    return 0;
+}
 
-    table[table_index] = frame_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-    track_frame(as, frame_phys);
+uint32_t vmm_map_user_page(address_space_t* as, uint32_t vaddr) {
+    uint32_t frame_phys = pmm_alloc_frame();
+    if (!frame_phys) return 0;
+    if (vmm_map_page(as, vaddr, frame_phys, PAGE_PRESENT | PAGE_WRITE | PAGE_USER) != 0) {
+        pmm_unref(frame_phys);
+        return 0;
+    }
     return frame_phys;
 }
 
+void vmm_unmap_user_page(address_space_t* as, uint32_t vaddr) {
+    uint32_t dir_index   = vaddr >> 22;
+    uint32_t table_index = (vaddr >> 12) & 0x3FF;
+
+    if (dir_index >= 768 || !as || !as->directory) return;
+
+    uint32_t pde = as->directory[dir_index];
+    if (!(pde & PAGE_PRESENT)) return;
+
+    uint32_t table_phys = pde & ~0xFFFu;
+    uint32_t* table = (uint32_t*) P2V(table_phys);
+
+    if (table[table_index] & PAGE_PRESENT) {
+        uint32_t frame_phys = table[table_index] & ~0xFFFu;
+        table[table_index] = 0;
+        pmm_unref(frame_phys);
+        asm volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
+    }
+}
+
 void vmm_destroy_address_space(address_space_t* as) {
-    for (int i = 0; i < as->owned_count; i++)
-        pmm_unref(as->owned_frames[i]);
-    as->owned_count = 0;
+    if (!as || !as->directory) return;
+
+    for (uint32_t dir_index = 0; dir_index < 768; dir_index++) {
+        uint32_t dir_entry = as->directory[dir_index];
+        if (!(dir_entry & PAGE_PRESENT)) continue;
+
+        uint32_t table_phys = dir_entry & ~0xFFFu;
+        uint32_t* table = (uint32_t*) P2V(table_phys);
+
+        for (uint32_t table_index = 0; table_index < 1024; table_index++) {
+            uint32_t page_entry = table[table_index];
+            if (page_entry & PAGE_PRESENT) {
+                uint32_t frame_phys = page_entry & ~0xFFFu;
+                pmm_unref(frame_phys);
+            }
+        }
+        as->directory[dir_index] = 0;
+        pmm_unref(table_phys);
+    }
+
+    pmm_unref(as->directory_phys);
     as->directory = 0;
     as->directory_phys = 0;
 }

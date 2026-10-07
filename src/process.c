@@ -102,7 +102,6 @@ void process_init_table(int use_kshell) {
     process_t* shell = &table[0];
     shell->as.directory      = boot_page_directory;
     shell->as.directory_phys = paging_get_kernel_dir_phys();
-    shell->as.owned_count    = 0; /* the shell/idle doesn't own this address space -- never destroyed */
 
     shell->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
     shell->kernel_stack_top  = (uint32_t)(shell->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
@@ -163,10 +162,10 @@ process_t* process_spawn_by_name(const char* name, int parent_pid) {
     if (!buf) { vnode_unref(vn); return 0; }
 
     int n = vn->ops->read(vn, 0, buf, size);
-    vnode_unref(vn);
-    if (n <= 0) { kfree(buf); return 0; }
+    if (n <= 0) { vnode_unref(vn); kfree(buf); return 0; }
 
-    process_t* child = process_spawn_from_elf(name, buf, (uint32_t) n, parent_pid);
+    process_t* child = process_spawn_from_elf(name, buf, (uint32_t) n, parent_pid, vn);
+    vnode_unref(vn);
     kfree(buf);
     return child;
 }
@@ -181,7 +180,7 @@ process_t* process_find_by_pid(int pid) {
     return 0;
 }
 
-process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid) {
+process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid, vnode_t* vn) {
     int slot = -1;
     for (int i = 1; i < MAX_PROCESSES; i++) { /* slot 0 is always the shell */
         if (table[i].state == PROC_UNUSED) { slot = i; break; }
@@ -200,7 +199,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     uint32_t entry, stack_top;
     const char* argv[2] = { name, 0 };
     vma_t* vmas = NULL;
-    if (elf_load_into(image, image_size, &p->as, 1, argv, &entry, &stack_top, &vmas) != 0) {
+    if (elf_load_into(image, image_size, vn, &p->as, 1, argv, &entry, &stack_top, &vmas) != 0) {
         vmm_destroy_address_space(&p->as);
         return 0;
     }

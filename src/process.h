@@ -10,7 +10,12 @@
 #define PROC_KERNEL_STACK_SIZE 8192
 #define MAX_FDS 16               /* Stage 12: 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 #define HEAP_BASE 0x08800000u    /* Clear of user ELFs at 0x08048000 and stack below 0xC0000000 */
-#define HEAP_MAX  (HEAP_BASE + 0x100000u) /* cap growth at 1MB per process */
+#define HEAP_MAX  (HEAP_BASE + 256 * 1024 * 1024u) /* 256MB max heap */
+
+#define USER_STACK_TOP        0xC0000000u
+#define USER_STACK_MAX_GROWTH (8 * 1024 * 1024u) /* 8MB max stack */
+#define USER_STACK_BOTTOM     (USER_STACK_TOP - USER_STACK_MAX_GROWTH) /* 0xBF800000 */
+#define USER_STACK_GUARD_GAP  (4096u)
 
 #include "vfs.h"
 
@@ -62,7 +67,7 @@ process_t* process_spawn_by_name(const char* name, int parent_pid);
    marks it READY to run. `parent_pid` becomes the new process's ppid.
    Returns NULL if no free slot or the load failed. Does NOT start
    running it -- the scheduler picks it up on its next switch. */
-process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid);
+process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid, vnode_t* vn);
 
 /* Frees a process's address space and kernel stack, marking its slot
    free for reuse. */

@@ -49,33 +49,10 @@ static void print_hex(uint32_t v) {
     terminal_writestring(hex);
 }
 
-/* Maps and zeroes/copies one PT_LOAD segment, page by page, into a
-   FRESH physical frame per page -- this is what makes two processes
-   loaded at the identical virtual address genuinely isolated: they
-   never end up pointing at the same physical memory. */
-static int load_segment(address_space_t* as, const Elf32_Phdr* ph, const uint8_t* image) {
-    uint32_t start_page = ph->p_vaddr & ~(PAGE_SIZE - 1);
-    uint32_t end_addr    = ph->p_vaddr + ph->p_memsz;
-    uint32_t end_page    = (end_addr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-    for (uint32_t page_vaddr = start_page; page_vaddr < end_page; page_vaddr += PAGE_SIZE) {
-        uint32_t frame_phys = vmm_map_user_page(as, page_vaddr);
-        if (!frame_phys) return -1;
-
-        uint8_t* frame = (uint8_t*) P2V(frame_phys);
-        for (int i = 0; i < PAGE_SIZE; i++) frame[i] = 0; /* covers .bss for free */
-
-        uint32_t seg_file_end = ph->p_vaddr + ph->p_filesz;
-        for (uint32_t va = page_vaddr; va < page_vaddr + PAGE_SIZE; va++) {
-            if (va < ph->p_vaddr || va >= seg_file_end) continue;
-            uint32_t file_off = ph->p_offset + (va - ph->p_vaddr);
-            frame[va - page_vaddr] = image[file_off];
-        }
-    }
-    return 0;
-}
 
 int elf_load_into(const uint8_t* image, uint32_t image_size,
+                  struct vnode* vn,
                   address_space_t* as, int argc, const char* const* argv,
                   uint32_t* out_entry, uint32_t* out_stack_top,
                   vma_t** out_vmas) {
@@ -105,11 +82,6 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
     const Elf32_Phdr* phdrs = (const Elf32_Phdr*)(image + eh->e_phoff);
     for (int i = 0; i < eh->e_phnum; i++) {
         if (phdrs[i].p_type != PT_LOAD) continue;
-        if (load_segment(as, &phdrs[i], image) != 0) {
-            terminal_writestring("[elf] failed to load a segment (out of memory?)\n");
-            vma_free_list(vmas);
-            return -1;
-        }
 
         uint32_t seg_start = phdrs[i].p_vaddr & ~(PAGE_SIZE - 1);
         uint32_t seg_end   = (phdrs[i].p_vaddr + phdrs[i].p_memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
@@ -117,7 +89,7 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
         if (phdrs[i].p_flags & 4) prot |= VMA_PROT_READ;
         if (phdrs[i].p_flags & 2) prot |= VMA_PROT_WRITE;
         if (phdrs[i].p_flags & 1) prot |= VMA_PROT_EXEC;
-        vma_t* vma = vma_create(seg_start, seg_end, prot, VMA_FLAG_FILE, NULL, phdrs[i].p_offset, phdrs[i].p_filesz);
+        vma_t* vma = vma_create(seg_start, seg_end, prot, VMA_FLAG_FILE, vn, phdrs[i].p_offset, phdrs[i].p_filesz);
         if (vma) {
             vma_insert(&vmas, vma);
         }
@@ -130,8 +102,8 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
         vma_insert(&vmas, heap_vma);
     }
 
-    /* Create stack VMA */
-    uint32_t stack_start = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+    /* Create stack VMA: starts with initial top page, auto-grows downward on fault */
+    uint32_t stack_start = USER_STACK_TOP - PAGE_SIZE;
     uint32_t stack_end   = USER_STACK_TOP;
     vma_t* stack_vma = vma_create(stack_start, stack_end, VMA_PROT_READ | VMA_PROT_WRITE,
                                   VMA_FLAG_ANON | VMA_FLAG_STACK, NULL, 0, 0);
@@ -139,18 +111,13 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
         vma_insert(&vmas, stack_vma);
     }
 
-    uint32_t top_frame_phys = 0;
-    for (int i = 0; i < USER_STACK_PAGES; i++) {
-        uint32_t page_vaddr = USER_STACK_TOP - (i + 1) * PAGE_SIZE;
-        uint32_t frame_phys = vmm_map_user_page(as, page_vaddr);
-        if (!frame_phys) {
-            terminal_writestring("[elf] failed to map user stack\n");
-            vma_free_list(vmas);
-            return -1;
-        }
-        if (i == 0) {
-            top_frame_phys = frame_phys;
-        }
+    /* Map only the single top stack page for argv/argc setup */
+    uint32_t top_page_vaddr = USER_STACK_TOP - PAGE_SIZE;
+    uint32_t top_frame_phys = vmm_map_user_page(as, top_page_vaddr);
+    if (!top_frame_phys) {
+        terminal_writestring("[elf] failed to map user stack\n");
+        vma_free_list(vmas);
+        return -1;
     }
 
     if (argc < 0 || !argv) argc = 0;
