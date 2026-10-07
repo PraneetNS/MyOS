@@ -19,6 +19,8 @@
 #include "bcache.h"
 #include "vfs.h"
 #include "fat16.h"
+#include "tty.h"
+#include "devfs.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -97,6 +99,15 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
         fs_init();
         vfs_mount("/", myfs_get_root_vnode());
     }
+
+    tty_init();
+    kprintf("[ok] TTY layer initialized\n");
+
+    devfs_init();
+    vfs_mount("/dev", devfs_get_root());
+    devfs_get_root()->parent = vfs_get_root();
+    vnode_ref(vfs_get_root());
+    kprintf("[ok] Mounted devfs at /dev\n");
 
     pipe_init();
     kprintf("[ok] Pipe (IPC) initialized\n");

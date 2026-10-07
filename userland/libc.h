@@ -546,4 +546,108 @@ static inline void* calloc(unsigned int nmemb, unsigned int size) {
     return ptr;
 }
 
+/* Termios and ioctl support */
+typedef unsigned int tcflag_t;
+typedef unsigned char cc_t;
+typedef unsigned int speed_t;
+
+#define NCCS 32
+
+struct termios {
+    tcflag_t c_iflag;      /* input modes */
+    tcflag_t c_oflag;      /* output modes */
+    tcflag_t c_cflag;      /* control modes */
+    tcflag_t c_lflag;      /* local modes */
+    cc_t     c_line;       /* line discipline */
+    cc_t     c_cc[NCCS];   /* control characters */
+    speed_t  c_ispeed;     /* input baud rate */
+    speed_t  c_ospeed;     /* output baud rate */
+};
+
+/* c_iflag */
+#define IGNBRK  0000001
+#define BRKINT  0000002
+#define IGNPAR  0000004
+#define PARMRK  0000010
+#define INPCK   0000020
+#define ISTRIP  0000040
+#define INLCR   0000100
+#define IGNCR   0000200
+#define ICRNL   0000400
+#define IXON    0002000
+#define IXOFF   0010000
+
+/* c_oflag */
+#define OPOST   0000001
+#define ONLCR   0000004
+
+/* c_cflag */
+#define CS8     0000060
+#define CREAD   0000200
+
+/* c_lflag */
+#define ISIG    0000001
+#define ICANON  0000002
+#define ECHO    0000010
+#define ECHOE   0000020
+#define ECHOK   0000040
+#define ECHONL  0000100
+#define NOFLSH  0000200
+#define TOSTOP  0000400
+#define IEXTEN  0100000
+
+/* c_cc indices */
+#define VINTR   0
+#define VQUIT   1
+#define VERASE  2
+#define VKILL   3
+#define VEOF    4
+#define VTIME   5
+#define VMIN    6
+#define VSUSP   10
+#define VWERASE 14
+
+struct winsize {
+    unsigned short ws_row;
+    unsigned short ws_col;
+    unsigned short ws_xpixel;
+    unsigned short ws_ypixel;
+};
+
+#define TCGETS      0x5401
+#define TCSETS      0x5402
+#define TCSETSW     0x5403
+#define TCSETSF     0x5404
+#define TIOCGPGRP   0x540F
+#define TIOCSPGRP   0x5410
+#define TIOCGWINSZ  0x5413
+#define TIOCSWINSZ  0x5414
+
+#define TCSANOW     0
+#define TCSADRAIN   1
+#define TCSAFLUSH   2
+
+static inline int ioctl(int fd, unsigned long req, void* argp) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(54), "b"(fd), "c"(req), "d"(argp));
+    return ret;
+}
+
+static inline int tcgetattr(int fd, struct termios* termios_p) {
+    return ioctl(fd, TCGETS, termios_p);
+}
+
+static inline int tcsetattr(int fd, int optional_actions, const struct termios* termios_p) {
+    unsigned long req = TCSETS;
+    if (optional_actions == TCSADRAIN) req = TCSETSW;
+    else if (optional_actions == TCSAFLUSH) req = TCSETSF;
+    return ioctl(fd, req, (void*) termios_p);
+}
+
+static inline int isatty(int fd) {
+    struct winsize ws;
+    return ioctl(fd, TIOCGWINSZ, &ws) == 0 ? 1 : 0;
+}
+
 #endif
+

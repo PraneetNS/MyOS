@@ -19,6 +19,8 @@
 #include "paging.h"
 #include "vma.h"
 #include "uaccess.h"
+#include "tty.h"
+#include "devfs.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -51,6 +53,9 @@
 #define SYS_MMAP       30
 #define SYS_MUNMAP     31
 #define SYS_MPROTECT   32
+#define SYS_IOCTL      54
+#define SYS_TCGETATTR  55
+#define SYS_TCSETATTR  56
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -258,7 +263,8 @@ static void syscall_handler(struct registers* regs) {
                 }
             }
 
-            open_file_t* of = open_file_alloc(OPEN_FILE_VNODE, vn, flags);
+            open_file_type_t of_type = (vn->type == VNODE_CONSOLE) ? OPEN_FILE_CONSOLE : OPEN_FILE_VNODE;
+            open_file_t* of = open_file_alloc(of_type, vn, flags);
             if (!of) {
                 vnode_unref(vn);
                 regs->eax = (uint32_t) -ENFILE;
@@ -665,9 +671,13 @@ static void syscall_handler(struct registers* regs) {
 
             open_file_t* of = me->fds[fd];
             if (of->type == OPEN_FILE_CONSOLE) {
-                st->st_dev = 0; st->st_ino = 0; st->st_mode = S_IFCHR | 0666;
-                st->st_nlink = 1; st->st_size = 0; st->st_blksize = 512; st->st_blocks = 0;
-                regs->eax = 0;
+                if (of->vnode) {
+                    regs->eax = (uint32_t) vfs_stat(of->vnode, st);
+                } else {
+                    st->st_dev = 0; st->st_ino = 0; st->st_mode = S_IFCHR | 0666;
+                    st->st_nlink = 1; st->st_size = 0; st->st_blksize = 512; st->st_blocks = 0;
+                    regs->eax = 0;
+                }
                 break;
             }
             if (of->type == OPEN_FILE_VNODE && of->vnode) {
@@ -1100,6 +1110,69 @@ static void syscall_handler(struct registers* regs) {
             }
             int r = vma_mprotect(me, addr, len, prot);
             regs->eax = (uint32_t) r;
+            break;
+        }
+
+        case SYS_IOCTL: {
+            int fd = (int) regs->ebx;
+            unsigned long req = (unsigned long) regs->ecx;
+            void* argp = (void*) regs->edx;
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_CONSOLE || !of->vnode || !devfs_is_tty_vnode(of->vnode)) {
+                regs->eax = (uint32_t) -ENOTTY;
+                break;
+            }
+
+            regs->eax = (uint32_t) tty_ioctl(global_tty, req, argp);
+            break;
+        }
+
+        case SYS_TCGETATTR: {
+            int fd = (int) regs->ebx;
+            void* argp = (void*) regs->ecx;
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_CONSOLE || !of->vnode || !devfs_is_tty_vnode(of->vnode)) {
+                regs->eax = (uint32_t) -ENOTTY;
+                break;
+            }
+
+            regs->eax = (uint32_t) tty_ioctl(global_tty, TCGETS, argp);
+            break;
+        }
+
+        case SYS_TCSETATTR: {
+            int fd = (int) regs->ebx;
+            int opt = (int) regs->ecx;
+            void* argp = (void*) regs->edx;
+            (void) opt;
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_CONSOLE || !of->vnode || !devfs_is_tty_vnode(of->vnode)) {
+                regs->eax = (uint32_t) -ENOTTY;
+                break;
+            }
+
+            regs->eax = (uint32_t) tty_ioctl(global_tty, TCSETS, argp);
             break;
         }
 

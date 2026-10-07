@@ -55,6 +55,8 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 1
     printf "badwrite.elf\n"
     sleep 1
+    printf "ttytest\n"
+    sleep 2
     printf "memtest\n"
     sleep 10
     printf "exit\n"
@@ -134,6 +136,9 @@ echo "[PASS] heaptest.elf verified"
 
 grep -q "PAGE FAULT" "$LOGFILE1" || { echo "FAIL: badwrite page fault not caught"; exit 1; }
 echo "[PASS] badwrite.elf protection verified"
+
+grep -q "TTYTEST_PASSED" "$LOGFILE1" || { echo "FAIL: ttytest failed"; exit 1; }
+echo "[PASS] ttytest (isatty, devfs nodes, termios, winsize, raw mode) verified"
 
 # Stage 15 RAM log assertion (-m 256)
 grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }

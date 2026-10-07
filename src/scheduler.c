@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "keyboard.h"
 #include "bcache.h"
+#include "tty.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -66,7 +67,7 @@ void scheduler_tick(void) {
 
     while (serial_received()) {
         char c = serial_read();
-        keyboard_handle_char(c);
+        tty_input_char(global_tty, c);
     }
 
     if (current && current->is_kernel_task) {
@@ -152,7 +153,7 @@ void scheduler_exit_current(int exit_status) {
     while (!next) {
         while (serial_received()) {
             char c = serial_read();
-            keyboard_handle_char(c);
+            tty_input_char(global_tty, c);
         }
         asm volatile ("sti; hlt");
         next = pick_next_from(idx);
@@ -175,7 +176,7 @@ static void wait_or_idle(process_t* me) {
         while (me->state == PROC_WAITING) {
             while (serial_received()) {
                 char c = serial_read();
-                keyboard_handle_char(c);
+                tty_input_char(global_tty, c);
             }
             if (me->state != PROC_WAITING) break;
             asm volatile ("sti; hlt");
@@ -209,24 +210,3 @@ void scheduler_wake_channel(void* channel) {
     }
 }
 
-#define STDIN_WAIT_SENTINEL (-3)
-
-void scheduler_wait_for_stdin(void) {
-    process_t* me = current;
-    me->state = PROC_WAITING;
-    me->waiting_for_pid = STDIN_WAIT_SENTINEL;
-    wait_or_idle(me);
-}
-
-void scheduler_wake_stdin_waiters(void) {
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* p = process_table_entry(i);
-        if (p->state == PROC_WAITING && p->waiting_for_pid == STDIN_WAIT_SENTINEL) {
-            p->state = PROC_READY;
-            p->waiting_for_pid = -1;
-        }
-    }
-    if (started && current && current->is_kernel_task) {
-        scheduler_yield();
-    }
-}

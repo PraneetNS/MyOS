@@ -32,10 +32,6 @@ void scheduler_wait_for(int child_pid);
 void scheduler_wait_channel(void* channel);
 void scheduler_wake_channel(void* channel);
 
-/* Stage 12: blocking on keyboard/stdin line availability */
-void scheduler_wait_for_stdin(void);
-void scheduler_wake_stdin_waiters(void);
-
 /* Yield CPU voluntarily to the next ready task */
 void scheduler_yield(void);
 
