@@ -2,12 +2,15 @@
 #define PMM_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #define FRAME_SIZE 4096
 
 void pmm_init(uint32_t mb_info_addr);
 uint32_t pmm_alloc_frame(void);   /* returns physical address of a free 4KB frame with refcount=1, or 0 */
+uint32_t pmm_alloc_contiguous_frames(size_t count);
 void pmm_free_frame(uint32_t phys_addr);
+void pmm_free_contiguous_frames(uint32_t phys_addr, size_t count);
 void pmm_ref(uint32_t phys_addr);
 void pmm_unref(uint32_t phys_addr);
 uint16_t pmm_refcount(uint32_t phys_addr);
