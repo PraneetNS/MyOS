@@ -37,10 +37,10 @@ isodir/boot/grub/grub.cfg: boot/grub.cfg
 	cp boot/grub.cfg isodir/boot/grub/grub.cfg
 
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -serial stdio -display none -no-reboot
+	qemu-system-i386 -m 256 -cdrom $(ISO) -serial stdio -display none -no-reboot
 
 test: $(ISO) disk.img
-	timeout 10s qemu-system-i386 -hda disk.img -cdrom $(ISO) -boot d -serial stdio -display none -no-reboot || true
+	timeout 10s qemu-system-i386 -m 256 -hda disk.img -cdrom $(ISO) -boot d -serial stdio -display none -no-reboot || true
 
 disk.img:
 	bash tools/build_disk.sh

@@ -10,11 +10,20 @@ struct mb2_tag {
 
 #define MB2_TAG_TYPE_END      0
 #define MB2_TAG_TYPE_CMDLINE  1
+#define MB2_TAG_TYPE_MODULE   3
 #define MB2_TAG_TYPE_MMAP     6
 
 struct mb2_tag_string {
     uint32_t type;
     uint32_t size;
+    char string[];
+};
+
+struct mb2_tag_module {
+    uint32_t type;
+    uint32_t size;
+    uint32_t mod_start;
+    uint32_t mod_end;
     char string[];
 };
 
