@@ -6,7 +6,7 @@
 #include "fs.h"
 #include "idt.h" /* struct registers -- forked children resume from a saved snapshot of it */
 
-#define MAX_PROCESSES 8
+#define MAX_PROCESSES 64
 #define PROC_KERNEL_STACK_SIZE 8192
 #define MAX_FDS 16               /* Stage 12: 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 #define HEAP_BASE 0x08800000u    /* Clear of user ELFs at 0x08048000 and stack below 0xC0000000 */

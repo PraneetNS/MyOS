@@ -186,9 +186,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
         if (table[i].state == PROC_UNUSED) { slot = i; break; }
     }
     if (slot < 0) {
-        terminal_writestring("[proc] no free process slots (max ");
-        terminal_putchar('0' + MAX_PROCESSES);
-        terminal_writestring(")\n");
+        kprintf("[proc] no free process slots (max %d)\n", MAX_PROCESSES);
         return 0;
     }
 
