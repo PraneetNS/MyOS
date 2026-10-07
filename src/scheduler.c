@@ -140,6 +140,11 @@ void scheduler_exit_current(int exit_status) {
     p->exit_code = exit_status;
     p->state = PROC_ZOMBIE;
 
+    process_t* parent = process_find_by_pid(p->ppid);
+    if (parent) {
+        sig_send(parent, SIGCHLD);
+    }
+
     wake_waiters_for(exiting_pid);
 
     vmm_switch_to_kernel();

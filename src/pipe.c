@@ -4,6 +4,7 @@
 #include "serial.h"
 #include "vga.h"
 #include "errno.h"
+#include "signal.h"
 
 static int active_pipe_count = 0;
 
@@ -51,7 +52,13 @@ int pipe_read(pipe_t* p, void* buf, uint32_t count) {
         if (p->writer_count == 0) {
             return 0; /* EOF */
         }
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
         scheduler_wait_channel(&p->read_wait);
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
     }
 
     while (read_bytes < count && p->count > 0) {
@@ -75,15 +82,23 @@ int pipe_write(pipe_t* p, const void* buf, uint32_t count) {
 
     while (written < count) {
         if (p->reader_count == 0) {
+            sig_send(scheduler_current(), SIGPIPE);
             if (written > 0) return (int) written;
             return -EPIPE;
         }
 
         while (p->count == PIPE_CAPACITY) {
+            if (signal_has_deliverable(scheduler_current())) {
+                return (written > 0) ? (int) written : -EINTR;
+            }
             scheduler_wait_channel(&p->write_wait);
             if (p->reader_count == 0) {
+                sig_send(scheduler_current(), SIGPIPE);
                 if (written > 0) return (int) written;
                 return -EPIPE;
+            }
+            if (signal_has_deliverable(scheduler_current())) {
+                return (written > 0) ? (int) written : -EINTR;
             }
         }
 

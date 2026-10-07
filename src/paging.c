@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "vfs.h"
+#include "signal.h"
 
 extern void paging_flush(uint32_t page_directory_phys);
 
@@ -146,7 +147,11 @@ static void page_fault_handler(struct registers* regs) {
     }
 
     if (from_usermode) {
-        scheduler_exit_current(139); /* never returns */
+        if (proc) {
+            sig_send(proc, SIGSEGV);
+        }
+        signal_handle_pending(regs);
+        return;
     }
 
     if (in_uaccess) {

@@ -117,6 +117,7 @@ void process_init_table(int use_kshell) {
     shell->heap_mapped_up_to = HEAP_BASE;
     shell->vma_list = NULL;
     init_fds(shell);
+    signal_init_proc(shell);
 
     if (use_kshell) {
         const char* n = "kshell";
@@ -217,6 +218,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->heap_end = HEAP_BASE;
     p->heap_mapped_up_to = HEAP_BASE;
     init_fds(p);
+    signal_init_proc(p);
 
     int i = 0; for (; name[i] && i < 31; i++) p->name[i] = name[i]; p->name[i] = '\0';
 
@@ -275,9 +277,21 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->is_kernel_task = 0;
     p->pid = next_pid++;
     p->ppid = parent->pid;
+    p->pgid = parent->pgid;
+    p->sid = parent->sid;
     p->waiting_for_pid = -1;
     p->wait_channel = 0;
     p->exit_code = 0;
+    p->sig_pending = 0;
+    p->sig_blocked = parent->sig_blocked;
+    p->alarm_ticks = 0;
+    p->is_stopped = 0;
+    p->stopped_reported = 0;
+    p->stop_sig = 0;
+    p->term_sig = 0;
+    for (int k = 0; k < NSIG; k++) {
+        p->sig_actions[k] = parent->sig_actions[k];
+    }
 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;

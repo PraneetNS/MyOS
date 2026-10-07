@@ -4,6 +4,7 @@
 #include "scheduler.h"
 #include "errno.h"
 #include "uaccess.h"
+#include "signal.h"
 
 static tty_t main_tty;
 tty_t* global_tty = &main_tty;
@@ -170,7 +171,13 @@ int tty_read(tty_t* tty, char* buf, uint32_t count) {
     if (tty->termios.c_lflag & ICANON) {
         /* Canonical mode: wait until line available or EOF */
         while (tty->line_count == 0 && !tty->eof_pending) {
+            if (signal_has_deliverable(scheduler_current())) {
+                return -EINTR;
+            }
             scheduler_wait_channel(&tty->read_wait);
+            if (signal_has_deliverable(scheduler_current())) {
+                return -EINTR;
+            }
         }
 
         if (tty->line_count == 0 && tty->eof_pending) {
@@ -188,12 +195,17 @@ int tty_read(tty_t* tty, char* buf, uint32_t count) {
         }
         return (int) n;
     } else {
-        /* Raw mode */
         uint8_t vmin = tty->termios.c_cc[VMIN];
         if (vmin > 0) {
             uint32_t needed = (vmin < count) ? vmin : count;
             while (tty->raw_count < (int) needed) {
+                if (signal_has_deliverable(scheduler_current())) {
+                    return -EINTR;
+                }
                 scheduler_wait_channel(&tty->read_wait);
+                if (signal_has_deliverable(scheduler_current())) {
+                    return -EINTR;
+                }
             }
         } else {
             /* Non-blocking when VMIN == 0 */

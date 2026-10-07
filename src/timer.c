@@ -2,12 +2,24 @@
 #include "idt.h"
 #include "io.h"
 #include "scheduler.h"
+#include "process.h"
+#include "signal.h"
 
 static volatile uint32_t tick_count = 0;
 
 static void timer_callback(struct registers* regs) {
     (void) regs;
     tick_count++;
+
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table_entry(i);
+        if (p && p->state != PROC_UNUSED && p->state != PROC_ZOMBIE && p->alarm_ticks > 0) {
+            if (--p->alarm_ticks == 0) {
+                sig_send(p, SIGALRM);
+            }
+        }
+    }
+
     scheduler_tick(); /* no-op until scheduler_start() has been called */
 }
 
