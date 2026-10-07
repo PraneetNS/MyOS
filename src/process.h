@@ -42,6 +42,8 @@ typedef struct process {
 
     uint32_t heap_end;          /* Stage 11: current program break, grows from HEAP_BASE via sys_sbrk() */
     uint32_t heap_mapped_up_to; /* how far the heap has actually been paged in (<= heap_end, rounded to a page) */
+
+    struct vma* vma_list;       /* Stage 15: sorted list of memory areas (VMAs) */
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as either the resident
