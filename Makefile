@@ -13,7 +13,7 @@ OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o boot/paging_asm.
        src/pmm.o src/paging.o src/kheap.o src/tss.o src/syscall.o \
        src/ata.o src/fs.o src/elf.o src/shell.o src/vmm.o src/vma.o \
        src/process.o src/scheduler.o src/pipe.o src/serial.o src/bcache.o src/vfs.o src/fat16.o \
-       src/tty.o src/devfs.o
+       src/tty.o src/devfs.o src/signal.o
 
 KERNEL_BIN = isodir/boot/myos.bin
 ISO        = myos.iso

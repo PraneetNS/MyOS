@@ -18,6 +18,7 @@
 #define USER_STACK_GUARD_GAP  (4096u)
 
 #include "vfs.h"
+#include "signal.h"
 
 typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_ZOMBIE, PROC_EXITED } proc_state_t;
 
@@ -34,9 +35,20 @@ typedef struct process {
 
     int pid;
     int ppid;
+    int pgid;                   /* Process group ID */
+    int sid;                    /* Session ID */
     int waiting_for_pid;        /* valid when state == PROC_WAITING */
     void* wait_channel;         /* Stage 14: sleep channel for blocked pipes/events */
     int exit_code;              /* Stage 14: exit status code */
+
+    sigset_t sig_pending;       /* Pending signals mask */
+    sigset_t sig_blocked;       /* Blocked signals mask */
+    struct sigaction sig_actions[NSIG]; /* Signal handlers */
+    uint32_t alarm_ticks;       /* Remaining ticks until SIGALRM */
+    int is_stopped;             /* 1 if stopped by SIGSTOP/SIGTSTP */
+    int stopped_reported;       /* 1 if stop status reported via waitpid */
+    int stop_sig;               /* Signal that stopped the process */
+    int term_sig;               /* Signal that terminated the process, if any */
 
     open_file_t* fds[MAX_FDS];  /* Stage 13: VFS open_file pointers, refcounted */
     uint8_t fd_flags[MAX_FDS];  /* Stage 14: descriptor flags (FD_CLOEXEC) */

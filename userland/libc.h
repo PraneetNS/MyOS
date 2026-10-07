@@ -22,10 +22,13 @@
 
 /* Waitpid constants and macros */
 #define WNOHANG        1
+#define WUNTRACED      2
 #define WEXITSTATUS(s) (((s) >> 8) & 0xff)
 #define WTERMSIG(s)    ((s) & 0x7f)
 #define WIFEXITED(s)   (WTERMSIG(s) == 0)
-#define WIFSIGNALED(s) (((unsigned int)(((s) & 0x7f) + 1) >> 1) > 0)
+#define WIFSIGNALED(s) (((s) & 0x7f) > 0 && ((s) & 0x7f) != 0x7f)
+#define WIFSTOPPED(s)  (((s) & 0xff) == 0x7f)
+#define WSTOPSIG(s)    (((s) >> 8) & 0xff)
 
 /* Seek constants */
 #define SEEK_SET    0
@@ -647,6 +650,127 @@ static inline int tcsetattr(int fd, int optional_actions, const struct termios* 
 static inline int isatty(int fd) {
     struct winsize ws;
     return ioctl(fd, TIOCGWINSZ, &ws) == 0 ? 1 : 0;
+}
+
+/* Signal definitions and types */
+#define SIGHUP     1
+#define SIGINT     2
+#define SIGQUIT    3
+#define SIGILL     4
+#define SIGTRAP    5
+#define SIGABRT    6
+#define SIGBUS     7
+#define SIGFPE     8
+#define SIGKILL    9
+#define SIGUSR1    10
+#define SIGSEGV    11
+#define SIGUSR2    12
+#define SIGPIPE    13
+#define SIGALRM    14
+#define SIGTERM    15
+#define SIGSTKFLT  16
+#define SIGCHLD    17
+#define SIGCONT    18
+#define SIGSTOP    19
+#define SIGTSTP    20
+#define SIGTTIN    21
+#define SIGTTOU    22
+#define NSIG       32
+
+typedef unsigned int sigset_t;
+
+#define sigmask(sig) (1U << ((sig) - 1))
+
+#define SIG_DFL ((void (*)(int)) 0)
+#define SIG_IGN ((void (*)(int)) 1)
+
+#define SIG_BLOCK   0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
+#define SA_NOCLDSTOP 0x00000001
+#define SA_RESTORER  0x04000000
+#define SA_RESTART   0x10000000
+#define SA_NODEFER   0x40000000
+
+struct sigaction {
+    void (*sa_handler)(int);
+    sigset_t sa_mask;
+    int sa_flags;
+    void (*sa_restorer)(void);
+};
+
+static inline int sigemptyset(sigset_t* set) {
+    if (!set) return -1;
+    *set = 0;
+    return 0;
+}
+
+static inline int sigfillset(sigset_t* set) {
+    if (!set) return -1;
+    *set = 0xFFFFFFFFU;
+    return 0;
+}
+
+static inline int sigaddset(sigset_t* set, int signum) {
+    if (!set || signum <= 0 || signum >= NSIG) return -1;
+    *set |= (1U << (signum - 1));
+    return 0;
+}
+
+static inline int sigdelset(sigset_t* set, int signum) {
+    if (!set || signum <= 0 || signum >= NSIG) return -1;
+    *set &= ~(1U << (signum - 1));
+    return 0;
+}
+
+static inline int sigismember(const sigset_t* set, int signum) {
+    if (!set || signum <= 0 || signum >= NSIG) return -1;
+    return (*set & (1U << (signum - 1))) ? 1 : 0;
+}
+
+static inline int kill(int pid, int sig) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(37), "b"(pid), "c"(sig));
+    return ret;
+}
+
+extern void __sigreturn_restorer(void);
+
+static inline int sigaction(int sig, const struct sigaction* act, struct sigaction* oldact) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(67), "b"(sig), "c"(act), "d"(oldact));
+    return ret;
+}
+
+static inline void (*signal(int sig, void (*handler)(int)))(int) {
+    struct sigaction act, oldact;
+    act.sa_handler = handler;
+    act.sa_mask = 0;
+    act.sa_flags = SA_RESTORER;
+    act.sa_restorer = __sigreturn_restorer;
+    if (sigaction(sig, &act, &oldact) < 0) {
+        return (void (*)(int)) -1;
+    }
+    return oldact.sa_handler;
+}
+
+static inline int sigprocmask(int how, const sigset_t* set, sigset_t* oldset) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(68), "b"(how), "c"(set), "d"(oldset));
+    return ret;
+}
+
+static inline int pause(void) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(70));
+    return ret;
+}
+
+static inline unsigned int alarm(unsigned int seconds) {
+    unsigned int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(71), "b"(seconds));
+    return ret;
 }
 
 #endif

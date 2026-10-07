@@ -21,6 +21,7 @@
 #include "uaccess.h"
 #include "tty.h"
 #include "devfs.h"
+#include "signal.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -56,6 +57,12 @@
 #define SYS_IOCTL      54
 #define SYS_TCGETATTR  55
 #define SYS_TCSETATTR  56
+#define SYS_KILL       37
+#define SYS_SIGACTION  67
+#define SYS_SIGPROCMASK 68
+#define SYS_SIGRETURN  119
+#define SYS_PAUSE      70
+#define SYS_ALARM      71
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -506,6 +513,15 @@ static void syscall_handler(struct registers* regs) {
 
             int i = 0; for (; kname[i] && i < 31; i++) me->name[i] = kname[i]; me->name[i] = '\0';
 
+            for (int sig = 1; sig < NSIG; sig++) {
+                if (me->sig_actions[sig].sa_handler != SIG_IGN) {
+                    me->sig_actions[sig].sa_handler = SIG_DFL;
+                    me->sig_actions[sig].sa_mask = 0;
+                    me->sig_actions[sig].sa_flags = 0;
+                    me->sig_actions[sig].sa_restorer = 0;
+                }
+            }
+
             vmm_switch(&me->as);
             vmm_destroy_address_space(&old_as);
 
@@ -531,6 +547,7 @@ static void syscall_handler(struct registers* regs) {
             for (;;) {
                 int has_children = 0;
                 process_t* zombie = 0;
+                process_t* stopped_child = 0;
 
                 for (int i = 0; i < MAX_PROCESSES; i++) {
                     process_t* child = process_table_entry(i);
@@ -543,6 +560,10 @@ static void syscall_handler(struct registers* regs) {
                             zombie = child;
                             break;
                         }
+                        if ((options & 2 /* WUNTRACED */) && child->is_stopped && !child->stopped_reported) {
+                            stopped_child = child;
+                            break;
+                        }
                     }
                 }
 
@@ -551,11 +572,24 @@ static void syscall_handler(struct registers* regs) {
                     break;
                 }
 
+                if (stopped_child) {
+                    stopped_child->stopped_reported = 1;
+                    if (user_status) {
+                        *user_status = (stopped_child->stop_sig << 8) | 0x7F;
+                    }
+                    regs->eax = (uint32_t) stopped_child->pid;
+                    break;
+                }
+
                 if (zombie) {
                     int reaped_pid = zombie->pid;
                     int exit_code = zombie->exit_code;
                     if (user_status) {
-                        *user_status = (exit_code & 0xff) << 8;
+                        int sig = zombie->term_sig;
+                        if (sig == 0 && exit_code >= 128 && exit_code < 160) {
+                            sig = exit_code - 128;
+                        }
+                        *user_status = ((exit_code & 0xff) << 8) | (sig & 0x7f);
                     }
                     process_destroy(zombie);
                     regs->eax = (uint32_t) reaped_pid;
@@ -564,6 +598,11 @@ static void syscall_handler(struct registers* regs) {
 
                 if (options & WNOHANG) {
                     regs->eax = 0;
+                    break;
+                }
+
+                if (signal_has_deliverable(me)) {
+                    regs->eax = (uint32_t) -EINTR;
                     break;
                 }
 
@@ -978,10 +1017,17 @@ static void syscall_handler(struct registers* regs) {
             uint32_t sec = regs->ebx;
             uint32_t start = timer_get_ticks();
             uint32_t target = start + sec * 100;
+            process_t* me = scheduler_current();
             while (timer_get_ticks() < target) {
+                if (signal_has_deliverable(me)) {
+                    regs->eax = (uint32_t) -EINTR;
+                    break;
+                }
                 scheduler_yield();
             }
-            regs->eax = 0;
+            if (timer_get_ticks() >= target) {
+                regs->eax = 0;
+            }
             break;
         }
 
@@ -1173,6 +1219,45 @@ static void syscall_handler(struct registers* regs) {
             }
 
             regs->eax = (uint32_t) tty_ioctl(global_tty, TCSETS, argp);
+            break;
+        }
+
+        case SYS_KILL: {
+            int pid = (int) regs->ebx;
+            int sig = (int) regs->ecx;
+            regs->eax = (uint32_t) sys_kill(pid, sig);
+            break;
+        }
+
+        case SYS_SIGACTION: {
+            int sig = (int) regs->ebx;
+            const struct sigaction* act = (const struct sigaction*) regs->ecx;
+            struct sigaction* oldact = (struct sigaction*) regs->edx;
+            regs->eax = (uint32_t) sys_sigaction(sig, act, oldact);
+            break;
+        }
+
+        case SYS_SIGPROCMASK: {
+            int how = (int) regs->ebx;
+            const sigset_t* set = (const sigset_t*) regs->ecx;
+            sigset_t* oldset = (sigset_t*) regs->edx;
+            regs->eax = (uint32_t) sys_sigprocmask(how, set, oldset);
+            break;
+        }
+
+        case SYS_SIGRETURN: {
+            regs->eax = (uint32_t) sys_sigreturn(regs);
+            break;
+        }
+
+        case SYS_PAUSE: {
+            regs->eax = (uint32_t) sys_pause();
+            break;
+        }
+
+        case SYS_ALARM: {
+            unsigned int sec = (unsigned int) regs->ebx;
+            regs->eax = (uint32_t) sys_alarm(sec);
             break;
         }
 

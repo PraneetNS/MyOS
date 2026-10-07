@@ -119,25 +119,34 @@ static const char* exception_messages[32] = {
 
 #include "serial.h"
 #include "scheduler.h"
+#include "signal.h"
 
 /* Called from isr_common_stub in isr.s for CPU exceptions (vectors 0-31) */
 void isr_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no] != 0) {
         interrupt_handlers[regs->int_no](regs);
+        signal_handle_pending(regs);
         return;
     }
 
     int from_usermode = (regs->cs & 0x3) == 3;
     if (from_usermode) {
         process_t* proc = scheduler_current();
-        serial_printf("[fault] PID %d (%s) exception %d (%s) at eip=0x%08x err=0x%x: killed\n",
+        serial_printf("[fault] PID %d (%s) exception %d (%s) at eip=0x%08x err=0x%x\n",
                       proc ? proc->pid : 0, proc ? proc->name : "user",
                       regs->int_no,
                       (regs->int_no < 32) ? exception_messages[regs->int_no] : "unknown",
                       regs->eip, regs->err_code);
-        kprintf("Process %d terminated (exception %d at eip=0x%08x).\n",
-                proc ? proc->pid : 0, regs->int_no, regs->eip);
-        scheduler_exit_current(139);
+
+        int sig = SIGSEGV;
+        if (regs->int_no == 0) sig = SIGFPE;
+        else if (regs->int_no == 4 || regs->int_no == 6) sig = SIGILL;
+        else if (regs->int_no == 13) sig = SIGSEGV;
+
+        if (proc) {
+            sig_send(proc, sig);
+        }
+        signal_handle_pending(regs);
         return;
     }
 
@@ -157,4 +166,6 @@ void irq_handler(struct registers* regs) {
 
     if (interrupt_handlers[regs->int_no] != 0)
         interrupt_handlers[regs->int_no](regs);
+
+    signal_handle_pending(regs);
 }

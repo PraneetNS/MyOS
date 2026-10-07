@@ -28,4 +28,12 @@ _start:
 
 .size _start, . - _start
 
+.global __sigreturn_restorer
+.type __sigreturn_restorer, @function
+__sigreturn_restorer:
+    pop %eax
+    mov $119, %eax
+    int $0x80
+.size __sigreturn_restorer, . - __sigreturn_restorer
+
 .section .note.GNU-stack,"",@progbits
