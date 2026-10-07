@@ -184,6 +184,41 @@ uint32_t pmm_alloc_frame(void) {
     return 0; /* out of memory */
 }
 
+uint32_t pmm_alloc_contiguous_frames(size_t count) {
+    if (count == 0) return 0;
+    if (count == 1) return pmm_alloc_frame();
+    if (free_frames < count) return 0;
+
+    uint32_t consecutive = 0;
+    uint32_t start_frame = 0;
+
+    for (uint32_t frame = 0; frame <= highest_frame; frame++) {
+        if (!bitmap_test(frame)) {
+            if (consecutive == 0) {
+                start_frame = frame;
+            }
+            consecutive++;
+            if (consecutive == count) {
+                for (uint32_t i = 0; i < count; i++) {
+                    bitmap_set(start_frame + i);
+                    if (frame_refcount) frame_refcount[start_frame + i] = 1;
+                }
+                free_frames -= count;
+                return start_frame * FRAME_SIZE;
+            }
+        } else {
+            consecutive = 0;
+        }
+    }
+    return 0; /* out of contiguous memory */
+}
+
+void pmm_free_contiguous_frames(uint32_t phys_addr, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        pmm_unref(phys_addr + i * FRAME_SIZE);
+    }
+}
+
 void pmm_ref(uint32_t phys_addr) {
     uint32_t frame = phys_addr / FRAME_SIZE;
     if (frame < MAX_FRAMES) {

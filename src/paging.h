@@ -19,5 +19,6 @@ extern uint32_t boot_page_directory[1024];
 
 void paging_init(void);
 uint32_t paging_get_kernel_dir_phys(void);
+void paging_flush(uint32_t page_directory_phys);
 
 #endif
