@@ -1,4 +1,5 @@
 #include "process.h"
+#include "vma.h"
 #include "pmm.h"
 #include "kheap.h"
 #include "vga.h"
@@ -115,6 +116,7 @@ void process_init_table(int use_kshell) {
     shell->is_forked = 0;
     shell->heap_end = HEAP_BASE;
     shell->heap_mapped_up_to = HEAP_BASE;
+    shell->vma_list = NULL;
     init_fds(shell);
 
     if (use_kshell) {
@@ -197,12 +199,14 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 
     uint32_t entry, stack_top;
     const char* argv[2] = { name, 0 };
-    if (elf_load_into(image, image_size, &p->as, 1, argv, &entry, &stack_top) != 0) {
+    vma_t* vmas = NULL;
+    if (elf_load_into(image, image_size, &p->as, 1, argv, &entry, &stack_top, &vmas) != 0) {
         vmm_destroy_address_space(&p->as);
         return 0;
     }
     p->entry_point = entry;
     p->user_stack_top = stack_top;
+    p->vma_list = vmas;
 
     p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
     p->kernel_stack_top  = (uint32_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
@@ -234,6 +238,10 @@ void process_destroy(process_t* p) {
             p->fds[i] = 0;
         }
     }
+    if (p->vma_list) {
+        vma_free_list(p->vma_list);
+        p->vma_list = NULL;
+    }
     if (!p->is_kernel_task)
         vmm_destroy_address_space(&p->as);
     if (p->kernel_stack_base) { kfree(p->kernel_stack_base); p->kernel_stack_base = 0; }
@@ -262,6 +270,8 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
         vmm_destroy_address_space(&p->as);
         return 0;
     }
+
+    p->vma_list = vma_clone_list(parent->vma_list);
 
     p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
     p->kernel_stack_top  = (uint32_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);

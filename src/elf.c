@@ -2,6 +2,7 @@
 #include "vga.h"
 #include "vmm.h"
 #include "paging.h"
+#include "process.h"
 
 #define EI_NIDENT 16
 
@@ -76,7 +77,11 @@ static int load_segment(address_space_t* as, const Elf32_Phdr* ph, const uint8_t
 
 int elf_load_into(const uint8_t* image, uint32_t image_size,
                   address_space_t* as, int argc, const char* const* argv,
-                  uint32_t* out_entry, uint32_t* out_stack_top) {
+                  uint32_t* out_entry, uint32_t* out_stack_top,
+                  vma_t** out_vmas) {
+    if (out_vmas) *out_vmas = NULL;
+    vma_t* vmas = NULL;
+
     if (image_size < sizeof(Elf32_Ehdr)) {
         terminal_writestring("[elf] file too small to be an ELF\n");
         return -1;
@@ -102,8 +107,36 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
         if (phdrs[i].p_type != PT_LOAD) continue;
         if (load_segment(as, &phdrs[i], image) != 0) {
             terminal_writestring("[elf] failed to load a segment (out of memory?)\n");
+            vma_free_list(vmas);
             return -1;
         }
+
+        uint32_t seg_start = phdrs[i].p_vaddr & ~(PAGE_SIZE - 1);
+        uint32_t seg_end   = (phdrs[i].p_vaddr + phdrs[i].p_memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        uint32_t prot = 0;
+        if (phdrs[i].p_flags & 4) prot |= VMA_PROT_READ;
+        if (phdrs[i].p_flags & 2) prot |= VMA_PROT_WRITE;
+        if (phdrs[i].p_flags & 1) prot |= VMA_PROT_EXEC;
+        vma_t* vma = vma_create(seg_start, seg_end, prot, VMA_FLAG_FILE, NULL, phdrs[i].p_offset, phdrs[i].p_filesz);
+        if (vma) {
+            vma_insert(&vmas, vma);
+        }
+    }
+
+    /* Create heap VMA (starts at HEAP_BASE, initially 0 bytes) */
+    vma_t* heap_vma = vma_create(HEAP_BASE, HEAP_BASE, VMA_PROT_READ | VMA_PROT_WRITE,
+                                 VMA_FLAG_ANON | VMA_FLAG_HEAP, NULL, 0, 0);
+    if (heap_vma) {
+        vma_insert(&vmas, heap_vma);
+    }
+
+    /* Create stack VMA */
+    uint32_t stack_start = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+    uint32_t stack_end   = USER_STACK_TOP;
+    vma_t* stack_vma = vma_create(stack_start, stack_end, VMA_PROT_READ | VMA_PROT_WRITE,
+                                  VMA_FLAG_ANON | VMA_FLAG_STACK, NULL, 0, 0);
+    if (stack_vma) {
+        vma_insert(&vmas, stack_vma);
     }
 
     uint32_t top_frame_phys = 0;
@@ -112,6 +145,7 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
         uint32_t frame_phys = vmm_map_user_page(as, page_vaddr);
         if (!frame_phys) {
             terminal_writestring("[elf] failed to map user stack\n");
+            vma_free_list(vmas);
             return -1;
         }
         if (i == 0) {
@@ -163,5 +197,6 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
 
     *out_entry = eh->e_entry;
     *out_stack_top = USER_STACK_TOP - offset;
+    if (out_vmas) *out_vmas = vmas;
     return 0;
 }

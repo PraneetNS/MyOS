@@ -17,6 +17,8 @@
 #include "timer.h"
 #include "pmm.h"
 #include "paging.h"
+#include "vma.h"
+#include "uaccess.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -60,14 +62,26 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
     if (!ptr) return -EFAULT;
 
     process_t* me = scheduler_current();
-    if (!me || !me->as.directory) return 0;
+    if (!me || me->is_kernel_task) return 0;
 
     uint32_t start = (uint32_t) ptr;
     uint32_t end = start + len;
     if (end < start) return -EFAULT;
-
     if (start < 0x1000 || end > 0xC0000000) return -EFAULT;
 
+    if (me->vma_list) {
+        uint32_t cur = start;
+        while (cur < end) {
+            vma_t* vma = vma_find(me, cur);
+            if (!vma) return -EFAULT;
+            if (write && !(vma->prot & VMA_PROT_WRITE)) return -EFAULT;
+            if (!write && !(vma->prot & VMA_PROT_READ)) return -EFAULT;
+            cur = vma->end;
+        }
+        return 0;
+    }
+
+    if (!me->as.directory) return 0;
     uint32_t* dir = me->as.directory;
     uint32_t page_start = start & ~0xFFFu;
     uint32_t page_end = (end - 1) & ~0xFFFu;
@@ -91,11 +105,30 @@ static int validate_user_string(const char* s) {
     if (!s) return -EFAULT;
 
     process_t* me = scheduler_current();
-    if (!me || !me->as.directory) return 0;
+    if (!me || me->is_kernel_task) return 0;
 
     uint32_t va = (uint32_t) s;
     if (va < 0x1000 || va >= 0xC0000000) return -EFAULT;
 
+    if (me->vma_list) {
+        vma_t* vma = vma_find(me, va);
+        if (!vma || !(vma->prot & VMA_PROT_READ)) return -EFAULT;
+        int len = 0;
+        while (1) {
+            if (va >= vma->end) {
+                vma = vma_find(me, va);
+                if (!vma || !(vma->prot & VMA_PROT_READ)) return -EFAULT;
+            }
+            char c = *(const char*) va;
+            if (c == '\0') return 0;
+            len++;
+            if (len > 1024) return -ENAMETOOLONG;
+            va++;
+            if (va >= 0xC0000000) return -EFAULT;
+        }
+    }
+
+    if (!me->as.directory) return 0;
     uint32_t* dir = me->as.directory;
     int len = 0;
 
@@ -408,7 +441,8 @@ static void syscall_handler(struct registers* regs) {
             if (!new_as.directory) { kfree(buf); regs->eax = (uint32_t)-1; break; }
 
             uint32_t entry, stack_top;
-            if (elf_load_into(buf, (uint32_t) n, &new_as, argc, kargv, &entry, &stack_top) != 0) {
+            vma_t* new_vmas = NULL;
+            if (elf_load_into(buf, (uint32_t) n, &new_as, argc, kargv, &entry, &stack_top, &new_vmas) != 0) {
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
                 regs->eax = (uint32_t)-1;
@@ -427,6 +461,11 @@ static void syscall_handler(struct registers* regs) {
                     vfs_close(of);
                 }
             }
+
+            if (me->vma_list) {
+                vma_free_list(me->vma_list);
+            }
+            me->vma_list = new_vmas;
 
             vmm_destroy_address_space(&me->as);
             me->as = new_as;
@@ -529,6 +568,16 @@ static void syscall_handler(struct registers* regs) {
             if (failed) { regs->eax = (uint32_t)-1; break; }
 
             me->heap_end = new_break;
+            if (me->vma_list) {
+                vma_t* v = me->vma_list;
+                while (v) {
+                    if (v->flags & VMA_FLAG_HEAP) {
+                        v->end = (new_break + 4095u) & ~4095u;
+                        break;
+                    }
+                    v = v->next;
+                }
+            }
             regs->eax = old_break;
             break;
         }

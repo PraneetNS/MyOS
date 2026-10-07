@@ -10,8 +10,11 @@
    ring 3 itself. The caller (process.c) decides when this process
    actually runs, via the scheduler. Returns 0 on success (with
    *out_entry and *out_stack_top filled in) or -1 on failure. */
+#include "vma.h"
+
 int elf_load_into(const uint8_t* image, uint32_t image_size,
                    address_space_t* as, int argc, const char* const* argv,
-                   uint32_t* out_entry, uint32_t* out_stack_top);
+                   uint32_t* out_entry, uint32_t* out_stack_top,
+                   vma_t** out_vmas);
 
 #endif
