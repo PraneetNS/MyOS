@@ -23,7 +23,45 @@ static void page_fault_handler(struct registers* regs) {
     int in_uaccess = ((uint32_t)regs->eip >= (uint32_t)copy_user_start && (uint32_t)regs->eip < (uint32_t)copy_user_end) ||
                      ((uint32_t)regs->eip >= (uint32_t)copy_user_start2 && (uint32_t)regs->eip < (uint32_t)copy_user_end2);
 
-    /* 1. Demand Paging & Stack Growth: only if page was not present */
+    /* 1. COW write fault: page is present (err & 1) and write access (err & 2) */
+    if ((err & 1) && (err & 2) && proc && !proc->is_kernel_task && faulting_addr < 0xC0000000) {
+        uint32_t dir_index = faulting_addr >> 22;
+        uint32_t table_index = (faulting_addr >> 12) & 0x3FF;
+        if (dir_index < 768 && (proc->as.directory[dir_index] & PAGE_PRESENT)) {
+            uint32_t* tbl = (uint32_t*) P2V(proc->as.directory[dir_index] & ~0xFFFu);
+            uint32_t pte = tbl[table_index];
+            if ((pte & PAGE_PRESENT) && (pte & PTE_COW)) {
+                uint32_t old_frame = pte & ~0xFFFu;
+                uint16_t rc = pmm_refcount(old_frame);
+
+                uint32_t flags = (pte & 0xFFFu & ~PTE_COW) | PAGE_WRITE;
+
+                if (rc <= 1) {
+                    /* Sole owner: restore write bit and clear COW bit */
+                    tbl[table_index] = old_frame | flags;
+                } else {
+                    /* Shared frame: allocate new frame, copy content, unref old */
+                    uint32_t new_frame = pmm_alloc_frame();
+                    if (!new_frame) {
+                        serial_printf("[pf] OOM during COW write fault for PID %d\n", proc->pid);
+                        scheduler_exit_current(139);
+                    }
+                    const uint8_t* src_ptr = (const uint8_t*) P2V(old_frame);
+                    uint8_t* dst_ptr = (uint8_t*) P2V(new_frame);
+                    for (int i = 0; i < 4096; i++) dst_ptr[i] = src_ptr[i];
+
+                    pmm_unref(old_frame);
+                    tbl[table_index] = new_frame | flags;
+                }
+
+                uint32_t page_va = faulting_addr & ~0xFFFu;
+                asm volatile ("invlpg (%0)" :: "r"(page_va) : "memory");
+                return; /* Successfully handled COW! Resume execution */
+            }
+        }
+    }
+
+    /* 2. Demand Paging & Stack Growth: only if page was not present */
     if (!(err & 1) && proc && !proc->is_kernel_task) {
         /* Check stack auto-growth: [USER_STACK_BOTTOM, USER_STACK_TOP) */
         if (faulting_addr >= USER_STACK_BOTTOM && faulting_addr < USER_STACK_TOP) {
