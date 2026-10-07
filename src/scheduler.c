@@ -29,7 +29,7 @@ static process_t* pick_next_from(int idx) {
         int candidate = (idx + step) % MAX_PROCESSES;
         if (candidate == 0) continue;
         process_t* p = process_table_entry(candidate);
-        if (p && p->state == PROC_READY) return p;
+        if (p && p->state == PROC_READY && !p->is_stopped) return p;
     }
     process_t* p0 = process_table_entry(0);
     if (p0 && p0->state == PROC_READY) return p0;
@@ -65,11 +65,22 @@ void wake_waiters_for(int pid) {
     }
 }
 
+static int time_slice_for(process_t* p) {
+    if (!p) return 10;
+    int n = p->nice;
+    if (n < -20) n = -20;
+    if (n > 19) n = 19;
+    int slice = 10 - (n / 2);
+    if (slice < 2) slice = 2;
+    return slice;
+}
+
 void scheduler_yield(void) {
     if (!started || !current) return;
     process_t* next = pick_next_from(process_index(current));
     if (!next || next == current) return;
 
+    tick_counter = 0;
     process_t* prev = current;
     current = next;
     enter_process(next);
@@ -96,7 +107,8 @@ void scheduler_tick(void) {
         }
     }
 
-    if (++tick_counter < SWITCH_EVERY_N_TICKS) return;
+    int slice = time_slice_for(current);
+    if (++tick_counter < (uint32_t)slice) return;
     tick_counter = 0;
 
     process_t* next = pick_next_from(process_index(current));
