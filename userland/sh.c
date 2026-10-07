@@ -606,8 +606,27 @@ static int builtin_shinfo(int* last_status) {
     return 1;
 }
 
+static int builtin_nice(const command_t* cmd, int* last_status) {
+    if (cmd->argc == 1) {
+        int cur = nice(0);
+        if (cur < 0) { write(1, "-", 1); cur = -cur; }
+        print_uint((unsigned int)cur);
+        write(1, "\n", 1);
+        *last_status = 0;
+        return 1;
+    }
+    int inc = atoi_custom(cmd->argv[1]);
+    nice(inc);
+    *last_status = 0;
+    return 1;
+}
+
 static int run_builtin(const command_t* cmd, int* last_status) {
     if (cmd->argc == 0) return 1;
+
+    if (strcmp(cmd->argv[0], "nice") == 0) {
+        return builtin_nice(cmd, last_status);
+    }
 
     if (strcmp(cmd->argv[0], "help") == 0) {
         const char* help_msg =
