@@ -67,6 +67,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     keyboard_install();
     kprintf("[ok] Keyboard driver installed\n");
 
+    serial_install_irq();
+    kprintf("[ok] Serial COM1 IRQ installed\n");
+
     pmm_init(mb_info_addr);
     paging_init();
     kheap_init();

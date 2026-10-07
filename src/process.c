@@ -111,7 +111,7 @@ void process_init_table(int use_kshell) {
     shell->ppid = -1;
     shell->pgid = 0;
     shell->sid = 0;
-    shell->waiting_for_pid = -1;
+    shell->waiting_for_pid = -999;
     shell->wait_channel = 0;
     shell->exit_code = 0;
     shell->is_forked = 0;
@@ -226,7 +226,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
         p->pgid = p->pid;
         p->sid = p->pid;
     }
-    p->waiting_for_pid = -1;
+    p->waiting_for_pid = -999;
     p->wait_channel = 0;
     p->exit_code = 0;
     p->is_forked = 0;
@@ -259,7 +259,7 @@ void process_destroy(process_t* p) {
     if (!p->is_kernel_task)
         vmm_destroy_address_space(&p->as);
     if (p->kernel_stack_base) { kfree(p->kernel_stack_base); p->kernel_stack_base = 0; }
-    p->waiting_for_pid = -1;
+    p->waiting_for_pid = -999;
     p->wait_channel = 0;
     p->exit_code = 0;
     p->state = PROC_UNUSED;
@@ -294,7 +294,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->ppid = parent->pid;
     p->pgid = parent->pgid;
     p->sid = parent->sid;
-    p->waiting_for_pid = -1;
+    p->waiting_for_pid = -999;
     p->wait_channel = 0;
     p->exit_code = 0;
     p->sig_pending = 0;

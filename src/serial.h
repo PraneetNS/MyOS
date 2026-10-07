@@ -14,5 +14,6 @@ void kprintf(const char* fmt, ...);
 
 int serial_received(void);
 char serial_read(void);
+void serial_install_irq(void);
 
 #endif

@@ -45,18 +45,22 @@ void wake_waiters_for(int pid) {
     process_t* exiting = process_find_by_pid(pid);
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
-        if (!p || p->state != PROC_WAITING) continue;
+        if (!p || p->state != PROC_WAITING || p->is_stopped || p->pid == pid) continue;
+        if (p->wait_channel != 0) continue;
+
         int wake = 0;
-        if (p->waiting_for_pid == pid || p->waiting_for_pid == -1) {
+        if (p->waiting_for_pid == pid) {
             wake = 1;
-        } else if (p->waiting_for_pid == 0 && exiting && exiting->pgid == p->pgid) {
+        } else if (p->waiting_for_pid == -1 && exiting && exiting->ppid == p->pid) {
             wake = 1;
-        } else if (p->waiting_for_pid < -1 && exiting && exiting->pgid == -p->waiting_for_pid) {
+        } else if (p->waiting_for_pid == 0 && exiting && exiting->ppid == p->pid && exiting->pgid == p->pgid) {
+            wake = 1;
+        } else if (p->waiting_for_pid < -1 && exiting && exiting->ppid == p->pid && exiting->pgid == -p->waiting_for_pid) {
             wake = 1;
         }
         if (wake) {
             p->state = PROC_READY;
-            p->waiting_for_pid = -1;
+            p->waiting_for_pid = -999;
         }
     }
 }
@@ -150,6 +154,27 @@ void scheduler_exit_current(int exit_status) {
     p->exit_code = exit_status;
     p->state = PROC_ZOMBIE;
 
+    /* Restore TTY foreground group to parent if foreground group has no living processes */
+    extern tty_t* global_tty;
+    if (global_tty && global_tty->fg_pgid == p->pgid) {
+        int any_alive = 0;
+        for (int i = 0; i < MAX_PROCESSES; i++) {
+            process_t* other = process_table_entry(i);
+            if (other && other != p && other->state != PROC_UNUSED && other->state != PROC_ZOMBIE && other->pgid == p->pgid) {
+                any_alive = 1;
+                break;
+            }
+        }
+        if (!any_alive) {
+            process_t* parent_p = process_find_by_pid(p->ppid);
+            if (parent_p) {
+                global_tty->fg_pgid = parent_p->pgid;
+            } else {
+                global_tty->fg_pgid = 1;
+            }
+        }
+    }
+
     process_t* parent = process_find_by_pid(p->ppid);
     if (parent) {
         sig_send(parent, SIGCHLD);
@@ -204,6 +229,7 @@ void scheduler_wait_for(int child_pid) {
     me->state = PROC_WAITING;
     me->waiting_for_pid = child_pid;
     wait_or_idle(me);
+    me->waiting_for_pid = -999;
 }
 
 void scheduler_wait_channel(void* channel) {

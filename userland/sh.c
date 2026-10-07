@@ -311,6 +311,7 @@ typedef struct {
     char cmd[64];
 } job_t;
 
+static int is_interactive = 0;
 static job_t job_table[MAX_JOBS];
 
 static int job_add(int pgid, job_status_t status, const char* cmd) {
@@ -372,7 +373,48 @@ static int atoi_custom(const char* s) {
     return res;
 }
 
+static void reap_background_jobs(void) {
+    int bg_status = 0;
+    int wp;
+    while ((wp = waitpid(-1, &bg_status, WNOHANG | WUNTRACED)) > 0) {
+        job_t* j = job_find_by_pgid(wp);
+        if (!j) {
+            for (int ji = 0; ji < MAX_JOBS; ji++) {
+                if (job_table[ji].status != JOB_EMPTY && job_table[ji].pgid == wp) {
+                    j = &job_table[ji];
+                    break;
+                }
+            }
+        }
+        if (j) {
+            if (WIFSIGNALED(bg_status)) {
+                write(1, "[", 1);
+                print_uint((unsigned int) j->jid);
+                write(1, "]+ Terminated  ", 15);
+                write(1, j->cmd, strlen(j->cmd));
+                write(1, "\n", 1);
+                job_remove(j->pgid);
+            } else if (WIFEXITED(bg_status)) {
+                write(1, "[", 1);
+                print_uint((unsigned int) j->jid);
+                write(1, "]+ Done        ", 15);
+                write(1, j->cmd, strlen(j->cmd));
+                write(1, "\n", 1);
+                job_remove(j->pgid);
+            } else if (WIFSTOPPED(bg_status)) {
+                j->status = JOB_STOPPED;
+                write(1, "[", 1);
+                print_uint((unsigned int) j->jid);
+                write(1, "]+ Stopped     ", 15);
+                write(1, j->cmd, strlen(j->cmd));
+                write(1, "\n", 1);
+            }
+        }
+    }
+}
+
 static void builtin_jobs(void) {
+    reap_background_jobs();
     for (int i = 0; i < MAX_JOBS; i++) {
         if (job_table[i].status != JOB_EMPTY) {
             write(1, "[", 1);
@@ -447,10 +489,12 @@ static int builtin_fg(const command_t* cmd, int* last_status) {
         *last_status = 128 + SIGTSTP;
     } else {
         job_remove(pgid);
-        *last_status = WIFEXITED(raw_status) ? WEXITSTATUS(raw_status) : raw_status;
+        *last_status = WIFEXITED(raw_status) ? WEXITSTATUS(raw_status) : (128 + WTERMSIG(raw_status));
     }
 
-    tcsetpgrp(0, getpgrp());
+    if (is_interactive) {
+        tcsetpgrp(0, getpgrp());
+    }
     return 1;
 }
 
@@ -488,6 +532,80 @@ static int builtin_bg(const command_t* cmd, int* last_status) {
     return 1;
 }
 
+static int builtin_kill(const command_t* cmd, int* last_status) {
+    if (cmd->argc < 2) {
+        write(2, "kill: usage: kill [-sig] <pid | %jid>...\n", 41);
+        *last_status = 1;
+        return 1;
+    }
+
+    int sig = SIGTERM;
+    int arg_idx = 1;
+
+    if (cmd->argv[1][0] == '-' && cmd->argv[1][1] != '\0') {
+        const char* sname = &cmd->argv[1][1];
+        if (sname[0] >= '0' && sname[0] <= '9') {
+            sig = atoi_custom(sname);
+        } else if (strcmp(sname, "HUP") == 0) sig = SIGHUP;
+        else if (strcmp(sname, "INT") == 0) sig = SIGINT;
+        else if (strcmp(sname, "QUIT") == 0) sig = SIGQUIT;
+        else if (strcmp(sname, "KILL") == 0) sig = SIGKILL;
+        else if (strcmp(sname, "TERM") == 0) sig = SIGTERM;
+        else if (strcmp(sname, "STOP") == 0) sig = SIGSTOP;
+        else if (strcmp(sname, "TSTP") == 0) sig = SIGTSTP;
+        else if (strcmp(sname, "CONT") == 0) sig = SIGCONT;
+        arg_idx = 2;
+    }
+
+    if (arg_idx >= cmd->argc) {
+        write(2, "kill: usage: kill [-sig] <pid | %jid>...\n", 41);
+        *last_status = 1;
+        return 1;
+    }
+
+    int err = 0;
+    for (int i = arg_idx; i < cmd->argc; i++) {
+        const char* target = cmd->argv[i];
+        if (target[0] == '%') {
+            int jid = atoi_custom(target + 1);
+            job_t* job = job_find_by_jid(jid);
+            if (!job) {
+                write(2, "kill: no such job: ", 19);
+                write(2, target, strlen(target));
+                write(2, "\n", 1);
+                err = 1;
+                continue;
+            }
+            if (kill(-job->pgid, sig) != 0) {
+                kill(job->pgid, sig);
+            }
+        } else {
+            int pid = atoi_custom(target);
+            if (kill(pid, sig) != 0) {
+                write(2, "kill: failed to signal pid\n", 27);
+                err = 1;
+            }
+        }
+    }
+
+    *last_status = err ? 1 : 0;
+    return 1;
+}
+
+static int builtin_shinfo(int* last_status) {
+    write(1, "sh: pid=", 8);
+    print_uint((unsigned int) getpid());
+    write(1, " ppid=", 6);
+    print_uint((unsigned int) getppid());
+    write(1, " pgid=", 6);
+    print_uint((unsigned int) getpgrp());
+    write(1, " free_frames=", 13);
+    print_uint(sys_free_frames());
+    write(1, "\n", 1);
+    *last_status = 0;
+    return 1;
+}
+
 static int run_builtin(const command_t* cmd, int* last_status) {
     if (cmd->argc == 0) return 1;
 
@@ -501,6 +619,8 @@ static int run_builtin(const command_t* cmd, int* last_status) {
             "  jobs          list active background/stopped jobs\n"
             "  fg [%n]       bring job to foreground\n"
             "  bg [%n]       resume stopped job in background\n"
+            "  kill [%n|pid] send signal to job or process\n"
+            "  shinfo        print shell info (pid, ppid, pgid, frames)\n"
             "External binaries (loaded via fork + exec + waitpid from cwd or /bin):\n"
             "  ls, cat, echo, mkdir, rmdir, rm, cp, mv, touch, pwd, etc.\n";
         write(1, help_msg, strlen(help_msg));
@@ -520,6 +640,22 @@ static int run_builtin(const command_t* cmd, int* last_status) {
 
     if (strcmp(cmd->argv[0], "bg") == 0) {
         return builtin_bg(cmd, last_status);
+    }
+
+    if (strcmp(cmd->argv[0], "kill") == 0) {
+        return builtin_kill(cmd, last_status);
+    }
+
+    if (strcmp(cmd->argv[0], "shinfo") == 0) {
+        return builtin_shinfo(last_status);
+    }
+
+    if (strcmp(cmd->argv[0], "frames") == 0) {
+        write(1, "free_frames=", 12);
+        print_uint(sys_free_frames());
+        write(1, "\n", 1);
+        *last_status = 0;
+        return 1;
     }
 
     if (strcmp(cmd->argv[0], "cd") == 0) {
@@ -652,10 +788,19 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
         }
 
         if (pids[s] == 0) {
-            int pgid = (s == 0) ? getpid() : pids[0];
-            setpgid(0, pgid);
-            if (!is_background) {
-                tcsetpgrp(0, pgid);
+            /* Reset signal handlers in child to default */
+            signal(SIGTSTP, SIG_DFL);
+            signal(SIGTTIN, SIG_DFL);
+            signal(SIGTTOU, SIG_DFL);
+            signal(SIGINT, SIG_DFL);
+            signal(SIGQUIT, SIG_DFL);
+
+            if (is_interactive) {
+                int pgid = (s == 0) ? getpid() : pids[0];
+                setpgid(0, pgid);
+                if (!is_background) {
+                    tcsetpgrp(0, pgid);
+                }
             }
 
             /* Child process: connect pipes */
@@ -680,7 +825,9 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
             exec_command(&cmds[s]);
             exit(127);
         } else {
-            setpgid(pids[s], pids[0]);
+            if (is_interactive) {
+                setpgid(pids[s], pids[0]);
+            }
         }
     }
 
@@ -698,7 +845,9 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
         print_uint((unsigned int) pids[0]);
         write(1, "\n", 1);
     } else {
-        tcsetpgrp(0, pids[0]);
+        if (is_interactive) {
+            tcsetpgrp(0, pids[0]);
+        }
         int stopped = 0;
         int last_st = 0;
         for (int s = 0; s < num_stages; s++) {
@@ -710,7 +859,7 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
                 }
                 if (WIFEXITED(raw_status) || WIFSIGNALED(raw_status)) {
                     if (s == num_stages - 1) {
-                        last_st = WIFEXITED(raw_status) ? WEXITSTATUS(raw_status) : raw_status;
+                        last_st = WIFEXITED(raw_status) ? WEXITSTATUS(raw_status) : (128 + WTERMSIG(raw_status));
                     }
                     break;
                 }
@@ -728,7 +877,9 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
         } else {
             *last_status = last_st;
         }
-        tcsetpgrp(0, getpgrp());
+        if (is_interactive) {
+            tcsetpgrp(0, getpgrp());
+        }
     }
 }
 
@@ -736,14 +887,17 @@ int main(int argc, char** argv) {
     (void) argc;
     (void) argv;
 
-    setpgid(0, 0);
-    tcsetpgrp(0, getpgrp());
-    signal(SIGTTOU, SIG_IGN);
-    signal(SIGTTIN, SIG_IGN);
-    signal(SIGTSTP, SIG_IGN);
+    is_interactive = isatty(0);
+    if (is_interactive) {
+        setpgid(0, 0);
+        tcsetpgrp(0, getpgrp());
+        signal(SIGTTOU, SIG_IGN);
+        signal(SIGTTIN, SIG_IGN);
+        signal(SIGTSTP, SIG_IGN);
 
-    const char* welcome = "\nMyOS Userland Shell (sh)\nType 'help' for builtins, or enter binary name to execute.\n";
-    write(1, welcome, strlen(welcome));
+        const char* welcome = "\nMyOS Userland Shell (sh)\nType 'help' for builtins, or enter binary name to execute.\n";
+        write(1, welcome, strlen(welcome));
+    }
 
     char line[256];
     char token_buf[512];
@@ -752,32 +906,25 @@ int main(int argc, char** argv) {
 
     for (;;) {
         /* Non-blocking reap of background jobs before next prompt */
-        int bg_status = 0;
-        int wp;
-        while ((wp = waitpid(-1, &bg_status, WNOHANG | WUNTRACED)) > 0) {
-            job_t* j = job_find_by_pgid(wp);
-            if (j && (WIFEXITED(bg_status) || WIFSIGNALED(bg_status))) {
-                write(1, "[", 1);
-                print_uint((unsigned int) j->jid);
-                write(1, "]+ Done       ", 14);
-                write(1, j->cmd, strlen(j->cmd));
-                write(1, "\n", 1);
-                job_remove(wp);
+        reap_background_jobs();
+
+        if (is_interactive) {
+            char cwd[64];
+            if (!getcwd(cwd, sizeof(cwd))) {
+                cwd[0] = '/';
+                cwd[1] = '\0';
             }
-        }
 
-        char cwd[64];
-        if (!getcwd(cwd, sizeof(cwd))) {
-            cwd[0] = '/';
-            cwd[1] = '\0';
+            write(1, "sh:", 3);
+            write(1, cwd, strlen(cwd));
+            write(1, "$ ", 2);
         }
-
-        write(1, "sh:", 3);
-        write(1, cwd, strlen(cwd));
-        write(1, "$ ", 2);
 
         int n = read(0, line, sizeof(line) - 1);
-        if (n <= 0) continue;
+        if (n <= 0) {
+            if (n == 0) break;
+            continue;
+        }
         line[n] = '\0';
 
         /* Strip trailing newline / carriage return */

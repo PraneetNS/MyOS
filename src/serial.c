@@ -3,16 +3,36 @@
 #include "vga.h"
 #include <stdarg.h>
 
+#include "tty.h"
+#include "idt.h"
+
 #define COM1 COM1_PORT
 
+static void serial_callback(struct registers* regs) {
+    (void) regs;
+    tty_t* tty = tty_get_global();
+    while (serial_received()) {
+        char c = serial_read();
+        if (tty) {
+            tty_input_char(tty, c);
+        }
+    }
+}
+
 void serial_init(void) {
-    outb(COM1 + 1, 0x00);    /* Disable all interrupts */
+    outb(COM1 + 1, 0x00);    /* Disable all interrupts initially */
     outb(COM1 + 3, 0x80);    /* Enable DLAB (set baud rate divisor) */
     outb(COM1 + 0, 0x01);    /* Set divisor to 1 (115200 baud) */
     outb(COM1 + 1, 0x00);
     outb(COM1 + 3, 0x03);    /* 8 bits, no parity, one stop bit (8N1) */
     outb(COM1 + 2, 0xC7);    /* Enable FIFO, clear them, 14-byte threshold */
     outb(COM1 + 4, 0x0B);    /* IRQs enabled, RTS/DSR set */
+}
+
+void serial_install_irq(void) {
+    register_interrupt_handler(36, &serial_callback); /* IRQ4 = vector 36 */
+    outb(COM1 + 1, 0x01);    /* Enable Received Data Available interrupt */
+    outb(COM1 + 4, 0x0B);    /* IRQs enabled, OUT2 bit set */
 }
 
 int serial_received(void) {

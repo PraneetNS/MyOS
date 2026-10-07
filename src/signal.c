@@ -69,10 +69,15 @@ int sig_send(process_t* proc, int sig) {
     proc->sig_pending |= sigmask(sig);
 
     /* Wake up waiting process if deliverable */
-    if (proc->state == PROC_WAITING && !proc->is_stopped) {
-        if ((proc->sig_pending & ~proc->sig_blocked) != 0) {
-            proc->state = PROC_READY;
-            proc->wait_channel = 0;
+    if (proc->state == PROC_WAITING) {
+        if (!proc->is_stopped || sig == SIGKILL || sig == SIGTERM || sig == SIGINT || sig == SIGQUIT) {
+            if ((proc->sig_pending & ~proc->sig_blocked) != 0) {
+                if (proc->is_stopped) {
+                    proc->is_stopped = 0;
+                }
+                proc->state = PROC_READY;
+                proc->wait_channel = 0;
+            }
         }
     }
 
@@ -182,7 +187,12 @@ void signal_handle_pending(struct registers* regs) {
                 sig_send(parent, SIGCHLD);
             }
             wake_waiters_for(me->pid);
-            scheduler_yield();
+            while (me->is_stopped && me->state == PROC_WAITING) {
+                scheduler_yield();
+            }
+            if (me->sig_pending & (sigmask(SIGKILL) | sigmask(SIGTERM) | sigmask(SIGINT) | sigmask(SIGQUIT))) {
+                signal_handle_pending(regs);
+            }
             return;
         }
 
