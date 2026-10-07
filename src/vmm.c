@@ -117,17 +117,30 @@ int vmm_clone_user_pages(address_space_t* dst, address_space_t* src) {
             uint32_t page_entry = table[table_index];
             if (!(page_entry & PAGE_PRESENT)) continue;
 
+            uint32_t frame_phys = page_entry & ~0xFFFu;
+            uint32_t flags = page_entry & 0xFFFu;
+
+            /* If the page was writable, clear write bit and set COW bit in both */
+            if (flags & PAGE_WRITE) {
+                flags &= ~PAGE_WRITE;
+                flags |= PTE_COW;
+                table[table_index] = frame_phys | flags;
+            }
+
             uint32_t vaddr = (dir_index << 22) | (table_index << 12);
 
-            uint32_t new_frame_phys = vmm_map_user_page(dst, vaddr);
-            if (!new_frame_phys) return -1;
+            /* Map into destination with identical flags (read-only + COW) */
+            if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
+                return -1;
+            }
 
-            uint32_t src_frame_phys = page_entry & ~0xFFFu;
-            const uint8_t* source_page = (const uint8_t*) P2V(src_frame_phys);
-            uint8_t* dest_page = (uint8_t*) P2V(new_frame_phys);
-            for (int i = 0; i < 4096; i++) dest_page[i] = source_page[i];
+            /* Increment reference count for shared frame */
+            pmm_ref(frame_phys);
         }
     }
+
+    /* Flush TLB in source address space since writable pages were made read-only */
+    paging_flush(src->directory_phys);
     return 0;
 }
 

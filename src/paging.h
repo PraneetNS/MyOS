@@ -13,6 +13,7 @@
 #define PAGE_WRITE   0x2
 #define PAGE_USER    0x4
 #define PAGE_PSE     0x80
+#define PTE_COW      0x200u   /* bit 9: software Copy-on-Write bit */
 
 extern uint32_t boot_page_directory[1024];
 
