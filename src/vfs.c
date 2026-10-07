@@ -25,56 +25,7 @@ static mount_point_t mount_table[MAX_MOUNTS];
 static vnode_t vnode_pool[VNODE_POOL_SIZE];
 static open_file_t of_pool[OPEN_FILE_POOL_SIZE];
 
-static int console_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
-    (void) vn;
-    (void) offset;
-    return keyboard_read_line((char*) buf, (int) count);
-}
 
-static int console_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
-    (void) vn;
-    (void) offset;
-    for (uint32_t i = 0; i < count; i++) {
-        terminal_putchar(buf[i]);
-        serial_putc(buf[i]);
-    }
-    return (int) count;
-}
-
-static int console_stat(vnode_t* vn, struct stat* st) {
-    (void) vn;
-    st->st_dev = 0;
-    st->st_ino = 1;
-    st->st_mode = S_IFCHR | 0666;
-    st->st_nlink = 1;
-    st->st_size = 0;
-    st->st_blksize = 512;
-    st->st_blocks = 0;
-    return 0;
-}
-
-static const struct fs_ops console_ops = {
-    .lookup = 0,
-    .read = console_read,
-    .write = console_write,
-    .create = 0,
-    .mkdir = 0,
-    .unlink = 0,
-    .rmdir = 0,
-    .rename = 0,
-    .readdir = 0,
-    .truncate = 0,
-    .stat = console_stat,
-};
-
-static vnode_t console_vnode = {
-    .type = VNODE_CONSOLE,
-    .size = 0,
-    .fs_data = 0,
-    .ops = &console_ops,
-    .refcount = 1000,
-    .parent = 0,
-};
 
 void vfs_init(void) {
     for (int i = 0; i < MAX_MOUNTS; i++) {
@@ -139,6 +90,7 @@ void vnode_ref(vnode_t* vn) {
 
 void vnode_unref(vnode_t* vn) {
     if (vn && vn->refcount > 0) {
+        if (vn->refcount > 500) return; /* permanent vnode (e.g. devfs) */
         vn->refcount--;
         if (vn->refcount == 0 && vn->parent) {
             vnode_unref(vn->parent);
@@ -180,7 +132,7 @@ void open_file_unref(open_file_t* of) {
     }
     of->refcount--;
     if (of->refcount == 0) {
-        if (of->type == OPEN_FILE_VNODE && of->vnode) {
+        if ((of->type == OPEN_FILE_VNODE || of->type == OPEN_FILE_CONSOLE) && of->vnode) {
             vnode_unref(of->vnode);
             of->vnode = 0;
         } else if (of->type == OPEN_FILE_PIPE && of->pipe) {
@@ -196,15 +148,27 @@ void open_file_unref(open_file_t* of) {
 }
 
 open_file_t* vfs_get_console_stdin(void) {
-    return open_file_alloc(OPEN_FILE_CONSOLE, &console_vnode, O_RDONLY);
+    vnode_t* vn = 0;
+    if (vfs_resolve_path("/dev/console", "/", &vn) == 0 && vn) {
+        return open_file_alloc(OPEN_FILE_CONSOLE, vn, O_RDONLY);
+    }
+    return 0;
 }
 
 open_file_t* vfs_get_console_stdout(void) {
-    return open_file_alloc(OPEN_FILE_CONSOLE, &console_vnode, O_WRONLY);
+    vnode_t* vn = 0;
+    if (vfs_resolve_path("/dev/console", "/", &vn) == 0 && vn) {
+        return open_file_alloc(OPEN_FILE_CONSOLE, vn, O_WRONLY);
+    }
+    return 0;
 }
 
 open_file_t* vfs_get_console_stderr(void) {
-    return open_file_alloc(OPEN_FILE_CONSOLE, &console_vnode, O_WRONLY);
+    vnode_t* vn = 0;
+    if (vfs_resolve_path("/dev/console", "/", &vn) == 0 && vn) {
+        return open_file_alloc(OPEN_FILE_CONSOLE, vn, O_WRONLY);
+    }
+    return 0;
 }
 
 static int streq(const char* a, const char* b) {
@@ -218,23 +182,49 @@ static int streq(const char* a, const char* b) {
 int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
     if (!path || !*path || !out) return -EINVAL;
 
-    vnode_t* curr = 0;
-    const char* p = path;
+    char canon[128];
+    vfs_path_canonical(path, cwd, canon, sizeof(canon));
 
-    if (*p == '/') {
-        curr = vfs_get_root();
-        while (*p == '/') p++;
-    } else {
-        if (cwd && *cwd) {
-            if (vfs_resolve_path(cwd, "/", &curr) != 0) {
-                curr = vfs_get_root();
+    int best_mount = -1;
+    int best_len = -1;
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (mount_table[i].in_use) {
+            int mlen = 0;
+            while (mount_table[i].path[mlen]) mlen++;
+            int match = 1;
+            for (int k = 0; k < mlen; k++) {
+                if (canon[k] != mount_table[i].path[k]) {
+                    match = 0;
+                    break;
+                }
             }
-        } else {
-            curr = vfs_get_root();
+            if (match) {
+                if (mlen == 1 && mount_table[i].path[0] == '/') {
+                    if (mlen > best_len) {
+                        best_len = mlen;
+                        best_mount = i;
+                    }
+                } else if (canon[mlen] == '\0' || canon[mlen] == '/') {
+                    if (mlen > best_len) {
+                        best_len = mlen;
+                        best_mount = i;
+                    }
+                }
+            }
         }
     }
 
+    if (best_mount < 0) return -ENOENT;
+
+    vnode_t* curr = mount_table[best_mount].root;
     if (!curr) return -ENOENT;
+
+    const char* p = canon + best_len;
+    while (*p == '/') p++;
+    if (!*p) {
+        *out = curr;
+        return 0;
+    }
 
     char token[64];
     while (*p) {
@@ -347,7 +337,8 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
     if (!of) return -EBADF;
 
     if (of->type == OPEN_FILE_CONSOLE) {
-        return console_read(of->vnode, 0, (uint8_t*) buf, count);
+        if (!of->vnode || !of->vnode->ops || !of->vnode->ops->read) return -EBADF;
+        return of->vnode->ops->read(of->vnode, of->offset, (uint8_t*) buf, count);
     }
     if (of->type == OPEN_FILE_PIPE) {
         if ((of->flags & 3) == O_WRONLY) return -EBADF;
@@ -367,7 +358,8 @@ int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
     if (!of) return -EBADF;
 
     if (of->type == OPEN_FILE_CONSOLE) {
-        return console_write(of->vnode, 0, (const uint8_t*) buf, count);
+        if (!of->vnode || !of->vnode->ops || !of->vnode->ops->write) return -EBADF;
+        return of->vnode->ops->write(of->vnode, of->offset, (const uint8_t*) buf, count);
     }
     if (of->type == OPEN_FILE_PIPE) {
         if ((of->flags & 3) == O_RDONLY) return -EBADF;

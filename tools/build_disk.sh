@@ -11,9 +11,10 @@ dd if=/dev/zero of="$IMAGE" bs=1M count=32 status=none
 echo "Formatting disk image with FAT16..."
 mkfs.fat -F 16 -n "MYOS" "$IMAGE"
 
-echo "Creating /bin and /tmp directories..."
+echo "Creating /bin, /tmp, and /dev directories..."
 mmd -i "$IMAGE" "::/bin"
 mmd -i "$IMAGE" "::/tmp"
+mmd -i "$IMAGE" "::/dev"
 
 echo "Building userland..."
 bash userland/build.sh
