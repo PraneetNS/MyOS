@@ -181,6 +181,7 @@ void signal_handle_pending(struct registers* regs) {
             if (parent) {
                 sig_send(parent, SIGCHLD);
             }
+            wake_waiters_for(me->pid);
             scheduler_yield();
             return;
         }

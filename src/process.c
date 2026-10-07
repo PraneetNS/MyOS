@@ -109,6 +109,8 @@ void process_init_table(int use_kshell) {
     shell->state = PROC_READY;
     shell->pid = 0;
     shell->ppid = -1;
+    shell->pgid = 0;
+    shell->sid = 0;
     shell->waiting_for_pid = -1;
     shell->wait_channel = 0;
     shell->exit_code = 0;
@@ -211,6 +213,19 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->is_kernel_task = 0;
     p->pid = next_pid++;
     p->ppid = parent_pid;
+    if (parent_pid > 0) {
+        process_t* parent = process_find_by_pid(parent_pid);
+        if (parent) {
+            p->pgid = parent->pgid;
+            p->sid = parent->sid;
+        } else {
+            p->pgid = p->pid;
+            p->sid = p->pid;
+        }
+    } else {
+        p->pgid = p->pid;
+        p->sid = p->pid;
+    }
     p->waiting_for_pid = -1;
     p->wait_channel = 0;
     p->exit_code = 0;

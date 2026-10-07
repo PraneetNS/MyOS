@@ -27,6 +27,7 @@ process_t* scheduler_current(void);
    that point this looks, to the caller, just like an ordinary function
    return. */
 void scheduler_wait_for(int child_pid);
+void wake_waiters_for(int pid);
 
 /* Stage 14: generic channel sleep/wakeup mechanism for blocked pipes/events */
 void scheduler_wait_channel(void* channel);

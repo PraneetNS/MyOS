@@ -59,6 +59,8 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 2
     printf "sigtest\n"
     sleep 3
+    printf "jobtest\n"
+    sleep 2
     printf "memtest\n"
     sleep 10
     printf "exit\n"
@@ -144,6 +146,9 @@ echo "[PASS] ttytest (isatty, devfs nodes, termios, winsize, raw mode) verified"
 
 grep -q "=== ALL SIGTESTS PASSED ===" "$LOGFILE1" || { echo "FAIL: sigtest failed"; exit 1; }
 echo "[PASS] sigtest (signals, masks, alarm, pause, broken pipe, waitpid status) verified"
+
+grep -q "=== ALL JOBTESTS PASSED ===" "$LOGFILE1" || { echo "FAIL: jobtest failed"; exit 1; }
+echo "[PASS] jobtest (pgid, sid, ppid, tcgetpgrp, SIGTTIN on background read) verified"
 
 # Stage 15 RAM log assertion (-m 256)
 grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }
