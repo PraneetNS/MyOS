@@ -56,19 +56,14 @@ static void mark_region_used_bytes(uint64_t base, uint64_t len) {
     }
 }
 
+#include "paging.h"
+
 void pmm_init(uint32_t mb_info_addr) {
-    /* Allocate the frame_refcount array in early memory immediately following kernel_end */
-    uint32_t refcount_start = ((uint32_t)&kernel_end + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
-    uint32_t refcount_bytes = MAX_FRAMES * sizeof(uint16_t);
-    uint32_t reserved_early_end = refcount_start + refcount_bytes;
+    frame_refcount = (void*)0;
 
-    frame_refcount = (uint16_t*) refcount_start;
-
-    /* Start with everything marked used and refcount = 1 */
+    /* Start with everything marked used in bitmap */
     for (uint32_t i = 0; i < MAX_FRAMES / 8; i++)
         frame_bitmap[i] = 0xFF;
-    for (uint32_t i = 0; i < MAX_FRAMES; i++)
-        frame_refcount[i] = 1;
 
     free_frames = 0;
     total_usable_frames = 0;
@@ -80,6 +75,8 @@ void pmm_init(uint32_t mb_info_addr) {
     uint8_t* end = ptr + total_size;
     uint8_t* tag_ptr = ptr + 8;
 
+    uint32_t max_mod_end = 0;
+    int capped_logged = 0;
     while (mb_info_addr && tag_ptr < end) {
         struct mb2_tag* tag = (struct mb2_tag*) tag_ptr;
         if (tag->type == MB2_TAG_TYPE_END) break;
@@ -91,23 +88,67 @@ void pmm_init(uint32_t mb_info_addr) {
             for (uint32_t i = 0; i < n_entries; i++) {
                 struct mb2_mmap_entry* e =
                     (struct mb2_mmap_entry*)((uint8_t*)mmap->entries + i * mmap->entry_size);
-                if (e->type == MB2_MEMORY_AVAILABLE)
-                    mark_region_free(e->addr, e->len);
+                if (e->type == MB2_MEMORY_AVAILABLE) {
+                    uint64_t addr = e->addr;
+                    uint64_t len = e->len;
+                    if (addr + len > DIRECT_MAP_LIMIT) {
+                        if (!capped_logged) {
+                            kprintf("[pmm] RAM exceeds 768MB direct map limit; using first 768MB\n");
+                            capped_logged = 1;
+                        }
+                        if (addr >= DIRECT_MAP_LIMIT) {
+                            continue;
+                        }
+                        len = DIRECT_MAP_LIMIT - addr;
+                    }
+                    mark_region_free(addr, len);
+                }
+            }
+        } else if (tag->type == MB2_TAG_TYPE_MODULE) {
+            struct mb2_tag_module* mod = (struct mb2_tag_module*) tag;
+            if (mod->mod_end > max_mod_end) {
+                max_mod_end = mod->mod_end;
             }
         }
 
         tag_ptr += (tag->size + 7) & ~7u;
     }
 
+    /* Now find a safe early memory location for frame_refcount above kernel_end,
+       multiboot info, and any modules */
+    uint32_t safe_start = (uint32_t)&kernel_end;
+    if (mb_info_addr) {
+        uint32_t mb_end_virt = mb_info_addr + total_size;
+        if (mb_end_virt > safe_start) safe_start = mb_end_virt;
+    }
+    if (max_mod_end > 0) {
+        uint32_t mod_end_virt = (uint32_t)P2V(max_mod_end);
+        if (mod_end_virt > safe_start) safe_start = mod_end_virt;
+    }
+
+    uint32_t refcount_start = (safe_start + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
+    uint32_t refcount_bytes = MAX_FRAMES * sizeof(uint16_t);
+    uint32_t reserved_early_end_phys = V2P(refcount_start + refcount_bytes);
+
+    frame_refcount = (uint16_t*) refcount_start;
+
+    /* Initialize refcounts based on bitmap */
+    for (uint32_t i = 0; i < MAX_FRAMES; i++) {
+        frame_refcount[i] = bitmap_test(i) ? 1 : 0;
+    }
+
     /* 1. Reserve low 1MB (BIOS/real-mode/VGA memory) */
     mark_region_used_bytes(0, 0x100000);
 
     /* 2. Reserve kernel image + early frame_refcount array */
-    mark_region_used_bytes(0x100000, reserved_early_end - 0x100000);
+    if (reserved_early_end_phys > 0x100000) {
+        mark_region_used_bytes(0x100000, reserved_early_end_phys - 0x100000);
+    }
 
     /* 3. Reserve Multiboot2 info structure */
     if (mb_info_addr && total_size > 0) {
-        mark_region_used_bytes(mb_info_addr, total_size);
+        uint32_t mb_info_phys = V2P(mb_info_addr);
+        mark_region_used_bytes(mb_info_phys, total_size);
     }
 
     /* 4. Reserve Multiboot2 modules (if present) */

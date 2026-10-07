@@ -1,6 +1,7 @@
 #include "elf.h"
 #include "vga.h"
 #include "vmm.h"
+#include "paging.h"
 
 #define EI_NIDENT 16
 
@@ -60,7 +61,7 @@ static int load_segment(address_space_t* as, const Elf32_Phdr* ph, const uint8_t
         uint32_t frame_phys = vmm_map_user_page(as, page_vaddr);
         if (!frame_phys) return -1;
 
-        uint8_t* frame = (uint8_t*) frame_phys; /* writable directly: kernel's own identity map is still active */
+        uint8_t* frame = (uint8_t*) P2V(frame_phys);
         for (int i = 0; i < PAGE_SIZE; i++) frame[i] = 0; /* covers .bss for free */
 
         uint32_t seg_file_end = ph->p_vaddr + ph->p_filesz;
@@ -123,7 +124,7 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
 
     uint32_t str_vaddrs[32];
     uint32_t offset = 0;
-    uint8_t* page_end = (uint8_t*) top_frame_phys + PAGE_SIZE;
+    uint8_t* page_end = (uint8_t*) P2V(top_frame_phys) + PAGE_SIZE;
 
     /* Copy strings down from the top of the stack page */
     for (int i = argc - 1; i >= 0; i--) {

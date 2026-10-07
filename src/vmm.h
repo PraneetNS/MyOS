@@ -3,43 +3,31 @@
 
 #include <stdint.h>
 
-#define VMM_MAX_OWNED_FRAMES 64
+#define VMM_MAX_OWNED_FRAMES 512
 
 typedef struct {
-    uint32_t* directory;      /* kernel-virtual==physical pointer to the page directory */
+    uint32_t* directory;      /* kernel-virtual pointer to the page directory */
     uint32_t  directory_phys;
     /* Every physical frame this address space owns (its directory, any
-       page tables it allocated, and every data/stack page) -- tracked
-       so vmm_destroy_address_space() can actually give them back to the
-       pmm instead of leaking them, unlike Stage 5/6's one-shot design. */
+       page tables it allocated, and every data/stack page) */
     uint32_t  owned_frames[VMM_MAX_OWNED_FRAMES];
     int       owned_count;
 } address_space_t;
 
-/* Allocates a fresh page directory. Directory entry 0 (0-4MB, kernel
-   space) is shared with the kernel's own directory and supervisor-only;
-   everything else starts unmapped. */
+/* Allocates a fresh page directory. Copies the kernel PDEs (768..1023)
+   from the master kernel page directory; user space (0..767) starts unmapped. */
 address_space_t vmm_create_address_space(void);
 
-/* Maps one 4KB page at `vaddr` (must be >= 4MB -- dir 0 is kernel-only
-   and refused) to a FRESH physical frame in the given address space,
-   user-accessible. Returns the frame's physical address (so the caller
-   can write to it directly while the kernel's own identity-mapped
-   directory is still active), or 0 on failure. */
+/* Maps one 4KB page at `vaddr` (must be < 0xC0000000) to a FRESH physical
+   frame in the given address space, user-accessible. Returns the frame's
+   physical address, or 0 on failure. */
 uint32_t vmm_map_user_page(address_space_t* as, uint32_t vaddr);
 
-/* Frees every frame this address space owns (data pages, page tables,
-   and the directory itself) back to the pmm. */
+/* Frees every frame this address space owns back to the pmm. */
 void vmm_destroy_address_space(address_space_t* as);
 
-/* Duplicates every user page currently mapped in `src` (which must be
-   the CURRENTLY ACTIVE address space -- its pages are read via their
-   normal virtual addresses, relying on the live CR3) into `dst`, each
-   backed by a FRESH physical frame with the same content. This is the
-   core mechanism fork() needs: two processes end up with identical
-   data but never share a physical frame. Returns 0 on success, -1 on
-   failure (the caller should vmm_destroy_address_space(dst) on
-   failure -- a partial clone is not rolled back automatically). */
+/* Duplicates every user page currently mapped in `src` into `dst`,
+   each backed by a FRESH physical frame with the same content. */
 int vmm_clone_user_pages(address_space_t* dst, address_space_t* src);
 
 void vmm_switch(address_space_t* as); /* loads CR3 with as->directory_phys */

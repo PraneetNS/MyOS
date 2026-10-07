@@ -20,7 +20,7 @@ static struct tss_entry tss;
 
 void tss_install(int gdt_slot, uint16_t ss0, uint32_t esp0) {
     uint32_t base  = (uint32_t) &tss;
-    uint32_t limit = base + sizeof(tss);
+    uint32_t limit = sizeof(tss) - 1;
 
     /* 0xE9 = present, ring 3 accessible (needed so a user-mode `int`
        can find it), 32-bit TSS available type */

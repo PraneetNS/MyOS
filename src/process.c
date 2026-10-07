@@ -99,7 +99,7 @@ void process_init_table(int use_kshell) {
     for (int i = 0; i < MAX_PROCESSES; i++) table[i].state = PROC_UNUSED;
 
     process_t* shell = &table[0];
-    shell->as.directory      = (uint32_t*) paging_get_kernel_dir_phys();
+    shell->as.directory      = boot_page_directory;
     shell->as.directory_phys = paging_get_kernel_dir_phys();
     shell->as.owned_count    = 0; /* the shell/idle doesn't own this address space -- never destroyed */
 

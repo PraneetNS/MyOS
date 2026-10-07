@@ -16,6 +16,7 @@
 #include "errno.h"
 #include "timer.h"
 #include "pmm.h"
+#include "paging.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -65,7 +66,7 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
     uint32_t end = start + len;
     if (end < start) return -EFAULT;
 
-    if (start < 0x400000 || end > 0xC0000000) return -EFAULT;
+    if (start < 0x1000 || end > 0xC0000000) return -EFAULT;
 
     uint32_t* dir = me->as.directory;
     uint32_t page_start = start & ~0xFFFu;
@@ -76,7 +77,7 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
         uint32_t tbl_idx = (va >> 12) & 0x3FF;
 
         if (!(dir[dir_idx] & PAGE_PRESENT) || !(dir[dir_idx] & PAGE_USER)) return -EFAULT;
-        uint32_t* tbl = (uint32_t*) (dir[dir_idx] & ~0xFFFu);
+        uint32_t* tbl = (uint32_t*) P2V(dir[dir_idx] & ~0xFFFu);
         if (!(tbl[tbl_idx] & PAGE_PRESENT) || !(tbl[tbl_idx] & PAGE_USER)) return -EFAULT;
         if (write && !(tbl[tbl_idx] & PAGE_WRITE)) return -EFAULT;
 
@@ -93,18 +94,18 @@ static int validate_user_string(const char* s) {
     if (!me || !me->as.directory) return 0;
 
     uint32_t va = (uint32_t) s;
-    if (va < 0x400000 || va >= 0xC0000000) return -EFAULT;
+    if (va < 0x1000 || va >= 0xC0000000) return -EFAULT;
 
     uint32_t* dir = me->as.directory;
     int len = 0;
 
     while (1) {
-        if (va < 0x400000 || va >= 0xC0000000) return -EFAULT;
+        if (va < 0x1000 || va >= 0xC0000000) return -EFAULT;
         uint32_t dir_idx = va >> 22;
         uint32_t tbl_idx = (va >> 12) & 0x3FF;
 
         if (!(dir[dir_idx] & PAGE_PRESENT) || !(dir[dir_idx] & PAGE_USER)) return -EFAULT;
-        uint32_t* tbl = (uint32_t*) (dir[dir_idx] & ~0xFFFu);
+        uint32_t* tbl = (uint32_t*) P2V(dir[dir_idx] & ~0xFFFu);
         if (!(tbl[tbl_idx] & PAGE_PRESENT) || !(tbl[tbl_idx] & PAGE_USER)) return -EFAULT;
 
         uint32_t page_limit = (va & ~0xFFFu) + 4096;
@@ -516,7 +517,7 @@ static void syscall_handler(struct registers* regs) {
                     while (!failed && me->heap_mapped_up_to < target) {
                         uint32_t frame_phys = vmm_map_user_page(&me->as, me->heap_mapped_up_to);
                         if (!frame_phys) { failed = 1; break; }
-                        uint8_t* frame = (uint8_t*) frame_phys;
+                        uint8_t* frame = (uint8_t*) P2V(frame_phys);
                         for (int i = 0; i < 4096; i++) frame[i] = 0;
                         me->heap_mapped_up_to += 4096;
                     }
