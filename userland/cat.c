@@ -3,7 +3,11 @@
 static void cat_fd(int fd) {
     char buf[256];
     int n;
-    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+    while ((n = read(fd, buf, sizeof(buf))) != 0) {
+        if (n < 0) {
+            if (n == -4 /* -EINTR */) continue;
+            break;
+        }
         write(1, buf, (unsigned int) n);
     }
 }

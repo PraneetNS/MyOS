@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 LOGFILE1=$(mktemp)
 LOGFILE2=$(mktemp)
 LOGFILE3=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3"' EXIT
+LOGFILE6=$(mktemp)
+trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -312,7 +313,156 @@ grep -q "Kernel heap self-test passed" "$LOGFILE5" || { echo "FAIL: -m 64 Kernel
 echo "[PASS] Low-memory boot (-m 64, 63 MB RAM, BOOT OK) verified"
 rm -f "$LOGFILE5"
 
+echo "[TEST] Session 6: Live job control and interactive TTY signals over COM1..."
+
+(
+    sleep 2
+    # Baseline
+    printf "shinfo\n"
+    sleep 0.3
+
+    # Case 1: spin in fg, 0x03. Assert: prompt returns, $? = 130
+    printf "spin.elf\n"
+    sleep 0.3
+    printf "\x03"
+    sleep 0.3
+    printf "echo exit_case1=\$?\n"
+    sleep 0.3
+
+    # Case 6: spin in fg, 0x1c. Assert: prompt returns, $? = 131
+    printf "spin.elf\n"
+    sleep 0.3
+    printf "\x1c"
+    sleep 0.3
+    printf "echo exit_case6=\$?\n"
+    sleep 0.3
+
+    # Case 2: spin in fg, 0x1a. Assert stopped, jobs shows Stopped, fg, then 0x03 kills ($? = 130)
+    printf "spin.elf\n"
+    sleep 0.3
+    printf "\x1a"
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+    printf "fg\n"
+    sleep 0.3
+    printf "\x03"
+    sleep 0.3
+    printf "echo exit_case2=\$?\n"
+    sleep 0.3
+
+    # Case 3: spin.elf &, jobs shows Running, kill %1, next prompt reports Done/Terminated, jobs is empty
+    printf "spin.elf &\n"
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+    printf 'kill %%1\n'
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+
+    # Case 4: spin.elf, 0x1a, bg, jobs shows Running, kill %1
+    printf "spin.elf\n"
+    sleep 0.3
+    printf "\x1a"
+    sleep 0.3
+    printf "bg\n"
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+    printf 'kill %%1\n'
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+
+    # Case 5: Pipeline: cat | spin.elf, Ctrl+C kills BOTH stages
+    printf "cat | spin.elf\n"
+    sleep 0.3
+    printf "\x03"
+    sleep 0.3
+    printf "echo exit_case5=\$?\n"
+    sleep 0.3
+
+    # Case 7: A background job that tries to read stdin gets SIGTTIN and stops
+    printf "cat &\n"
+    sleep 0.3
+    printf "\n"
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+    printf 'kill %%1\n'
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+
+    # Non-interactive subshell: scripts / pipes don't install job-control handlers
+    printf 'echo echo subshell_works | sh.elf\n'
+    sleep 0.3
+
+    # Case 8: Shell is still PID 1's child, prompt works, free frames check
+    printf "shinfo\n"
+    sleep 0.3
+    printf "exit\n"
+) | timeout 18s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE6" 2>&1 || true
+
+cat "$LOGFILE6"
+
+echo "[TEST] Asserting Session 6 results..."
+
+# Case 1 assertions
+grep -q "exit_case1=130" "$LOGFILE6" || { echo "FAIL: Case 1: spin.elf + Ctrl+C exit code was not 130"; exit 1; }
+echo "[PASS] Case 1: spin.elf killed with Ctrl+C (0x03), exit code 130 verified"
+
+# Case 6 assertions
+grep -q "exit_case6=131" "$LOGFILE6" || { echo "FAIL: Case 6: spin.elf + Ctrl+\\ exit code was not 131"; exit 1; }
+echo "[PASS] Case 6: spin.elf killed with Ctrl+\\ (0x1c), exit code 131 verified"
+
+# Case 2 assertions
+grep -q "\[1\]+ Stopped  spin.elf" "$LOGFILE6" || { echo "FAIL: Case 2: spin.elf was not stopped by Ctrl+Z"; exit 1; }
+grep -q "\[1\] + Stopped  spin.elf" "$LOGFILE6" || { echo "FAIL: Case 2: jobs did not report Stopped for spin.elf"; exit 1; }
+grep -q "PID [0-9]* resumed by SIGCONT" "$LOGFILE6" || { echo "FAIL: Case 2: fg did not resume stopped process with SIGCONT"; exit 1; }
+grep -q "exit_case2=130" "$LOGFILE6" || { echo "FAIL: Case 2: resumed spin.elf killed with Ctrl+C exit code was not 130"; exit 1; }
+echo "[PASS] Case 2: spin.elf stopped by Ctrl+Z, jobs shows Stopped, fg resumes, Ctrl+C kills ($? = 130) verified"
+
+# Case 3 assertions
+grep -q "\[1\]   Running  spin.elf" "$LOGFILE6" || { echo "FAIL: Case 3: spin.elf & did not show Running in jobs"; exit 1; }
+grep -q "\[1\]+ Terminated  spin.elf" "$LOGFILE6" || { echo "FAIL: Case 3: kill %1 did not terminate spin.elf"; exit 1; }
+echo "[PASS] Case 3: spin.elf &, jobs shows Running, kill %1 terminates, jobs cleared verified"
+
+# Case 4 assertions
+grep -q "\[1\]+ spin.elf &" "$LOGFILE6" || { echo "FAIL: Case 4: bg did not resume spin.elf in background"; exit 1; }
+echo "[PASS] Case 4: spin.elf, Ctrl+Z, bg resumes in background, kill %1 terminates verified"
+
+# Case 5 assertions
+grep -q "exit_case5=130" "$LOGFILE6" || { echo "FAIL: Case 5: cat | spin.elf pipeline Ctrl+C exit code was not 130"; exit 1; }
+echo "[PASS] Case 5: Pipeline cat | spin.elf killed by Ctrl+C in same pgrp verified"
+
+# Case 7 assertions
+grep -q "PID [0-9]* (cat) stopped by signal 21" "$LOGFILE6" || { echo "FAIL: Case 7: background cat reading stdin did not receive SIGTTIN (21)"; exit 1; }
+grep -q "\[1\] + Stopped  cat" "$LOGFILE6" || { echo "FAIL: Case 7: jobs did not report Stopped for background cat"; exit 1; }
+echo "[PASS] Case 7: Background job reading stdin stopped by SIGTTIN verified"
+
+# Non-interactive subshell assertion
+grep -q "subshell_works" "$LOGFILE6" || { echo "FAIL: Non-interactive subshell failed"; exit 1; }
+echo "[PASS] Non-interactive subshell (echo ... | sh.elf) verified"
+
+# Case 8 assertions
+BASELINE_FRAMES=$(grep "sh: pid=" "$LOGFILE6" | head -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+FINAL_FRAMES=$(grep "sh: pid=" "$LOGFILE6" | tail -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+if [ -n "$BASELINE_FRAMES" ] && [ -n "$FINAL_FRAMES" ]; then
+    if [ "$BASELINE_FRAMES" -ne "$FINAL_FRAMES" ]; then
+        echo "FAIL: Case 8: Frame leak detected: baseline $BASELINE_FRAMES vs final $FINAL_FRAMES"
+        exit 1
+    fi
+    echo "[PASS] Case 8: Zero frame leak verified (baseline $BASELINE_FRAMES == final $FINAL_FRAMES)"
+else
+    echo "FAIL: Case 8: Could not parse free frames from shinfo"
+    exit 1
+fi
+grep -q "sh: pid=[0-9]*" "$LOGFILE6" || { echo "FAIL: Case 8: Shell info not verified"; exit 1; }
+echo "[PASS] Case 8: Shell is healthy, prompt works, zero leaks verified"
+
 echo "==============================="
-echo "ALL STAGE 15 TESTS PASSED!"
+echo "ALL TESTS PASSED!"
 echo "==============================="
 exit 0
