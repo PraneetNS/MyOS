@@ -717,18 +717,58 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
    Signal delivery is deferred to a future stage. Writing to a pipe with no readers returns `-EPIPE` instead of sending `SIGPIPE`.
 2. **Job Control**:
    Background jobs run asynchronously with `&`, but full POSIX job control (`Ctrl+Z`, `fg`, `bg`, terminal process groups) is not yet implemented.
-3. **Sub-16MB Physical Allocation Ceiling**:
-   Because identity mapping is currently configured for the first 16MB of physical RAM, physical allocations remain under 16MB until high-memory temporary mapping is added.
-4. **LFN (Long File Names)**:
+3. **LFN (Long File Names)**:
    Filenames follow 8.3 FAT conventions; full VFAT LFN Unicode parsing is deferred.
 
 ---
 
-## Stage 15 (next): what's left
+## Stage 15 (done): Memory Management Overhaul
+
+- **Audit & Architectural Design** (`docs/memory.md`): Full architectural specification detailing the higher-half virtual memory transition, direct physical map, VMAs, demand paging, and copy-on-write fork.
+- **Physical Memory Manager (PMM) Overhaul** (`src/pmm.c`, `src/pmm.h`):
+  - Parses full Multiboot2 memory map, managing all usable RAM across system memory (not restricted to <16MB).
+  - Implements per-frame reference counting array (`uint16_t frame_refcount[]`) in early boot memory.
+  - APIs: `pmm_alloc_frame()`, `pmm_alloc_contiguous_frames()`, `pmm_ref()`, `pmm_unref()`, `pmm_refcount()`, `pmm_free_count()`, `pmm_total_count()`.
+  - Serial logging of total and free RAM at boot.
+- **Higher-Half Kernel & Direct Map** (`boot/boot.s`, `boot/linker.ld`, `src/paging.c`, `src/paging.h`, `src/vmm.c`):
+  - Memory layout: userspace `0x00000000 - 0xBFFFFFFF` (page 0 unmapped so NULL dereferences fault; user ELFs link at `0x08048000`; stack top at `0xC0000000`).
+  - Kernel at `0xC0000000+` (VMA `0xC0100000`, LMA 1MB) with a direct physical map at `0xC0000000 + phys` covering up to 768MB via 4MB PSE pages (`CR4.PSE`).
+  - Temporary page directory maps both identity and higher-half at boot, drops identity map in `kernel_main` after paging initialization.
+  - Strict user pointer validation range `[0x1000, 0xC0000000)`.
+  - Defined `P2V()` / `V2P()` macros and converted all kernel modules, drivers (ATA, bcache, VGA at `0xC00B8000`), and multiboot pointers.
+- **Virtual Memory Areas (VMAs)** (`src/vma.c`, `src/vma.h`, `src/process.h`):
+  - Per-process sorted list of `vma_t` structs tracking virtual regions (`VMA_ANON`, `VMA_FILE`, `VMA_STACK`, `VMA_HEAP`) with permissions (`PROT_READ`, `PROT_WRITE`, `PROT_EXEC`).
+  - Cloned on fork, freed on exec and exit.
+  - Page fault handler consults VMAs: invalid accesses or protection violations cleanly terminate the process with exit code 139 and log to serial without panicking the kernel.
+  - Safe user-space copy (`copy_to_user` / `copy_from_user` in `boot/uaccess.s`) returns `-EFAULT` on bad pointers instead of kernel panics.
+- **Demand Paging & Stack Auto-Growth** (`src/paging.c`, `src/vma.c`, `src/syscall.c`):
+  - Lazy allocation on first touch for heap, stack, and ELF BSS / file-backed segments.
+  - User stack auto-growth downward up to 8MB (`0xBF800000`) with guard gap.
+  - Lazy `sys_sbrk` adjusts heap limit up to 256MB without upfront physical frame allocation; shrinking frees and unrefs pages.
+- **Copy-On-Write (COW) Fork** (`src/vmm.c`, `src/paging.c`, `src/process.c`):
+  - `fork()` clones user page tables by clearing writable bits and setting software COW bit (bit 9, `PTE_COW`), incrementing frame refcounts.
+  - Write fault on COW page allocates a private copy if shared (`refcount > 1`) or restores write permissions if sole owner (`refcount == 1`).
+  - Full teardown on `exit()` and `exec()` frees user frames and empty page tables with zero leaks.
+- **mmap, munmap & mprotect Syscalls** (`src/syscall.c`, `userland/libc.h`):
+  - `SYS_MMAP` (30): Supports `MAP_ANON | MAP_PRIVATE` and file-backed `MAP_PRIVATE`, allocating top-down below stack (`0xB0000000` down).
+  - `SYS_MUNMAP` (31): Unmaps pages, unrefs frames, and splits/truncates VMAs.
+  - `SYS_MPROTECT` (32): Updates protections across virtual ranges.
+  - Userland free-list allocator in `libc.h` on top of `sbrk` with large allocations (>= 64KB) served via `mmap`.
+- **Hardened Kernel Heap** (`src/kheap.c`, `src/kheap.h`):
+  - Dynamic heap growth from direct physical map (`pmm_alloc_contiguous_frames`).
+  - Bidirectional block coalescing.
+  - Per-block magic headers (`0xDEADBEEF`) and tail canaries (`0xCAFEBABE`) detecting buffer overflows and double-frees immediately.
+  - Boot-time self-test (`kheap_selftest()`) verifying stress allocations, coalescing, and dynamic growth.
+- **Comprehensive Memory Test Suite** (`userland/memtest.c`, `tools/test_boot.sh`):
+  - Validates COW correctness, COW efficiency, demand paging, stack growth, mmap/munmap, protection violations (NULL, code write, non-exec, kernel address), and fork storm (200 sequential + 20 concurrent children with zero leaks).
+  - Validated across QEMU `-m 256` and `-m 64` configurations.
+
+---
+
+## Stage 16 (next): what's left
 
 1. **Signals (`SIGINT`, `SIGTERM`, `SIGKILL`, `SIGCHLD`, `SIGPIPE`)** and signal handling trampolines.
 2. **Terminal Process Groups & Job Control** (`tcsetpgrp`, `fg`, `bg`, `Ctrl+C`, `Ctrl+Z`).
-3. **Fixing the sub-16MB physical-frame constraint** via high-memory recursive/temporary page table mapping.
 
 ## Notes on the toolchain choices made here
 

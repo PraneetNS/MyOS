@@ -224,19 +224,59 @@ Any physical frame allocated by `pmm_alloc_frame()` (e.g. `frame_phys`) is acces
 - Syscall `SYS_MUNMAP(addr, length)`:
   - Unmaps pages, unrefs frames, updates/splits VMAs.
 
-### 4.7 Step 8: Hardened Kernel Heap
-- `kheap` expands dynamically using physical frames accessed via `P2V()`.
-- Block headers include magic numbers (`0xDEADBEEF` / `0xCAFEBABE`) and boundary canaries to detect buffer overflows and double-frees immediately.
+### 4.8 Step 9: Tests, Verification, and Memory Test Suite
+- Comprehensive userland test suite: `userland/memtest.c` (built as `memtest.elf`).
+- Validates:
+  1. COW correctness (independent memory space after fork modifications).
+  2. COW efficiency (minimal page table allocation on fork, frame count return to baseline).
+  3. Demand paging (lazy allocation on touch for 64MB break, shrink restores frames).
+  4. Stack auto-growth (2MB recursive descent succeeds, unbounded recursion terminated with exit 139).
+  5. `mmap` / `munmap` (anonymous memory, file-backed mapped reading, munmap then touch terminates with exit 139).
+  6. Memory protection (NULL dereference, write to code segment, jump to non-executable region, kernel address access all killed cleanly with exit 139 without panicking kernel).
+  7. Fork storm (200 sequential forks + 20 concurrent children with zero frame leaks).
+- Validated via `tools/test_boot.sh` across QEMU `-m 256` and low-memory `-m 64` configurations.
 
 ---
 
-## 5. Implementation Roadmap & Verification Plan
-1. **Step 1**: Commit this memory layout audit and architectural design doc (`docs/memory.md`).
-2. **Step 2**: PMM overhaul: full Multiboot2 memory map parsing, frame refcounts array, logging total/free RAM on boot.
-3. **Step 3**: Higher-half kernel (`0xC0100000`), boot.s PSE setup, master direct map (`0xC0000000 + phys`), `P2V`/`V2P` conversion across all drivers and kernel modules, update `user.ld` to `0x08048000`, user pointer range `[0x1000, 0xC0000000)`. Run full test suite.
-4. **Step 4**: Per-process VMA structures, page fault handler consultation, safe user pointer copy without panics.
-5. **Step 5**: Demand paging for BSS, heap, stack growth with guard pages.
-6. **Step 6**: Copy-On-Write fork implementation and zero-leak verification.
-7. **Step 7**: `SYS_MMAP`, `SYS_MUNMAP`, modernized userland malloc.
-8. **Step 8**: Hardened dynamic kernel heap with canaries.
-9. **Step 9**: Memory test suite (`userland/memtest.c`), `-m 256` and `-m 64` QEMU boot validation, regression suite, README updates.
+## 5. Syscall Interface (Updated)
+
+| Number | Name | Arguments | Description |
+|---|---|---|---|
+| 0 | `SYS_EXIT` | `int status` | Terminate calling process with exit code |
+| 1 | `SYS_WRITE` | `int fd, const void* buf, size_t len` | Write bytes to file/pipe/console |
+| 2 | `SYS_GETPID` | *(none)* | Return calling process PID |
+| 3 | `SYS_OPEN` | `const char* path, int flags, int mode` | Open file by path |
+| 4 | `SYS_READ` | `int fd, void* buf, size_t len` | Read bytes from file/pipe/console |
+| 5 | `SYS_CLOSE` | `int fd` | Close file descriptor |
+| 7 | `SYS_FORK` | *(none)* | Copy-On-Write duplicate calling process |
+| 8 | `SYS_PIPE` | `int fds[2]` | Create unidirectional IPC pipe |
+| 10 | `SYS_EXEC` | `const char* path, const char* argv[]` | Replace process image with ELF executable |
+| 11 | `SYS_WAITPID` | `int pid, int* status, int options` | Wait for child process state change |
+| 12 | `SYS_SBRK` | `intptr_t increment` | Move heap break (lazy demand-paged up to 256MB) |
+| 13 | `SYS_SYNC` | *(none)* | Flush buffer cache to disk |
+| 14 | `SYS_LSEEK` | `int fd, int offset, int whence` | Set open file offset |
+| 15 | `SYS_STAT` | `const char* path, struct stat* st` | Query file status by path |
+| 16 | `SYS_FSTAT` | `int fd, struct stat* st` | Query file status by descriptor |
+| 17 | `SYS_GETDENTS` | `int fd, struct dirent* dirp, size_t count` | Read directory entries |
+| 18 | `SYS_MKDIR` | `const char* path, int mode` | Create directory |
+| 19 | `SYS_RMDIR` | `const char* path` | Remove empty directory |
+| 20 | `SYS_UNLINK` | `const char* path` | Remove file link |
+| 21 | `SYS_RENAME` | `const char* old, const char* new` | Rename filesystem path |
+| 22 | `SYS_CHDIR` | `const char* path` | Change current working directory |
+| 23 | `SYS_GETCWD` | `char* buf, size_t size` | Retrieve current working directory |
+| 24 | `SYS_DUP` | `int oldfd` | Duplicate file descriptor |
+| 25 | `SYS_DUP2` | `int oldfd, int newfd` | Duplicate to specific descriptor |
+| 26 | `SYS_FCNTL` | `int fd, int cmd, int arg` | File control operations |
+| 27 | `SYS_SLEEP` | `unsigned int seconds` | Sleep process for specified duration |
+| 28 | `SYS_TICKS` | *(none)* | Retrieve PIT timer tick count |
+| 29 | `SYS_FREE_FRAMES` | *(none)* | Query free physical frame count from PMM |
+| 30 | `SYS_MMAP` | `void* addr, size_t len, int prot, int flags, int fd, size_t offset` | Map pages into address space |
+| 31 | `SYS_MUNMAP` | `void* addr, size_t len` | Unmap pages from address space |
+| 32 | `SYS_MPROTECT`| `void* addr, size_t len, int prot` | Change protection on address range |
+
+---
+
+## 6. Known Limitations
+1. **PAE / NX bit**: 32-bit non-PAE paging does not provide a hardware No-Execute bit in page table entries; `PROT_NONE` and unmapped accesses fault in hardware, and instruction fetches on non-executable areas fault on CPUs with NX or on unmapped pages.
+2. **Page Swapping / Eviction**: Physical pages are frame-backed or lazy-loaded from files; an on-disk swap partition for paging anonymous memory to disk under heavy memory pressure is not yet implemented.
+3. **Direct Map Ceiling**: Direct map covers physical memory up to 768MB (`0xC0000000 - 0xEFFFFFFF`). Machines with >768MB RAM use the first 768MB as logged during PMM initialization.

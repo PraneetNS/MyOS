@@ -55,8 +55,10 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 1
     printf "badwrite.elf\n"
     sleep 1
+    printf "memtest\n"
+    sleep 10
     printf "exit\n"
-) | timeout 45s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 60s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -132,6 +134,42 @@ echo "[PASS] heaptest.elf verified"
 
 grep -q "PAGE FAULT" "$LOGFILE1" || { echo "FAIL: badwrite page fault not caught"; exit 1; }
 echo "[PASS] badwrite.elf protection verified"
+
+# Stage 15 RAM log assertion (-m 256)
+grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }
+echo "[PASS] -m 256 Total RAM (255 MB) verified"
+
+# Stage 15 Hardened kheap self-test assertion
+grep -q "Kernel heap self-test passed" "$LOGFILE1" || { echo "FAIL: Kernel heap hardening self-test failed"; exit 1; }
+echo "[PASS] Kernel heap self-test verified"
+
+# Stage 15 memtest assertions
+grep -q "COW correctness (parent untouched, child modified independently)" "$LOGFILE1" || { echo "FAIL: COW correctness test failed"; exit 1; }
+echo "[PASS] COW correctness verified"
+
+grep -q "COW efficiency (minimal frames allocated on fork, baseline restored)" "$LOGFILE1" || { echo "FAIL: COW efficiency test failed"; exit 1; }
+echo "[PASS] COW efficiency verified"
+
+grep -q "Demand paging (lazy allocation on touch, shrink restores frames)" "$LOGFILE1" || { echo "FAIL: Demand paging test failed"; exit 1; }
+echo "[PASS] Demand paging verified"
+
+grep -q "Stack auto-growth (2MB stack recursion succeeded)" "$LOGFILE1" || { echo "FAIL: Stack auto-growth failed"; exit 1; }
+echo "[PASS] Stack auto-growth (2MB) verified"
+
+grep -q "Stack guard gap (unbounded recursion killed cleanly with exit 139)" "$LOGFILE1" || { echo "FAIL: Stack guard gap test failed"; exit 1; }
+echo "[PASS] Stack guard gap (exit 139) verified"
+
+grep -q "mmap / munmap (anonymous, file-backed, and unmap fault verified)" "$LOGFILE1" || { echo "FAIL: mmap/munmap test failed"; exit 1; }
+echo "[PASS] mmap / munmap verified"
+
+grep -q "Protection violations (NULL, code write, non-exec, kernel address all exit 139)" "$LOGFILE1" || { echo "FAIL: Protection violations test failed"; exit 1; }
+echo "[PASS] Protection violations (exit 139) verified"
+
+grep -q "Fork storm (200 sequential + 20 concurrent children clean, zero leaks)" "$LOGFILE1" || { echo "FAIL: Fork storm test failed"; exit 1; }
+echo "[PASS] Fork storm (220 forks zero leak) verified"
+
+grep -q "\[memtest\] ALL TESTS PASSED SUCCESSFULLY!" "$LOGFILE1" || { echo "FAIL: memtest suite failed"; exit 1; }
+echo "[PASS] Stage 15 memtest suite verified"
 
 # PID 1 respawn
 grep -q "respawning sh.elf" "$LOGFILE1" || { echo "FAIL: PID 1 respawn message not found"; exit 1; }
@@ -248,7 +286,18 @@ mtype -i disk.img ::/tmp/a | grep -q "hello"
 mtype -i disk.img ::/tmp/b | grep -q "hello"
 echo "[PASS] Host mtype cross-check for persistent and created files verified"
 
+echo "[TEST] Session 5: Low-memory boot test (-m 64)..."
+LOGFILE5=$(mktemp)
+timeout 10s qemu-system-i386 -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE5" 2>&1 || true
+cat "$LOGFILE5"
+
+grep -q "BOOT OK" "$LOGFILE5" || { echo "FAIL: Low-memory boot failed (BOOT OK not found)"; rm -f "$LOGFILE5"; exit 1; }
+grep -q "Total RAM: 63 MB" "$LOGFILE5" || { echo "FAIL: -m 64 Total RAM (63 MB) not logged correctly"; rm -f "$LOGFILE5"; exit 1; }
+grep -q "Kernel heap self-test passed" "$LOGFILE5" || { echo "FAIL: -m 64 Kernel heap self-test failed"; rm -f "$LOGFILE5"; exit 1; }
+echo "[PASS] Low-memory boot (-m 64, 63 MB RAM, BOOT OK) verified"
+rm -f "$LOGFILE5"
+
 echo "==============================="
-echo "ALL STAGE 14 TESTS PASSED!"
+echo "ALL STAGE 15 TESTS PASSED!"
 echo "==============================="
 exit 0
