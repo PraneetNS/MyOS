@@ -3,6 +3,15 @@
 
 #include "../src/errno.h"
 
+typedef unsigned int   uint32_t;
+typedef unsigned short uint16_t;
+typedef unsigned char  uint8_t;
+typedef int            int32_t;
+typedef short          int16_t;
+typedef signed char    int8_t;
+typedef unsigned int   size_t;
+typedef int            ssize_t;
+
 /* Open flags */
 #define O_RDONLY    0x0000
 #define O_WRONLY    0x0001
@@ -53,6 +62,42 @@ struct stat {
     unsigned int st_size;
     unsigned int st_blksize;
     unsigned int st_blocks;
+    unsigned int st_atime;
+    unsigned int st_mtime;
+    unsigned int st_ctime;
+};
+
+typedef unsigned int time_t;
+typedef int clockid_t;
+
+#define CLOCK_REALTIME  0
+#define CLOCK_MONOTONIC 1
+
+struct timeval {
+    unsigned int tv_sec;
+    unsigned int tv_usec;
+};
+
+struct timespec {
+    unsigned int tv_sec;
+    unsigned int tv_nsec;
+};
+
+struct timezone {
+    int tz_minuteswest;
+    int tz_dsttime;
+};
+
+struct tm {
+    int tm_sec;
+    int tm_min;
+    int tm_hour;
+    int tm_mday;
+    int tm_mon;
+    int tm_year;
+    int tm_wday;
+    int tm_yday;
+    int tm_isdst;
 };
 
 struct dirent {
@@ -160,6 +205,10 @@ static inline int sys_exec(const char* name, const char* const* argv) {
 
 static inline int exec(const char* name, const char* const* argv) {
     return sys_exec(name, argv);
+}
+
+static inline int execv(const char* name, char* const* argv) {
+    return sys_exec(name, (const char* const*) argv);
 }
 
 static inline int sys_waitpid(int pid, int* status, int options) {
@@ -815,6 +864,43 @@ static inline int tcgetpgrp(int fd) {
     int pgrp = 0;
     if (ioctl(fd, TIOCGPGRP, &pgrp) < 0) return -1;
     return pgrp;
+}
+
+static inline time_t time(time_t* tloc) {
+    time_t ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(72), "b"(tloc));
+    return ret;
+}
+
+static inline int gettimeofday(struct timeval* tv, struct timezone* tz) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(73), "b"(tv), "c"(tz));
+    return ret;
+}
+
+static inline int clock_gettime(clockid_t clk_id, struct timespec* tp) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(74), "b"(clk_id), "c"(tp));
+    return ret;
+}
+
+static inline int nanosleep(const struct timespec* req, struct timespec* rem) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(75), "b"(req), "c"(rem));
+    return ret;
+}
+
+static inline int usleep(unsigned int usec) {
+    struct timespec req;
+    req.tv_sec = usec / 1000000;
+    req.tv_nsec = (usec % 1000000) * 1000;
+    return nanosleep(&req, 0);
+}
+
+static inline int nice(int inc) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(77), "b"(inc));
+    return ret;
 }
 
 #endif

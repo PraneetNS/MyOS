@@ -21,6 +21,8 @@
 #include "fat16.h"
 #include "tty.h"
 #include "devfs.h"
+#include "procfs.h"
+#include "rtc.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -63,6 +65,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     timer_install(100);
     kprintf("[ok] PIT timer installed (100Hz)\n");
+
+    rtc_init();
+    kprintf("[ok] RTC driver initialized\n");
 
     keyboard_install();
     kprintf("[ok] Keyboard driver installed\n");
@@ -111,6 +116,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     devfs_get_root()->parent = vfs_get_root();
     vnode_ref(vfs_get_root());
     kprintf("[ok] Mounted devfs at /dev\n");
+
+    procfs_init();
+    vfs_mount("/proc", procfs_get_root());
+    procfs_get_root()->parent = vfs_get_root();
+    vnode_ref(vfs_get_root());
+    kprintf("[ok] Mounted procfs at /proc\n");
 
     pipe_init();
     kprintf("[ok] Pipe (IPC) initialized\n");

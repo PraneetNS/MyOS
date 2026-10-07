@@ -61,6 +61,12 @@ typedef struct process {
     uint32_t heap_mapped_up_to; /* how far the heap has actually been paged in (<= heap_end, rounded to a page) */
 
     struct vma* vma_list;       /* Stage 15: sorted list of memory areas (VMAs) */
+
+    /* Stage 16: Time and scheduler enhancements */
+    uint32_t sleep_deadline;    /* Tick deadline for sleep/nanosleep (0 if not sleeping) */
+    struct process* sleep_next; /* Next pointer in timer sleep wait queue */
+    uint32_t cpu_ticks;         /* Ticks consumed while running */
+    int nice;                   /* Scheduling nice value (-20 to 19) */
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as either the resident

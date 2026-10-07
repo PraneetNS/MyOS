@@ -58,7 +58,28 @@ struct stat {
     uint32_t st_size;
     uint32_t st_blksize;
     uint32_t st_blocks;
+    uint32_t st_atime;
+    uint32_t st_mtime;
+    uint32_t st_ctime;
 };
+
+struct timeval {
+    uint32_t tv_sec;
+    uint32_t tv_usec;
+};
+
+struct timespec {
+    uint32_t tv_sec;
+    uint32_t tv_nsec;
+};
+
+struct timezone {
+    int tz_minuteswest;
+    int tz_dsttime;
+};
+
+#define CLOCK_REALTIME  0
+#define CLOCK_MONOTONIC 1
 
 struct dirent {
     uint32_t d_ino;

@@ -11,10 +11,17 @@ dd if=/dev/zero of="$IMAGE" bs=1M count=32 status=none
 echo "Formatting disk image with FAT16..."
 mkfs.fat -F 16 -n "MYOS" "$IMAGE"
 
-echo "Creating /bin, /tmp, and /dev directories..."
+echo "Creating /bin, /tmp, /dev, /etc, and /proc directories..."
 mmd -i "$IMAGE" "::/bin"
 mmd -i "$IMAGE" "::/tmp"
 mmd -i "$IMAGE" "::/dev"
+mmd -i "$IMAGE" "::/etc"
+mmd -i "$IMAGE" "::/proc"
+
+echo "Setting /etc/timezone to 330..."
+printf "330\n" > /tmp/myos_timezone
+mcopy -i "$IMAGE" /tmp/myos_timezone "::/etc/timezone"
+rm -f /tmp/myos_timezone
 
 echo "Building userland..."
 bash userland/build.sh
