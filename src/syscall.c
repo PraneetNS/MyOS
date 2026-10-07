@@ -48,6 +48,21 @@
 #define SYS_SLEEP      27
 #define SYS_TICKS      28
 #define SYS_FREE_FRAMES 29
+#define SYS_MMAP       30
+#define SYS_MUNMAP     31
+#define SYS_MPROTECT   32
+
+#define PROT_NONE       0x0
+#define PROT_READ       0x1
+#define PROT_WRITE      0x2
+#define PROT_EXEC       0x4
+
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x10
+#define MAP_ANON        0x20
+#define MAP_ANONYMOUS   0x20
+#define MAP_FAILED      ((void*)-1)
 
 #define WNOHANG        1
 
@@ -370,14 +385,22 @@ static void syscall_handler(struct registers* regs) {
             int err = validate_user_string(name);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
+            char kname[64];
+            int ki = 0;
+            while (name[ki] && ki < 63) {
+                kname[ki] = name[ki];
+                ki++;
+            }
+            kname[ki] = '\0';
+
             process_t* me = scheduler_current();
             vnode_t* vn = 0;
-            if (vfs_resolve_path(name, me->cwd, &vn) != 0 || !vn) {
+            if (vfs_resolve_path(kname, me->cwd, &vn) != 0 || !vn) {
                 char bin_path[64];
                 bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
                 int l = 0;
-                while (name[l] && l < 50) {
-                    bin_path[5 + l] = name[l];
+                while (kname[l] && l < 50) {
+                    bin_path[5 + l] = kname[l];
                     l++;
                 }
                 bin_path[5 + l] = '\0';
@@ -419,8 +442,8 @@ static void syscall_handler(struct registers* regs) {
             }
             if (argc == 0) {
                 int j = 0;
-                while (name[j] && j < 63) {
-                    kargv_buf[0][j] = name[j];
+                while (kname[j] && j < 63) {
+                    kargv_buf[0][j] = kname[j];
                     j++;
                 }
                 kargv_buf[0][j] = '\0';
@@ -468,16 +491,18 @@ static void syscall_handler(struct registers* regs) {
             }
             me->vma_list = new_vmas;
 
-            vmm_destroy_address_space(&me->as);
+            address_space_t old_as = me->as;
             me->as = new_as;
             me->entry_point = entry;
             me->user_stack_top = stack_top;
             me->heap_end = HEAP_BASE;
             me->heap_mapped_up_to = HEAP_BASE;
 
-            int i = 0; for (; name[i] && i < 31; i++) me->name[i] = name[i]; me->name[i] = '\0';
+            int i = 0; for (; kname[i] && i < 31; i++) me->name[i] = kname[i]; me->name[i] = '\0';
 
             vmm_switch(&me->as);
+            vmm_destroy_address_space(&old_as);
+
             enter_usermode(entry, stack_top); /* never returns */
             break;
         }
@@ -957,6 +982,124 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_FREE_FRAMES: {
             regs->eax = pmm_free_frame_count();
+            break;
+        }
+
+        case SYS_MMAP: {
+            uint32_t addr_hint = regs->ebx;
+            uint32_t len       = regs->ecx;
+            int prot           = (int) regs->edx;
+            int flags          = (int) regs->esi;
+            int fd             = (int) regs->edi;
+            uint32_t offset    = regs->ebp;
+            process_t* me = scheduler_current();
+
+            if (len == 0 || (offset & 0xFFFu)) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            len = (len + 4095) & ~4095u;
+
+            if (!(flags & MAP_PRIVATE)) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            struct vnode* file = NULL;
+            uint32_t file_size = 0;
+
+            if (!(flags & MAP_ANON)) {
+                if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                    regs->eax = (uint32_t) -EBADF;
+                    break;
+                }
+                open_file_t* of = me->fds[fd];
+                if (of->type != OPEN_FILE_VNODE || !of->vnode) {
+                    regs->eax = (uint32_t) -EACCES;
+                    break;
+                }
+                file = of->vnode;
+                if (offset < file->size) {
+                    uint32_t rem = file->size - offset;
+                    file_size = (len < rem) ? len : rem;
+                } else {
+                    file_size = 0;
+                }
+            }
+
+            uint32_t target_addr = 0;
+            if (flags & MAP_FIXED) {
+                if (!addr_hint || (addr_hint & 0xFFFu) != 0 ||
+                    addr_hint < 0x1000 || addr_hint + len > 0xC0000000 ||
+                    addr_hint + len < addr_hint) {
+                    regs->eax = (uint32_t) -EINVAL;
+                    break;
+                }
+                vma_unmap_range(me, addr_hint, len);
+                target_addr = addr_hint;
+            } else if (addr_hint != 0 && (addr_hint & 0xFFFu) == 0 &&
+                       addr_hint >= 0x40000000 && addr_hint + len <= 0xB8000000 &&
+                       !vma_overlaps(me, addr_hint, addr_hint + len)) {
+                target_addr = addr_hint;
+            } else {
+                target_addr = vma_find_free_gap(me, len);
+                if (!target_addr) {
+                    regs->eax = (uint32_t) -ENOMEM;
+                    break;
+                }
+            }
+
+            uint32_t vma_flags = (flags & MAP_ANON) ? VMA_FLAG_ANON : VMA_FLAG_FILE;
+            uint32_t vma_prot = 0;
+            if (prot & PROT_READ)  vma_prot |= VMA_PROT_READ;
+            if (prot & PROT_WRITE) vma_prot |= VMA_PROT_WRITE;
+            if (prot & PROT_EXEC)  vma_prot |= VMA_PROT_EXEC;
+
+            vma_t* new_vma = vma_create(target_addr, target_addr + len,
+                                        vma_prot, vma_flags, file, offset, file_size);
+            if (!new_vma) {
+                regs->eax = (uint32_t) -ENOMEM;
+                break;
+            }
+
+            if (vma_insert(&me->vma_list, new_vma) != 0) {
+                if (file) vnode_unref(file);
+                kfree(new_vma);
+                regs->eax = (uint32_t) -ENOMEM;
+                break;
+            }
+
+            regs->eax = target_addr;
+            break;
+        }
+
+        case SYS_MUNMAP: {
+            uint32_t addr = regs->ebx;
+            uint32_t len  = regs->ecx;
+            process_t* me = scheduler_current();
+
+            if ((addr & 0xFFFu) || len == 0) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            int r = vma_unmap_range(me, addr, len);
+            regs->eax = (uint32_t) r;
+            break;
+        }
+
+        case SYS_MPROTECT: {
+            uint32_t addr = regs->ebx;
+            uint32_t len  = regs->ecx;
+            int prot      = (int) regs->edx;
+            process_t* me = scheduler_current();
+
+            if ((addr & 0xFFFu) || len == 0) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            int r = vma_mprotect(me, addr, len, prot);
+            regs->eax = (uint32_t) r;
             break;
         }
 
