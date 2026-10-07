@@ -1,4 +1,5 @@
 #include "vga.h"
+#include "paging.h"
 
 static const size_t VGA_WIDTH = 80;
 static const size_t VGA_HEIGHT = 25;
@@ -20,7 +21,7 @@ void terminal_initialize(void) {
     terminal_row = 0;
     terminal_column = 0;
     terminal_color = vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK);
-    terminal_buffer = (uint16_t*) 0xB8000;   /* VGA text buffer's physical address */
+    terminal_buffer = (uint16_t*) P2V(0xB8000);   /* VGA text buffer in direct map (0xC00B8000) */
 
     for (size_t y = 0; y < VGA_HEIGHT; y++)
         for (size_t x = 0; x < VGA_WIDTH; x++)

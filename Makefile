@@ -3,7 +3,7 @@ AS      = as
 LD      = ld
 
 CFLAGS  = -m32 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic \
-          -O2 -Wall -Wextra -nostdlib
+          -fno-strict-aliasing -O2 -Wall -Wextra -nostdlib
 ASFLAGS = --32
 LDFLAGS = -m elf_i386 -T boot/linker.ld -nostdlib
 

@@ -2,30 +2,9 @@
 #include "idt.h"
 #include "vga.h"
 #include "scheduler.h"
-
-#define PAGE_PRESENT 0x1
-#define PAGE_WRITE   0x2
-#define PAGE_USER    0x4
-
-/* Identity-map the first 16MB: 4 page tables x 1024 entries x 4KB = 16MB.
-   NUM_TABLES=4 covers 0-16MB total. As of Stage 6, only directory entry 0
-   (0-4MB, where the kernel image + heap live -- confirmed well under 4MB)
-   is still identity-mapped this way, and it's now SUPERVISOR-ONLY: user
-   processes can no longer touch kernel memory directly. Entries 1-3
-   (4-16MB) are left PRESENT here purely as a physical-frame identity map
-   the KERNEL itself uses to read/write freshly allocated frames while
-   setting up a new process's address space (see vmm.c) -- they are NOT
-   user-accessible, and a process's own page directory does not inherit
-   them at all; vmm.c builds fresh mappings into that range per-process. */
-#define NUM_TABLES 4
-
-static uint32_t page_directory[1024]  __attribute__((aligned(4096)));
-static uint32_t page_tables[NUM_TABLES][1024] __attribute__((aligned(4096)));
+#include "serial.h"
 
 extern void paging_flush(uint32_t page_directory_phys);
-extern void paging_enable(void);
-
-#include "serial.h"
 
 static void page_fault_handler(struct registers* regs) {
     uint32_t faulting_addr;
@@ -33,19 +12,13 @@ static void page_fault_handler(struct registers* regs) {
 
     int from_usermode = (regs->cs & 0x3) == 3; /* RPL bits of the faulting CS */
 
-    kprintf("\n*** PAGE FAULT at 0x%08x (err=0x%08x, %s, %s) ***\n",
+    kprintf("\n*** PAGE FAULT at 0x%08x (err=0x%08x, %s, %s, eip=0x%08x) ***\n",
             faulting_addr, regs->err_code,
             (regs->err_code & 0x4) ? "user-mode" : "kernel-mode",
-            (regs->err_code & 0x2) ? "write" : "read");
+            (regs->err_code & 0x2) ? "write" : "read",
+            regs->eip);
 
     if (from_usermode) {
-        /* A user process touched memory it has no mapping for -- exactly
-           the protection this stage exists to add. Contain it: don't
-           crash the whole OS, just terminate this one process via the
-           scheduler (same teardown path as a normal sys_exit) and let
-           whatever's next in the rotation run. Kernel-space entry 0 is
-           supervisor-only in every process's page directory, so this
-           fault is expected and recoverable, not a bug. */
         kprintf("Process terminated (illegal memory access).\n");
         scheduler_exit_current(139); /* never returns */
     }
@@ -56,33 +29,18 @@ static void page_fault_handler(struct registers* regs) {
 }
 
 void paging_init(void) {
-    for (int t = 0; t < NUM_TABLES; t++) {
-        for (int i = 0; i < 1024; i++) {
-            uint32_t phys = (t * 1024 + i) * 4096;
-            uint32_t flags = PAGE_PRESENT | PAGE_WRITE;
-            if (t == 0) flags |= PAGE_USER; /* see NOTE below -- entry 0 is re-marked supervisor-only right after this loop */
-            page_tables[t][i] = phys | flags;
-        }
-        page_directory[t] = ((uint32_t) &page_tables[t]) | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-    }
+    /* Drop the temporary boot identity map (PDE 0 and PDE 1) */
+    boot_page_directory[0] = 0;
+    boot_page_directory[1] = 0;
 
-    /* Entry 0 (0-4MB, kernel space) is supervisor-only: strip PAGE_USER
-       from every page table entry in it. (Built as user-accessible above
-       only to keep the loop symmetric; corrected here in one pass.) */
-    for (int i = 0; i < 1024; i++)
-        page_tables[0][i] &= ~((uint32_t)PAGE_USER);
-    page_directory[0] &= ~((uint32_t)PAGE_USER);
-
-    for (int i = NUM_TABLES; i < 1024; i++)
-        page_directory[i] = 0;
+    /* Flush TLB by reloading CR3 with kernel page directory physical address */
+    paging_flush(paging_get_kernel_dir_phys());
 
     register_interrupt_handler(14, &page_fault_handler); /* vector 14 = #PF */
 
-    paging_flush((uint32_t) page_directory); /* load CR3 */
-    paging_enable();                          /* set CR0.PG */
-
-    terminal_writestring("[ok] Paging enabled (kernel space 0-4MB supervisor-only)\n");
+    terminal_writestring("[ok] Paging initialized (higher-half direct map active, identity dropped)\n");
 }
 
-uint32_t paging_get_kernel_dir_entry0(void) { return page_directory[0]; }
-uint32_t paging_get_kernel_dir_phys(void)   { return (uint32_t) page_directory; }
+uint32_t paging_get_kernel_dir_phys(void) {
+    return V2P(&boot_page_directory);
+}
