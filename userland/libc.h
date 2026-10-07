@@ -773,5 +773,49 @@ static inline unsigned int alarm(unsigned int seconds) {
     return ret;
 }
 
+static inline int setpgid(int pid, int pgid) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(57), "b"(pid), "c"(pgid));
+    return ret;
+}
+
+static inline int getpgid(int pid) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(58), "b"(pid));
+    return ret;
+}
+
+static inline int getpgrp(void) {
+    return getpgid(0);
+}
+
+static inline int getppid(void) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(64));
+    return ret;
+}
+
+static inline int getsid(int pid) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(65), "b"(pid));
+    return ret;
+}
+
+static inline int setsid(void) {
+    int ret;
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(66));
+    return ret;
+}
+
+static inline int tcsetpgrp(int fd, int pgrp) {
+    return ioctl(fd, TIOCSPGRP, &pgrp);
+}
+
+static inline int tcgetpgrp(int fd) {
+    int pgrp = 0;
+    if (ioctl(fd, TIOCGPGRP, &pgrp) < 0) return -1;
+    return pgrp;
+}
+
 #endif
 

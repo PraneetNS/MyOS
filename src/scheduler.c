@@ -41,10 +41,20 @@ static void enter_process(process_t* next) {
     vmm_switch(&next->as);
 }
 
-static void wake_waiters_for(int pid) {
+void wake_waiters_for(int pid) {
+    process_t* exiting = process_find_by_pid(pid);
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
-        if (p && p->state == PROC_WAITING && (p->waiting_for_pid == pid || p->waiting_for_pid == -1)) {
+        if (!p || p->state != PROC_WAITING) continue;
+        int wake = 0;
+        if (p->waiting_for_pid == pid || p->waiting_for_pid == -1) {
+            wake = 1;
+        } else if (p->waiting_for_pid == 0 && exiting && exiting->pgid == p->pgid) {
+            wake = 1;
+        } else if (p->waiting_for_pid < -1 && exiting && exiting->pgid == -p->waiting_for_pid) {
+            wake = 1;
+        }
+        if (wake) {
             p->state = PROC_READY;
             p->waiting_for_pid = -1;
         }

@@ -88,6 +88,45 @@ void tty_input_char(tty_t* tty, char c) {
         return;
     }
 
+    if (tty->termios.c_lflag & ISIG) {
+        if (c == tty->termios.c_cc[VINTR]) { /* Ctrl+C */
+            if (tty->termios.c_lflag & ECHO) {
+                tty_echo_char(tty, '^');
+                tty_echo_char(tty, 'C');
+                tty_echo_char(tty, '\n');
+            }
+            tty->canon_len = 0;
+            if (tty->fg_pgid > 0) {
+                sig_send_pid(-tty->fg_pgid, SIGINT);
+            }
+            return;
+        }
+        if (c == tty->termios.c_cc[VQUIT]) { /* Ctrl+\ */
+            if (tty->termios.c_lflag & ECHO) {
+                tty_echo_char(tty, '^');
+                tty_echo_char(tty, '\\');
+                tty_echo_char(tty, '\n');
+            }
+            tty->canon_len = 0;
+            if (tty->fg_pgid > 0) {
+                sig_send_pid(-tty->fg_pgid, SIGQUIT);
+            }
+            return;
+        }
+        if (c == tty->termios.c_cc[VSUSP]) { /* Ctrl+Z */
+            if (tty->termios.c_lflag & ECHO) {
+                tty_echo_char(tty, '^');
+                tty_echo_char(tty, 'Z');
+                tty_echo_char(tty, '\n');
+            }
+            tty->canon_len = 0;
+            if (tty->fg_pgid > 0) {
+                sig_send_pid(-tty->fg_pgid, SIGTSTP);
+            }
+            return;
+        }
+    }
+
     if (tty->termios.c_lflag & ICANON) {
         /* Canonical mode line editing */
         if (c == '\n') {
@@ -167,6 +206,16 @@ void tty_input_string(tty_t* tty, const char* s) {
 
 int tty_read(tty_t* tty, char* buf, uint32_t count) {
     if (!tty || !buf || count == 0) return 0;
+
+    process_t* cur = scheduler_current();
+    if (cur && !cur->is_kernel_task && tty->fg_pgid > 0 && cur->pgid != tty->fg_pgid) {
+        if (cur->sig_actions[SIGTTIN].sa_handler == SIG_IGN ||
+            (cur->sig_blocked & sigmask(SIGTTIN))) {
+            return -EIO;
+        }
+        sig_send_pid(-cur->pgid, SIGTTIN);
+        return -EINTR;
+    }
 
     if (tty->termios.c_lflag & ICANON) {
         /* Canonical mode: wait until line available or EOF */

@@ -57,6 +57,11 @@
 #define SYS_IOCTL      54
 #define SYS_TCGETATTR  55
 #define SYS_TCSETATTR  56
+#define SYS_SETPGID    57
+#define SYS_GETPGID    58
+#define SYS_GETPPID    64
+#define SYS_GETSID     65
+#define SYS_SETSID     66
 #define SYS_KILL       37
 #define SYS_SIGACTION  67
 #define SYS_SIGPROCMASK 68
@@ -554,7 +559,18 @@ static void syscall_handler(struct registers* regs) {
                     if (!child || child->state == PROC_UNUSED) continue;
                     if (child->ppid != me->pid) continue;
 
-                    if (pid == -1 || child->pid == pid) {
+                    int matches = 0;
+                    if (pid == -1) {
+                        matches = 1;
+                    } else if (pid > 0) {
+                        matches = (child->pid == pid);
+                    } else if (pid == 0) {
+                        matches = (child->pgid == me->pgid);
+                    } else /* pid < -1 */ {
+                        matches = (child->pgid == -pid);
+                    }
+
+                    if (matches) {
                         has_children = 1;
                         if (child->state == PROC_ZOMBIE) {
                             zombie = child;
@@ -1219,6 +1235,91 @@ static void syscall_handler(struct registers* regs) {
             }
 
             regs->eax = (uint32_t) tty_ioctl(global_tty, TCSETS, argp);
+            break;
+        }
+
+        case SYS_SETPGID: {
+            int pid = (int) regs->ebx;
+            int pgid = (int) regs->ecx;
+            process_t* me = scheduler_current();
+            if (!me) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+
+            process_t* target = (pid == 0 || pid == me->pid) ? me : process_find_by_pid(pid);
+            if (!target) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+
+            if (target != me && target->ppid != me->pid) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+
+            if (pgid < 0) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            if (pgid == 0) pgid = target->pid;
+
+            target->pgid = pgid;
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_GETPGID: {
+            int pid = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            if (!me) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+            process_t* target = (pid == 0) ? me : process_find_by_pid(pid);
+            if (!target) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+            regs->eax = (uint32_t) target->pgid;
+            break;
+        }
+
+        case SYS_GETPPID: {
+            process_t* me = scheduler_current();
+            regs->eax = (uint32_t)(me ? me->ppid : 0);
+            break;
+        }
+
+        case SYS_GETSID: {
+            int pid = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            if (!me) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+            process_t* target = (pid == 0) ? me : process_find_by_pid(pid);
+            if (!target) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+            regs->eax = (uint32_t) target->sid;
+            break;
+        }
+
+        case SYS_SETSID: {
+            process_t* me = scheduler_current();
+            if (!me) {
+                regs->eax = (uint32_t) -ESRCH;
+                break;
+            }
+            if (me->pgid == me->pid) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
+            me->sid = me->pid;
+            me->pgid = me->pid;
+            regs->eax = (uint32_t) me->sid;
             break;
         }
 
