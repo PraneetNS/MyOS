@@ -56,7 +56,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "badwrite.elf\n"
     sleep 1
     printf "exit\n"
-) | timeout 35s qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 35s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -146,7 +146,7 @@ echo "[TEST] Session 2: Persistence test across QEMU reboot with the SAME disk.i
     printf "cat /nest1/nest2/test.txt\n"
     sleep 1
     printf "exit\n"
-) | timeout 15s qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE2" 2>&1 || true
+) | timeout 15s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE2" 2>&1 || true
 
 cat "$LOGFILE2"
 
@@ -189,7 +189,7 @@ echo "[TEST] Session 3: Stage 14 IPC, pipes, redirections, pipelines, filters, a
     printf 'stress\n'
     sleep 2
     printf 'exit\n'
-) | timeout 35s qemu-system-i386 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
+) | timeout 35s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
 
 cat "$LOGFILE3"
 
