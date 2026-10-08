@@ -4,14 +4,7 @@
 
 #define LINE_CAPACITY 512
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 int main(int argc, char** argv) {
     const char* filename = 0;

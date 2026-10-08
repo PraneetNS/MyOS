@@ -9,7 +9,7 @@
 #define KHEAP_MAGIC_HEAD  0xDEADBEEFu
 #define KHEAP_MAGIC_TAIL  0xCAFEBABEu
 #define KHEAP_FOOTER_SIZE 16
-#define KHEAP_CHUNK_MIN   (64 * 1024)   /* 64KB minimum chunk size */
+#define KHEAP_CHUNK_MIN   (256 * 1024)  /* 256KB minimum chunk size */
 
 typedef struct block_header {
     uint32_t magic;             /* 0xDEADBEEF */

@@ -4,14 +4,7 @@
 
 #define MAX_OUT_FILES 8
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 int main(int argc, char** argv) {
     int append_mode = 0;

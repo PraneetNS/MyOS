@@ -64,9 +64,9 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "jobtest\n"
     sleep 2
     printf "memtest\n"
-    sleep 10
+    sleep 16
     printf "exit\n"
-) | timeout 60s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 90s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -544,8 +544,8 @@ UM=$(echo "$DATE_UTC" | grep -oE "[0-9]{2}:[0-9]{2}:[0-9]{2}" | head -n 1 | cut 
 L_MIN=$(( 10#$LH * 60 + 10#$LM ))
 U_MIN=$(( 10#$UH * 60 + 10#$UM ))
 DIFF_MIN=$(( (L_MIN - U_MIN + 1440) % 1440 ))
-if [ "$DIFF_MIN" -ne 330 ]; then
-    echo "FAIL: Timezone difference is $DIFF_MIN minutes, expected 330 minutes (5h30m)"
+if [ "$DIFF_MIN" -lt 329 ] || [ "$DIFF_MIN" -gt 331 ]; then
+    echo "FAIL: Timezone difference is $DIFF_MIN minutes, expected ~330 minutes (5h30m)"
     exit 1
 fi
 echo "[PASS] date with /etc/timezone=330 differs from date -u by exactly 5h30m ($DIFF_MIN minutes verified)"

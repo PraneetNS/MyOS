@@ -16,14 +16,7 @@
 #define MAX_STAGES 8
 #define MAX_ARGS 16
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 static int is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
