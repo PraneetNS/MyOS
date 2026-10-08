@@ -111,7 +111,7 @@ static const char* exception_messages[32] = {
     "Into Detected Overflow", "Out of Bounds", "Invalid Opcode", "No Coprocessor",
     "Double Fault", "Coprocessor Segment Overrun", "Bad TSS", "Segment Not Present",
     "Stack Fault", "General Protection Fault", "Page Fault", "Unknown Interrupt",
-    "Coprocessor Fault", "Alignment Check", "Machine Check", "Reserved",
+    "Coprocessor Fault", "Alignment Check", "Machine Check", "SIMD Floating-Point Exception",
     "Reserved", "Reserved", "Reserved", "Reserved",
     "Reserved", "Reserved", "Reserved", "Reserved",
     "Reserved", "Reserved", "Reserved", "Reserved",
@@ -139,7 +139,7 @@ void isr_handler(struct registers* regs) {
                       regs->eip, regs->err_code);
 
         int sig = SIGSEGV;
-        if (regs->int_no == 0) sig = SIGFPE;
+        if (regs->int_no == 0 || regs->int_no == 16 || regs->int_no == 19) sig = SIGFPE;
         else if (regs->int_no == 4 || regs->int_no == 6) sig = SIGILL;
         else if (regs->int_no == 13) sig = SIGSEGV;
 

@@ -23,6 +23,7 @@
 #include "devfs.h"
 #include "signal.h"
 #include "rtc.h"
+#include "fpu.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -535,6 +536,9 @@ static void syscall_handler(struct registers* regs) {
 
             vmm_switch(&me->as);
             vmm_destroy_address_space(&old_as);
+
+            fpu_init_proc(me);
+            fpu_restore(me);
 
             enter_usermode(entry, stack_top); /* never returns */
             break;

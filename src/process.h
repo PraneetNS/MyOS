@@ -67,6 +67,9 @@ typedef struct process {
     struct process* sleep_next; /* Next pointer in timer sleep wait queue */
     uint32_t cpu_ticks;         /* Ticks consumed while running */
     int nice;                   /* Scheduling nice value (-20 to 19) */
+
+    /* Stage 17: FPU / SSE state area (512 bytes + 16 bytes alignment pad) */
+    uint8_t fpu_buffer[512 + 16];
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as either the resident

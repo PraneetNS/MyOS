@@ -477,6 +477,8 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     sleep 3.5
     printf "sigtest.elf\n"
     sleep 2.5
+    printf "fputest.elf\n"
+    sleep 2.5
     printf "uptime\n"
     sleep 0.3
     printf "free\n"
@@ -514,7 +516,7 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     printf "shinfo\n"
     sleep 0.3
     printf "exit\n"
-) | timeout 25s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
+) | timeout 30s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE7" > "${LOGFILE7}.tmp" && mv "${LOGFILE7}.tmp" "$LOGFILE7"
 cat "$LOGFILE7"
@@ -560,6 +562,11 @@ grep -q "PASS: alarm and pause" "$LOGFILE7" || { echo "FAIL: alarm(1) and pause 
 grep -q "PASS: nanosleep interrupted returned -EINTR with remaining time > 0" "$LOGFILE7" || { echo "FAIL: nanosleep signal interruption with rem > 0 failed"; exit 1; }
 grep -q "=== ALL SIGTESTS PASSED ===" "$LOGFILE7" || { echo "FAIL: sigtest suite did not pass"; exit 1; }
 echo "[PASS] alarm(1) wakes pause() via SIGALRM and nanosleep interrupted returns -EINTR with remaining time > 0 verified"
+
+# Fputest assertions
+grep -q "PASS: 3 concurrent processes with FPU/SSE completed without corruption" "$LOGFILE7" || { echo "FAIL: FPU/SSE concurrent calculation corrupted"; exit 1; }
+grep -q "=== ALL FPUTESTS PASSED ===" "$LOGFILE7" || { echo "FAIL: fputest suite did not pass"; exit 1; }
+echo "[PASS] FPU/SSE concurrent execution, context switching, and SIGFPE verified"
 
 # Procfs and ps assertions
 grep -q "MemTotal:" "$LOGFILE7" || { echo "FAIL: /proc/meminfo MemTotal missing"; exit 1; }

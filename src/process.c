@@ -11,6 +11,7 @@
 #include "serial.h"
 #include "keyboard.h"
 #include "timer.h"
+#include "fpu.h"
 
 int respawn_shell_needed = 0;
 
@@ -243,6 +244,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->heap_mapped_up_to = HEAP_BASE;
     init_fds(p);
     signal_init_proc(p);
+    fpu_init_proc(p);
 
     int i = 0; for (; name[i] && i < 31; i++) p->name[i] = name[i]; p->name[i] = '\0';
 
@@ -326,6 +328,9 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;
+
+    fpu_save(parent);
+    fpu_copy(p, parent);
 
     /* Inherit open files with shared reference counts and copy descriptor flags */
     for (int i = 0; i < MAX_FDS; i++) {
