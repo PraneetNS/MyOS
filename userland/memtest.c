@@ -25,11 +25,11 @@ static int recurse_depth(int depth) {
     return pad[0] + recurse_depth(depth - 1);
 }
 
-static void __attribute__((noinline)) recurse_inf(void) {
+static int __attribute__((noinline, optimize("no-optimize-sibling-calls"))) recurse_inf(void) {
     volatile char pad[16 * 1024];
     pad[0] = 1;
     pad[16383] = 2;
-    recurse_inf();
+    return pad[0] + recurse_inf();
 }
 
 int main(int argc, char** argv) {

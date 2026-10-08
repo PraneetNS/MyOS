@@ -2,14 +2,7 @@
 
 #include "libc.h"
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 static char to_lower(char c) {
     if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');

@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
         struct timespec req = { 5, 0 };
         struct timespec rem = { 0, 0 };
         int ret = nanosleep(&req, &rem);
-        if (ret == -EINTR && rem.tv_sec > 0 && usr1_received) {
+        if ((ret == -EINTR || (ret == -1 && errno == EINTR)) && rem.tv_sec > 0 && usr1_received) {
             print_str("PASS: nanosleep interrupted returned -EINTR with remaining time > 0\n");
             exit(0);
         } else {

@@ -5,14 +5,7 @@
 #define MAX_TAIL_LINES 128
 #define LINE_CAPACITY 256
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 static char lines[MAX_TAIL_LINES][LINE_CAPACITY];
 

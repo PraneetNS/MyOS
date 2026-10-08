@@ -35,12 +35,12 @@ if [ "$IS_LINKING" -eq 1 ]; then
         START_OBJS+=("$CRT0")
     fi
     exec "$CC" "${BASE_FLAGS[@]}" -nostartfiles \
-        -Wl,-T,"$LDSCRIPT" \
+        -Wl,-T,"$LDSCRIPT" -Wl,--strip-debug \
         "${START_OBJS[@]}" \
         "$@" \
         -L"$SYSROOT/lib" \
         -L"$ROOT_DIR/libmyos" \
-        -Wl,--start-group -lc -lm -lmyos -Wl,--end-group -lgcc
+        -Wl,--start-group -lmyos -lc -lm -Wl,--end-group -lgcc
 else
     exec "$CC" "${BASE_FLAGS[@]}" "$@"
 fi

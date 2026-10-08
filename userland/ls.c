@@ -1,13 +1,6 @@
 #include "libc.h"
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 static int is_leap_year(int y) {
     return (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));

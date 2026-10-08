@@ -5,14 +5,7 @@
 #define MAX_SORT_LINES 512
 #define LINE_CAPACITY 256
 
-static int strcmp(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return *a - *b;
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
+/* strcmp from string.h */
 
 static char lines[MAX_SORT_LINES][LINE_CAPACITY];
 static char* line_ptrs[MAX_SORT_LINES];

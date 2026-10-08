@@ -4,9 +4,9 @@ export PATH="$HOME/.local/bin:$PATH"
 cd "$(dirname "$0")/.."
 
 IMAGE="disk.img"
-echo "Creating 32MB disk image..."
+echo "Creating 64MB disk image..."
 rm -f "$IMAGE"
-dd if=/dev/zero of="$IMAGE" bs=1M count=32 status=none
+dd if=/dev/zero of="$IMAGE" bs=1M count=64 status=none
 
 echo "Formatting disk image with FAT16..."
 mkfs.fat -F 16 -n "MYOS" "$IMAGE"

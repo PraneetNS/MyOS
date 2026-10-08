@@ -61,8 +61,33 @@ void _exit(int status) {
     }
 }
 
+static int translate_open_flags(int flags) {
+    int kflags = 0;
+    int acc = flags & 3; /* O_RDONLY, O_WRONLY, O_RDWR */
+    kflags |= acc;
+
+    /* Newlib -> Kernel flags */
+    if (flags & 0x0200) /* _FCREAT */
+        kflags |= 0x0040; /* Kernel O_CREAT */
+    if (flags & 0x0400) /* _FTRUNC */
+        kflags |= 0x0200; /* Kernel O_TRUNC */
+    if (flags & 0x0008) /* _FAPPEND */
+        kflags |= 0x0400; /* Kernel O_APPEND */
+    if (flags & 0x40000) /* _FNOINHERIT / O_CLOEXEC */
+        kflags |= 0x80000; /* Kernel O_CLOEXEC */
+
+    /* Also preserve direct kernel flags if passed: */
+    if (flags & 0x0040)
+        kflags |= 0x0040;
+    if (flags & 0x80000)
+        kflags |= 0x80000;
+
+    return kflags;
+}
+
 int _open(const char *file, int flags, int mode) {
-    int ret = __syscall3(SYS_OPEN, (long)file, flags, mode);
+    int kflags = translate_open_flags(flags);
+    int ret = __syscall3(SYS_OPEN, (long)file, kflags, mode);
     return __check_syscall_err(ret);
 }
 

@@ -205,12 +205,17 @@ int main(int argc, char** argv) {
 
     /* Test SIGFPE mapping */
     signal(SIGFPE, fpe_handler);
-    int zero = 0;
     int fault_pid = fork();
     if (fault_pid == 0) {
         /* Trigger integer divide by zero which raises vector 0 -> SIGFPE */
-        volatile int x = 42 / zero;
-        (void) x;
+        int zero = 0;
+        int num = 42;
+        asm volatile (
+            "idivl %1"
+            : "=a"(num)
+            : "r"(zero), "a"(num), "d"(0)
+        );
+        (void) num;
         exit(0);
     }
     int fault_st = -1;

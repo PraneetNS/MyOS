@@ -480,7 +480,7 @@ static void syscall_handler(struct registers* regs) {
 
             /* Copy environment variables from user space if provided, or default */
             int envc = 0;
-            char (*kenvp_buf)[128] = NULL;
+            static char kenvp_buf[32][128];
             const char* kenvp[33];
             static const char* const default_env[5] = {
                 "HOME=/",
@@ -491,12 +491,6 @@ static void syscall_handler(struct registers* regs) {
             };
 
             if (uenvp) {
-                kenvp_buf = (char (*)[128]) kmalloc(32 * 128);
-                if (!kenvp_buf) {
-                    vnode_unref(vn);
-                    regs->eax = (uint32_t) -ENOMEM;
-                    break;
-                }
                 int bad = 0;
                 while (envc < 32) {
                     if (validate_user_buffer(&uenvp[envc], sizeof(char*), 0) != 0) {
@@ -517,7 +511,6 @@ static void syscall_handler(struct registers* regs) {
                     envc++;
                 }
                 if (bad) {
-                    kfree(kenvp_buf);
                     vnode_unref(vn);
                     regs->eax = (uint32_t) -EFAULT;
                     break;
@@ -534,7 +527,6 @@ static void syscall_handler(struct registers* regs) {
             uint32_t alloc_size = ((vn->size + 511) / 512) * 512;
             uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
             if (!buf) {
-                if (kenvp_buf) kfree(kenvp_buf);
                 vnode_unref(vn);
                 regs->eax = (uint32_t)-1;
                 break;
@@ -542,7 +534,6 @@ static void syscall_handler(struct registers* regs) {
 
             int n = vn->ops->read(vn, 0, buf, vn->size);
             if (n <= 0) {
-                if (kenvp_buf) kfree(kenvp_buf);
                 vnode_unref(vn);
                 kfree(buf);
                 regs->eax = (uint32_t)-1;
@@ -551,7 +542,6 @@ static void syscall_handler(struct registers* regs) {
 
             address_space_t new_as = vmm_create_address_space();
             if (!new_as.directory) {
-                if (kenvp_buf) kfree(kenvp_buf);
                 vnode_unref(vn);
                 kfree(buf);
                 regs->eax = (uint32_t)-1;
@@ -561,14 +551,12 @@ static void syscall_handler(struct registers* regs) {
             uint32_t entry, stack_top;
             vma_t* new_vmas = NULL;
             if (elf_load_into(buf, (uint32_t) n, vn, &new_as, argc, kargv, envc, kenvp, &entry, &stack_top, &new_vmas) != 0) {
-                if (kenvp_buf) kfree(kenvp_buf);
                 vnode_unref(vn);
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
                 regs->eax = (uint32_t)-1;
                 break;
             }
-            if (kenvp_buf) kfree(kenvp_buf);
             vnode_unref(vn);
             kfree(buf);
 

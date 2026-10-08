@@ -36,6 +36,10 @@ int execv(const char *path, char *const argv[]) {
     return execve(path, argv, environ);
 }
 
+int exec(const char *path, char *const argv[]) {
+    return execv(path, argv);
+}
+
 int execvp(const char *file, char *const argv[]) {
     if (!file || !*file) {
         errno = ENOENT;
@@ -148,7 +152,7 @@ char *getcwd(char *buf, size_t size) {
         return NULL;
     }
     int ret = __syscall2(SYS_GETCWD, (long)buf, (long)size);
-    if (ret < 0) {
+    if ((unsigned long)ret > 0xFFFFF000u) {
         errno = -ret;
         return NULL;
     }
@@ -189,8 +193,7 @@ struct dirent *readdir(DIR *dirp) {
         return NULL;
     }
 
-    struct kernel_dirent kdent;
-    int ret = __syscall3(SYS_GETDENTS, dirp->fd, (long)&kdent, sizeof(kdent));
+    int ret = __syscall3(SYS_GETDENTS, dirp->fd, (long)&dirp->ent, sizeof(dirp->ent));
     if (ret < 0) {
         errno = -ret;
         return NULL;
@@ -199,12 +202,6 @@ struct dirent *readdir(DIR *dirp) {
         return NULL; /* EOF */
     }
 
-    dirp->ent.d_ino = kdent.d_ino;
-    dirp->ent.d_off = 0;
-    dirp->ent.d_reclen = sizeof(struct dirent);
-    dirp->ent.d_type = (kdent.d_type == 2) ? DT_DIR : DT_REG;
-    strncpy(dirp->ent.d_name, kdent.d_name, sizeof(dirp->ent.d_name) - 1);
-    dirp->ent.d_name[sizeof(dirp->ent.d_name) - 1] = '\0';
     return &dirp->ent;
 }
 
@@ -222,6 +219,11 @@ void rewinddir(DIR *dirp) {
     if (dirp) {
         lseek(dirp->fd, 0, SEEK_SET);
     }
+}
+
+int getdents(int fd, void *dirp, size_t count) {
+    int ret = __syscall3(SYS_GETDENTS, fd, (long)dirp, count);
+    return __check_syscall_err(ret);
 }
 
 /* Signals */
@@ -344,6 +346,15 @@ pid_t tcgetpgrp(int fd) {
     return pgrp;
 }
 
+pid_t getpgrp(void) {
+    return getpgid(0);
+}
+
+int nice(int inc) {
+    int ret = __syscall1(SYS_NICE, inc);
+    return __check_syscall_err(ret);
+}
+
 uid_t getuid(void) { return 0; }
 gid_t getgid(void) { return 0; }
 uid_t geteuid(void) { return 0; }
@@ -388,7 +399,7 @@ int ioctl(int fd, unsigned long request, ...) {
 /* Memory management */
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
     int ret = __syscall6(SYS_MMAP, (long)addr, length, prot, flags, fd, offset);
-    if (ret < 0) {
+    if ((unsigned long)ret > 0xFFFFF000u) {
         errno = -ret;
         return MAP_FAILED;
     }
@@ -406,9 +417,30 @@ int mprotect(void *addr, size_t length, int prot) {
 }
 
 /* Sleeping & Clock */
+struct kernel_timespec {
+    uint32_t tv_sec;
+    uint32_t tv_nsec;
+};
+
 int nanosleep(const struct timespec *req, struct timespec *rem) {
-    int ret = __syscall2(SYS_NANOSLEEP, (long)req, (long)rem);
-    return __check_syscall_err(ret);
+    if (!req) {
+        errno = EFAULT;
+        return -1;
+    }
+    struct kernel_timespec kreq;
+    kreq.tv_sec = (uint32_t)req->tv_sec;
+    kreq.tv_nsec = (uint32_t)req->tv_nsec;
+    struct kernel_timespec krem = { 0, 0 };
+    int ret = __syscall2(SYS_NANOSLEEP, (long)&kreq, rem ? (long)&krem : 0);
+    if (rem && ret < 0) {
+        rem->tv_sec = krem.tv_sec;
+        rem->tv_nsec = krem.tv_nsec;
+    }
+    if (ret < 0) {
+        errno = -ret;
+        return ret;
+    }
+    return 0;
 }
 
 unsigned int sleep(unsigned int seconds) {
@@ -426,8 +458,19 @@ int usleep(useconds_t usec) {
 }
 
 int clock_gettime(clockid_t clk_id, struct timespec *tp) {
-    int ret = __syscall2(SYS_CLOCK_GETTIME, clk_id, (long)tp);
-    return __check_syscall_err(ret);
+    if (!tp) {
+        errno = EFAULT;
+        return -1;
+    }
+    struct kernel_timespec ktp = { 0, 0 };
+    int ret = __syscall2(SYS_CLOCK_GETTIME, clk_id, (long)&ktp);
+    if (ret < 0) {
+        errno = -ret;
+        return -1;
+    }
+    tp->tv_sec = ktp.tv_sec;
+    tp->tv_nsec = ktp.tv_nsec;
+    return 0;
 }
 
 /* Host & System queries */
@@ -477,4 +520,48 @@ long sysconf(int name) {
         default:
             return -1;
     }
+}
+
+unsigned int sys_free_frames(void) {
+    return (unsigned int) __syscall0(SYS_FREE_FRAMES);
+}
+
+unsigned int sys_ticks(void) {
+    return (unsigned int) __syscall0(SYS_TICKS);
+}
+
+int sys_sync(void) {
+    return __check_syscall_err(__syscall0(SYS_SYNC));
+}
+
+void sync(void) {
+    sys_sync();
+}
+
+void print_uint(unsigned int n) {
+    char buf[12];
+    int idx = 0;
+    if (n == 0) {
+        write(1, "0", 1);
+        return;
+    }
+    char tmp[12];
+    while (n > 0) {
+        tmp[idx++] = '0' + (n % 10);
+        n /= 10;
+    }
+    for (int i = 0; i < idx; i++) {
+        buf[i] = tmp[idx - 1 - i];
+    }
+    write(1, buf, idx);
+}
+
+void print_hex(unsigned int v) {
+    char hex[11] = "0x00000000";
+    const char *digits = "0123456789ABCDEF";
+    for (int i = 9; i >= 2; i--) {
+        hex[i] = digits[v & 0xF];
+        v >>= 4;
+    }
+    write(1, hex, 10);
 }
