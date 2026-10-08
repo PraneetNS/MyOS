@@ -765,10 +765,56 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 
 ---
 
-## Stage 16 (next): what's left
+## Stage 16 (done): TTY, Signals, Job Control, Time & Timers, ProcFS, and Scheduler
 
-1. **Signals (`SIGINT`, `SIGTERM`, `SIGKILL`, `SIGCHLD`, `SIGPIPE`)** and signal handling trampolines.
-2. **Terminal Process Groups & Job Control** (`tcsetpgrp`, `fg`, `bg`, `Ctrl+C`, `Ctrl+Z`).
+- **Device Nodes & In-Memory DevFS** (`src/devfs.c`, `src/devfs.h`):
+  - In-memory `/dev` filesystem supporting `/dev/console`, `/dev/tty`, `/dev/null`, `/dev/zero`, `/dev/serial0`.
+  - Stdin/stdout/stderr for PID 1 (and inherited children) open `/dev/console` through the VFS abstraction.
+- **TTY Subsystem & Line Discipline** (`src/tty.c`, `src/tty.h`):
+  - Struct `tty_t` maintaining input ring buffer, line discipline state, foreground process group ID (`pgrp`), window size (80x25), and POSIX termios flags (`ICANON`, `ECHO`, `ISIG`, etc.).
+  - Input multiplexing: Keyboard IRQ1 and COM1 serial IRQ feed the active TTY line discipline.
+  - Canonical line editing: backspace, Ctrl+U (kill line), Ctrl+W (kill word), line buffered until newline, Ctrl+D (EOF on empty buffer).
+  - Raw / non-canonical mode via `SYS_IOCTL` (`TCGETS`, `TCSETS`, `TIOCGWINSZ`, `TIOCGPGRP`, `TIOCSPGRP`).
+- **POSIX Signal Infrastructure** (`src/signal.c`, `src/signal.h`, `boot/isr.s`):
+  - 32 signal types with standard default actions (Terminate, Ignore, Stop, Continue).
+  - Syscalls: `SYS_SIGACTION` (38), `SYS_SIGPROCMASK` (39), `SYS_SIGRETURN` (40), `SYS_KILL` (41), `SYS_ALARM` (42), `SYS_PAUSE` (43).
+  - Signal delivery trampoline: Kernel constructs userspace signal frame on user stack, saves interrupted registers and blocked mask, invokes user handler, and returns through `sigreturn`.
+  - `SIGALRM` driven by PIT timer callbacks waking `pause()`.
+  - Page faults outside VMAs deliver `SIGSEGV` instead of halting the system.
+  - Broken pipe writes deliver `SIGPIPE`.
+- **Job Control & Terminal Process Groups** (`src/scheduler.c`, `userland/sh.c`):
+  - Process group management: `SYS_SETPGID` (44), `SYS_GETPGRP` (45), `SYS_SETSID` (46).
+  - Background process protection: background jobs reading from foreground TTY are stopped with `SIGTTIN`; background writes with `TOSTOP` are stopped with `SIGTTOU`.
+  - Shell interactive job control: `jobs`, `fg`, `bg`, `kill %[n]`, parsing `&`, tracking Running and Stopped jobs, with non-blocking child notification via `SIGCHLD`.
+  - Signal keys: Ctrl+C sends `SIGINT` to foreground group; Ctrl+Z sends `SIGTSTP`; Ctrl+\ sends `SIGQUIT`.
+- **CMOS RTC & Wall Time** (`src/rtc.c`, `src/rtc.h`):
+  - CMOS Status Register A UIP polling, consecutive match reading, Status B BCD / 12h-24h decoding, century register 0x32 with fallback to 20xx.
+  - Wall time tracked in UTC epoch seconds internally; updated via PIT ticks.
+  - `/etc/timezone` configured with minute offset (e.g. 330 for IST UTC+5:30); default 0.
+  - Userland `date` prints local time formatted with timezone; `date -u` prints UTC time.
+  - FAT16 directory operations (`create`, `mkdir`, `write`, `rename`) stamp UTC timestamps; `stat` populates `st_mtime`; `ls -l` formats timestamps in local time.
+- **Non-Busy Sleeping Wait-Queue & CPU Accounting** (`src/timer.c`, `src/timer.h`):
+  - Sorted timer wait queue processed on PIT IRQ (deadline-based wakeups; O(1) tick check).
+  - Sleeping processes reside in `PROCESS_WAITING` consuming 0% CPU; idle task executes `hlt`.
+  - `nanosleep` and `sleep` are signal-interruptible, immediately dequeued from wait list and returning `-EINTR` with remaining time struct.
+  - Accurate per-process tick accounting (`cpu_ticks` only incremented when process actually executes).
+- **ProcFS-Lite** (`src/procfs.c`, `src/procfs.h`):
+  - Dynamic in-memory VFS mounted at `/proc`.
+  - `/proc/meminfo`: system memory and frame allocation statistics.
+  - `/proc/uptime`: system uptime and idle time in seconds.
+  - `/proc/<pid>/status`: process name, PID, PPID, PGID, SID, state, cpu ticks, VM pages, open FD count.
+  - `/proc/<pid>/cmdline` and `/proc/self` symlink node.
+  - Directory listing of `/proc` dynamically enumerates active PIDs.
+  - User utilities: `ps`, `uptime`, `free`, and `top`-lite built as standard procfs consumers.
+- **Scheduler Nice Values & Responsiveness** (`src/scheduler.c`, `userland/sh.c`):
+  - Per-process nice value (-20 to 19) mapping to dynamic time slice ticks (1 to 20 ticks).
+  - Shell and interactive processes remain responsive (<1s prompt response) even under multiple CPU-bound compute loops (`spin.elf`).
+- **Comprehensive Validation Test Suites**:
+  - `userland/sigtest.c`: Tests signal delivery, sigprocmask blocking, sigaction handlers, SIGALRM/pause, SIGPIPE, SIGSEGV on faults, SIGCONT/SIGSTOP, and signal interruption of `nanosleep`.
+  - `userland/timetest.c`: Tests non-busy sleep tick duration (190-230 ticks for 2s), sleeper CPU ticks (< 5), and procfs memory statistics match.
+  - `tools/test_boot.sh` (Sessions 1-7): End-to-end regression testing covering VFS persistence, IPC/pipes, memory management, TTY raw/canonical modes, live job control (`spin.elf`, `fg`, `bg`, pipelines, Ctrl+C/Z), RTC time, and ProcFS with zero frame leaks.
+
+---
 
 ## Notes on the toolchain choices made here
 
