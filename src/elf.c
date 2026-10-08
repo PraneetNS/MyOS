@@ -54,6 +54,7 @@ static void print_hex(uint32_t v) {
 int elf_load_into(const uint8_t* image, uint32_t image_size,
                   struct vnode* vn,
                   address_space_t* as, int argc, const char* const* argv,
+                  int envc, const char* const* envp,
                   uint32_t* out_entry, uint32_t* out_stack_top,
                   vma_t** out_vmas) {
     if (out_vmas) *out_vmas = NULL;
@@ -122,12 +123,29 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
 
     if (argc < 0 || !argv) argc = 0;
     if (argc > 32) argc = 32;
+    if (envc < 0 || !envp) envc = 0;
+    if (envc > 32) envc = 32;
 
     uint32_t str_vaddrs[32];
+    uint32_t env_vaddrs[32];
     uint32_t offset = 0;
     uint8_t* page_end = (uint8_t*) P2V(top_frame_phys) + PAGE_SIZE;
 
-    /* Copy strings down from the top of the stack page */
+    /* Copy envp strings down from top of stack page */
+    for (int i = envc - 1; i >= 0; i--) {
+        const char* s = envp[i] ? envp[i] : "";
+        uint32_t len = 0;
+        while (s[len]) len++;
+        len++; /* include NUL */
+
+        offset += len;
+        for (uint32_t j = 0; j < len; j++) {
+            *(page_end - offset + j) = s[j];
+        }
+        env_vaddrs[i] = USER_STACK_TOP - offset;
+    }
+
+    /* Copy argv strings down from the top of the stack page */
     for (int i = argc - 1; i >= 0; i--) {
         const char* s = argv[i] ? argv[i] : "";
         uint32_t len = 0;
@@ -144,9 +162,15 @@ int elf_load_into(const uint8_t* image, uint32_t image_size,
     /* Word align */
     offset = (offset + 3) & ~3u;
 
-    /* NULL envp */
+    /* NULL envp terminator */
     offset += 4;
     *(uint32_t*)(page_end - offset) = 0;
+
+    /* envp[i] pointers */
+    for (int i = envc - 1; i >= 0; i--) {
+        offset += 4;
+        *(uint32_t*)(page_end - offset) = env_vaddrs[i];
+    }
 
     /* NULL argv[argc] terminator */
     offset += 4;
