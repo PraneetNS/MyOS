@@ -11,12 +11,13 @@ dd if=/dev/zero of="$IMAGE" bs=1M count=64 status=none
 echo "Formatting disk image with FAT16..."
 mkfs.fat -F 16 -n "MYOS" "$IMAGE"
 
-echo "Creating /bin, /tmp, /dev, /etc, and /proc directories..."
+echo "Creating /bin, /tmp, /dev, /etc, /proc, and /home directories..."
 mmd -i "$IMAGE" "::/bin"
 mmd -i "$IMAGE" "::/tmp"
 mmd -i "$IMAGE" "::/dev"
 mmd -i "$IMAGE" "::/etc"
 mmd -i "$IMAGE" "::/proc"
+mmd -i "$IMAGE" "::/home"
 
 echo "Setting /etc/timezone to 330..."
 printf "330\n" > /tmp/myos_timezone
@@ -43,6 +44,10 @@ done
 echo "Copying data files..."
 if [ -f "tools/hello.txt" ]; then
     mcopy -i "$IMAGE" tools/hello.txt "::/hello.txt"
+fi
+
+if [ -f "userland/demo.lua" ]; then
+    mcopy -i "$IMAGE" userland/demo.lua "::/home/demo.lua"
 fi
 
 echo "Hello from FAT16 on MyOS!" > /tmp/fat_hello.txt

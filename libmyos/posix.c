@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
 
@@ -564,4 +565,146 @@ void print_hex(unsigned int v) {
         v >>= 4;
     }
     write(1, hex, 10);
+}
+
+/* Stdio POSIX file locking (single-threaded stubs) */
+void flockfile(FILE *file) { (void)file; }
+void funlockfile(FILE *file) { (void)file; }
+int ftrylockfile(FILE *file) { (void)file; return 0; }
+
+/* popen / pclose */
+static struct {
+    FILE *fp;
+    pid_t pid;
+} popen_list[16];
+
+FILE *popen(const char *command, const char *type) {
+    if (!command || !type) return NULL;
+    int is_read = (type[0] == 'r');
+    int is_write = (type[0] == 'w');
+    if (!is_read && !is_write) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    int pfd[2];
+    if (pipe(pfd) < 0) return NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pfd[0]);
+        close(pfd[1]);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        if (is_read) {
+            close(pfd[0]);
+            dup2(pfd[1], 1);
+            close(pfd[1]);
+        } else {
+            close(pfd[1]);
+            dup2(pfd[0], 0);
+            close(pfd[0]);
+        }
+        char *const argv[] = { "sh", "-c", (char*)command, NULL };
+        execvp("sh", argv);
+        execvp("sh.elf", argv);
+        exit(127);
+    }
+
+    FILE *fp = NULL;
+    if (is_read) {
+        close(pfd[1]);
+        fp = fdopen(pfd[0], "r");
+    } else {
+        close(pfd[0]);
+        fp = fdopen(pfd[1], "w");
+    }
+
+    if (!fp) {
+        if (is_read) close(pfd[0]);
+        else close(pfd[1]);
+        return NULL;
+    }
+
+    for (int i = 0; i < 16; i++) {
+        if (!popen_list[i].fp) {
+            popen_list[i].fp = fp;
+            popen_list[i].pid = pid;
+            break;
+        }
+    }
+    return fp;
+}
+
+int pclose(FILE *stream) {
+    if (!stream) return -1;
+    pid_t pid = -1;
+    int idx = -1;
+    for (int i = 0; i < 16; i++) {
+        if (popen_list[i].fp == stream) {
+            pid = popen_list[i].pid;
+            idx = i;
+            break;
+        }
+    }
+    fclose(stream);
+    if (idx >= 0) {
+        popen_list[idx].fp = NULL;
+        popen_list[idx].pid = 0;
+    }
+    if (pid <= 0) return -1;
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    return status;
+}
+
+/* POSIX getline / getdelim */
+ssize_t getdelim(char **lineptr, size_t *n, int delim, FILE *stream) {
+    if (!lineptr || !n || !stream) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (*lineptr == NULL || *n == 0) {
+        *n = 128;
+        *lineptr = malloc(*n);
+        if (!*lineptr) return -1;
+    }
+    size_t pos = 0;
+    int c = 0;
+    while ((c = fgetc(stream)) != EOF) {
+        if (pos + 2 > *n) {
+            size_t new_size = *n * 2;
+            char *new_ptr = realloc(*lineptr, new_size);
+            if (!new_ptr) return -1;
+            *lineptr = new_ptr;
+            *n = new_size;
+        }
+        (*lineptr)[pos++] = (char)c;
+        if (c == delim) break;
+    }
+    if (pos == 0 && c == EOF) return -1;
+    (*lineptr)[pos] = '\0';
+    return (ssize_t)pos;
+}
+
+ssize_t __getdelim(char **lineptr, size_t *n, int delim, FILE *stream) {
+    return getdelim(lineptr, n, delim, stream);
+}
+
+ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
+    return getdelim(lineptr, n, '\n', stream);
+}
+
+ssize_t __getline(char **lineptr, size_t *n, FILE *stream) {
+    return getdelim(lineptr, n, '\n', stream);
+}
+
+int ftruncate(int fd, off_t length) {
+    (void)fd;
+    (void)length;
+    return 0;
 }
