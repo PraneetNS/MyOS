@@ -1,0 +1,45 @@
+#!/bin/bash
+PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+CC="$PREFIX/bin/i686-elf-gcc"
+if [ ! -x "$CC" ]; then
+    echo "Error: $CC not found. Please run tools/toolchain/build.sh first." >&2
+    exit 1
+fi
+
+SYSROOT="$PREFIX/i686-elf"
+LDSCRIPT="$ROOT_DIR/userland/user.ld"
+CRT0="$ROOT_DIR/libmyos/crt0.o"
+LIBMYOS_INC="$ROOT_DIR/libmyos/include"
+
+IS_LINKING=1
+for arg in "$@"; do
+    if [ "$arg" = "-c" ] || [ "$arg" = "-S" ] || [ "$arg" = "-E" ]; then
+        IS_LINKING=0
+        break
+    fi
+done
+
+BASE_FLAGS=(
+    -O2 -Wall -fno-pie -fno-stack-protector -static
+    -isystem "$LIBMYOS_INC"
+    -isystem "$SYSROOT/include"
+)
+
+if [ "$IS_LINKING" -eq 1 ]; then
+    # When crt0.o exists in libmyos, include it in the link
+    START_OBJS=()
+    if [ -f "$CRT0" ]; then
+        START_OBJS+=("$CRT0")
+    fi
+    exec "$CC" "${BASE_FLAGS[@]}" -nostartfiles \
+        -Wl,-T,"$LDSCRIPT" \
+        "${START_OBJS[@]}" \
+        "$@" \
+        -L"$SYSROOT/lib" \
+        -L"$ROOT_DIR/libmyos" \
+        -Wl,--start-group -lc -lm -lmyos -Wl,--end-group -lgcc
+else
+    exec "$CC" "${BASE_FLAGS[@]}" "$@"
+fi

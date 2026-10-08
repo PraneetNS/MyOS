@@ -1,0 +1,3 @@
+#!/bin/bash
+PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
+exec "$PREFIX/bin/i686-elf-ranlib" "$@"

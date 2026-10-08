@@ -1,0 +1,9 @@
+*.log
+wget-log
+tools/toolchain/build.log
+tools/toolchain/src/
+tools/toolchain/build/
+*.bin
+*.iso
+*.o
+build/
