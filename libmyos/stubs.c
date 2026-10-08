@@ -199,8 +199,26 @@ clock_t _times(struct tms *buf) {
 }
 
 int _gettimeofday(struct timeval *tv, void *tz) {
-    int ret = __syscall2(SYS_GETTIMEOFDAY, (long)tv, (long)tz);
-    return __check_syscall_err(ret);
+    struct {
+        uint32_t tv_sec;
+        uint32_t tv_usec;
+    } ktv;
+    int ret = __syscall2(SYS_GETTIMEOFDAY, (long)&ktv, (long)tz);
+    if (ret < 0) {
+        return __check_syscall_err(ret);
+    }
+    if (tv) {
+        tv->tv_sec = (time_t)ktv.tv_sec;
+        tv->tv_usec = (suseconds_t)ktv.tv_usec;
+    }
+    return 0;
+}
+
+time_t time(time_t *tloc) {
+    struct timeval tv;
+    if (_gettimeofday(&tv, NULL) < 0) return (time_t)-1;
+    if (tloc) *tloc = tv.tv_sec;
+    return tv.tv_sec;
 }
 
 /* POSIX aliases for standard calls */
