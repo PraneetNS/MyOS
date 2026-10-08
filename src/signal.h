@@ -59,6 +59,7 @@ struct sigcontext {
     uint32_t int_no, err_code;
     uint32_t eip, cs, eflags, useresp, ss;
     sigset_t old_mask;
+    uint32_t fpstate;          /* user-space pointer to fpu_state, or 0 */
 };
 
 /* Signal frame laid out on user stack */
@@ -66,7 +67,10 @@ struct sigframe {
     uint32_t ret_addr;         /* address of restorer or trampoline */
     int sig;                   /* parameter passed to handler */
     struct sigcontext sc;      /* saved registers */
+    uint32_t pad;              /* alignment pad to 16-byte boundary */
+    uint8_t fpu_state[512];    /* saved FPU/SSE state */
     uint8_t trampoline[8];     /* mov $119, %eax; int $0x80 */
+    uint8_t pad2[8];           /* pad struct to multiple of 16 */
 };
 
 struct process;

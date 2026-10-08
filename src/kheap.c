@@ -298,3 +298,16 @@ void kheap_selftest(void) {
     serial_printf("[ok] Kernel heap self-test passed (canaries, coalescing, dynamic growth)\n");
 }
 #endif
+
+void* memset(void* dest, int c, size_t n) {
+    uint8_t* p = (uint8_t*) dest;
+    while (n--) *p++ = (uint8_t) c;
+    return dest;
+}
+
+void* memcpy(void* dest, const void* src, size_t n) {
+    uint8_t* d = (uint8_t*) dest;
+    const uint8_t* s = (const uint8_t*) src;
+    while (n--) *d++ = *s++;
+    return dest;
+}

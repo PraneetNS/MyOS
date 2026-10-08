@@ -6,6 +6,7 @@
 #include "keyboard.h"
 #include "bcache.h"
 #include "tty.h"
+#include "fpu.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -84,6 +85,7 @@ void scheduler_yield(void) {
     process_t* prev = current;
     current = next;
     enter_process(next);
+    fpu_switch(prev, next);
     switch_task(&prev->esp, next->esp);
 }
 
@@ -102,6 +104,7 @@ void scheduler_tick(void) {
             process_t* prev = current;
             current = next;
             enter_process(next);
+            fpu_switch(prev, next);
             switch_task(&prev->esp, next->esp);
             return;
         }
@@ -117,6 +120,7 @@ void scheduler_tick(void) {
     process_t* prev = current;
     current = next;
     enter_process(next);
+    fpu_switch(prev, next);
     switch_task(&prev->esp, next->esp);
 }
 
@@ -126,6 +130,7 @@ void scheduler_start(void) {
     if (!first) first = process_get_shell();
     current = first;
     enter_process(first);
+    fpu_switch(NULL, first);
     switch_task(&discard_esp, first->esp); /* never returns */
 
     for (;;) asm volatile ("hlt"); /* unreachable */
@@ -213,6 +218,7 @@ void scheduler_exit_current(int exit_status) {
 
     current = next;
     enter_process(next);
+    fpu_switch(NULL, next);
     switch_task(&discard_esp, next->esp); /* p is gone -- nothing to save, never returns here */
 
     for (;;) asm volatile ("hlt"); /* unreachable */
@@ -221,8 +227,10 @@ void scheduler_exit_current(int exit_status) {
 static void wait_or_idle(process_t* me) {
     process_t* next = pick_next_from(process_index(me));
     if (next) {
+        process_t* prev = me;
         current = next;
         enter_process(next);
+        fpu_switch(prev, next);
         switch_task(&me->esp, next->esp);
     } else {
         while (me->state == PROC_WAITING) {

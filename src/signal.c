@@ -5,6 +5,8 @@
 #include "serial.h"
 #include "uaccess.h"
 #include "timer.h"
+#include "fpu.h"
+#include <string.h>
 
 typedef enum {
     ACT_TERM,
@@ -218,7 +220,8 @@ void signal_handle_pending(struct registers* regs) {
     sp -= sizeof(struct sigframe);
     sp &= ~0x0Fu; /* 16-byte align */
 
-    struct sigframe frame;
+    struct sigframe frame __attribute__((aligned(16)));
+    memset(&frame, 0, sizeof(frame));
     frame.sig = sig;
 
     frame.sc.gs = regs->ds;
@@ -241,6 +244,10 @@ void signal_handle_pending(struct registers* regs) {
     frame.sc.useresp = regs->useresp;
     frame.sc.ss = regs->ss;
     frame.sc.old_mask = me->sig_blocked;
+    frame.sc.fpstate = sp + (uint32_t) offsetof(struct sigframe, fpu_state);
+
+    fpu_save(me);
+    memcpy(frame.fpu_state, fpu_get_state_ptr(me), 512);
 
     /* Trampoline: pop %eax; mov $119, %eax; int $0x80 */
     frame.trampoline[0] = 0x58; /* pop %eax */
@@ -351,6 +358,13 @@ int sys_sigreturn(struct registers* regs) {
     regs->eflags = sc.eflags;
 
     me->sig_blocked = sc.old_mask & ~(sigmask(SIGKILL) | sigmask(SIGSTOP));
+
+    if (sc.fpstate) {
+        uint8_t* p_fpu = fpu_get_state_ptr(me);
+        if (p_fpu && copy_from_user(p_fpu, (const void*)sc.fpstate, 512) == 0) {
+            fpu_restore(me);
+        }
+    }
 
     serial_printf("[signal] PID %d sigreturn restored eip=0x%08x esp=0x%08x\n",
                   me->pid, regs->eip, regs->useresp);
