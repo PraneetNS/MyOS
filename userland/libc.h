@@ -197,10 +197,37 @@ static inline int pipe(int fds[2]) {
     return sys_pipe(fds);
 }
 
-static inline int sys_exec(const char* name, const char* const* argv) {
+extern char** environ;
+
+static inline char* getenv(const char* name) {
+    if (!environ || !name) return 0;
+    int len = 0;
+    while (name[len]) len++;
+    for (char** p = environ; *p; p++) {
+        char* entry = *p;
+        int match = 1;
+        for (int i = 0; i < len; i++) {
+            if (entry[i] != name[i]) { match = 0; break; }
+        }
+        if (match && entry[len] == '=') {
+            return &entry[len + 1];
+        }
+    }
+    return 0;
+}
+
+static inline int sys_execve(const char* name, const char* const* argv, const char* const* envp) {
     int ret;
-    asm volatile ("int $0x80" : "=a"(ret) : "a"(10), "b"(name), "c"(argv));
+    asm volatile ("int $0x80" : "=a"(ret) : "a"(10), "b"(name), "c"(argv), "d"(envp) : "memory");
     return ret;
+}
+
+static inline int execve(const char* name, char* const* argv, char* const* envp) {
+    return sys_execve(name, (const char* const*) argv, (const char* const*) envp);
+}
+
+static inline int sys_exec(const char* name, const char* const* argv) {
+    return sys_execve(name, argv, (const char* const*) environ);
 }
 
 static inline int exec(const char* name, const char* const* argv) {

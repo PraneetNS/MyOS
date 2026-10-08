@@ -1,3 +1,8 @@
+.global environ
+.data
+environ:
+    .long 0
+
 .section .text
 .global _start
 .type _start, @function
@@ -10,10 +15,13 @@ _start:
     # 4(%esp) = argv[0] (address of argv array is %esp + 4)
     mov (%esp), %eax        # eax = argc
     lea 4(%esp), %edx       # edx = argv
+    lea 8(%esp, %eax, 4), %ecx  # ecx = envp
+    mov %ecx, environ
 
     # Align stack to 16 bytes before calling main:
     and $-16, %esp
-    sub $8, %esp
+    sub $4, %esp
+    push %ecx               # arg 3: envp
     push %edx               # arg 2: argv
     push %eax               # arg 1: argc
     call main

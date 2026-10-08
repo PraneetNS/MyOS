@@ -54,6 +54,122 @@ static void int_to_str(int n, char* buf) {
     buf[out] = '\0';
 }
 
+static char* my_strchr(const char* s, int c) {
+    while (*s) {
+        if (*s == (char)c) return (char*)s;
+        s++;
+    }
+    return (c == 0) ? (char*)s : 0;
+}
+
+static int my_strncmp(const char* s1, const char* s2, int n) {
+    for (int i = 0; i < n; i++) {
+        if (s1[i] != s2[i] || !s1[i]) return (unsigned char)s1[i] - (unsigned char)s2[i];
+    }
+    return 0;
+}
+
+static void my_strcpy(char* dest, const char* src) {
+    while (*src) *dest++ = *src++;
+    *dest = '\0';
+}
+
+static void my_strcat(char* dest, const char* src) {
+    while (*dest) dest++;
+    while (*src) *dest++ = *src++;
+    *dest = '\0';
+}
+
+#define MAX_ENV 64
+#define MAX_ENV_LEN 128
+static char env_storage[MAX_ENV][MAX_ENV_LEN];
+static char* env_ptrs[MAX_ENV + 1];
+static int env_count = 0;
+
+static const char* sh_getenv(const char* name) {
+    if (!name || !name[0]) return 0;
+    int len = strlen(name);
+    for (int i = 0; i < env_count; i++) {
+        if (my_strncmp(env_storage[i], name, len) == 0 && env_storage[i][len] == '=') {
+            return &env_storage[i][len + 1];
+        }
+    }
+    return 0;
+}
+
+static int sh_setenv(const char* name, const char* val) {
+    if (!name || !name[0]) return -1;
+    if (!val) val = "";
+    int nlen = strlen(name);
+    for (int i = 0; i < env_count; i++) {
+        if (my_strncmp(env_storage[i], name, nlen) == 0 && env_storage[i][nlen] == '=') {
+            int vlen = strlen(val);
+            if (nlen + 1 + vlen >= MAX_ENV_LEN) return -1;
+            my_strcpy(&env_storage[i][nlen + 1], val);
+            return 0;
+        }
+    }
+    if (env_count >= MAX_ENV) return -1;
+    int vlen = strlen(val);
+    if (nlen + 1 + vlen >= MAX_ENV_LEN) return -1;
+    my_strcpy(env_storage[env_count], name);
+    my_strcat(env_storage[env_count], "=");
+    my_strcat(env_storage[env_count], val);
+    env_ptrs[env_count] = env_storage[env_count];
+    env_count++;
+    env_ptrs[env_count] = 0;
+    environ = env_ptrs;
+    return 0;
+}
+
+static int sh_unsetenv(const char* name) {
+    if (!name || !name[0]) return -1;
+    int nlen = strlen(name);
+    for (int i = 0; i < env_count; i++) {
+        if (my_strncmp(env_storage[i], name, nlen) == 0 && env_storage[i][nlen] == '=') {
+            for (int j = i; j < env_count - 1; j++) {
+                my_strcpy(env_storage[j], env_storage[j + 1]);
+                env_ptrs[j] = env_storage[j];
+            }
+            env_count--;
+            env_ptrs[env_count] = 0;
+            environ = env_ptrs;
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static void sh_env_init(char** initial_env) {
+    env_count = 0;
+    if (initial_env) {
+        for (char** p = initial_env; *p && env_count < MAX_ENV; p++) {
+            char* s = *p;
+            int len = strlen(s);
+            if (len < MAX_ENV_LEN) {
+                my_strcpy(env_storage[env_count], s);
+                env_ptrs[env_count] = env_storage[env_count];
+                env_count++;
+            }
+        }
+    }
+    env_ptrs[env_count] = 0;
+    environ = env_ptrs;
+    if (!sh_getenv("HOME")) sh_setenv("HOME", "/");
+    if (!sh_getenv("PWD")) sh_setenv("PWD", "/");
+    if (!sh_getenv("USER")) sh_setenv("USER", "root");
+    if (!sh_getenv("PATH")) sh_setenv("PATH", "/bin:/");
+}
+
+static int is_assignment(const char* s) {
+    if (!s || (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || *s == '_')))
+        return 0;
+    const char* p = s;
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')
+        p++;
+    return (*p == '=');
+}
+
 static int tokenize_cmd(const char* str, char* tokens[], int max_tokens, char* buf, int buf_size, int last_status) {
     int ntokens = 0;
     int bidx = 0;
@@ -123,14 +239,61 @@ static int tokenize_cmd(const char* str, char* tokens[], int max_tokens, char* b
                 continue;
             }
 
-            /* $? expansion */
-            if (str[i] == '$' && str[i+1] == '?' && !in_sq) {
-                i += 2;
-                int k = 0;
-                while (status_str[k] && bidx + 1 < buf_size) {
-                    buf[bidx++] = status_str[k++];
+            /* Variable expansion ($?, ${VAR}, $VAR) */
+            if (str[i] == '$' && !in_sq) {
+                if (str[i+1] == '?') {
+                    i += 2;
+                    int k = 0;
+                    while (status_str[k] && bidx + 1 < buf_size) {
+                        buf[bidx++] = status_str[k++];
+                    }
+                    continue;
+                } else if (str[i+1] == '{') {
+                    int start = i + 2;
+                    int end = start;
+                    while (str[end] && str[end] != '}') end++;
+                    if (str[end] == '}') {
+                        char varname[64];
+                        int vlen = 0;
+                        for (int k = start; k < end && vlen < 63; k++) {
+                            varname[vlen++] = str[k];
+                        }
+                        varname[vlen] = '\0';
+                        i = end + 1;
+                        const char* val = sh_getenv(varname);
+                        if (val) {
+                            while (*val && bidx + 1 < buf_size) {
+                                buf[bidx++] = *val++;
+                            }
+                        }
+                        continue;
+                    }
+                } else if ((str[i+1] >= 'a' && str[i+1] <= 'z') ||
+                           (str[i+1] >= 'A' && str[i+1] <= 'Z') ||
+                           str[i+1] == '_') {
+                    int start = i + 1;
+                    int end = start;
+                    while ((str[end] >= 'a' && str[end] <= 'z') ||
+                           (str[end] >= 'A' && str[end] <= 'Z') ||
+                           (str[end] >= '0' && str[end] <= '9') ||
+                           str[end] == '_') {
+                        end++;
+                    }
+                    char varname[64];
+                    int vlen = 0;
+                    for (int k = start; k < end && vlen < 63; k++) {
+                        varname[vlen++] = str[k];
+                    }
+                    varname[vlen] = '\0';
+                    i = end;
+                    const char* val = sh_getenv(varname);
+                    if (val) {
+                        while (*val && bidx + 1 < buf_size) {
+                            buf[bidx++] = *val++;
+                        }
+                    }
+                    continue;
                 }
-                continue;
             }
 
             if (bidx + 1 < buf_size) {
@@ -257,41 +420,66 @@ static void apply_redirections(const command_t* cmd) {
 static void exec_command(const command_t* cmd) {
     apply_redirections(cmd);
 
-    /* 1. Try directly as provided */
-    exec(cmd->argv[0], (const char* const*) cmd->argv);
-
-    /* 2. Try with .elf appended */
-    char elf_name[64];
-    int l = 0;
-    while (cmd->argv[0][l] && l < 58) {
-        elf_name[l] = cmd->argv[0][l];
-        l++;
+    int a_idx = 0;
+    while (a_idx < cmd->argc && is_assignment(cmd->argv[a_idx])) {
+        char* eq = my_strchr(cmd->argv[a_idx], '=');
+        *eq = '\0';
+        sh_setenv(cmd->argv[a_idx], eq + 1);
+        a_idx++;
     }
-    elf_name[l] = '.'; elf_name[l+1] = 'e';
-    elf_name[l+2] = 'l'; elf_name[l+3] = 'f';
-    elf_name[l+4] = '\0';
-    exec(elf_name, (const char* const*) cmd->argv);
+    if (a_idx >= cmd->argc) {
+        exit(0);
+    }
+    char* const* actual_argv = (char* const*) &cmd->argv[a_idx];
+    const char* prog = actual_argv[0];
 
-    /* 3. Try under /bin/ */
-    if (cmd->argv[0][0] != '/') {
-        char bin_path[64];
-        bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
-        l = 0;
-        while (cmd->argv[0][l] && l < 50) {
-            bin_path[5 + l] = cmd->argv[0][l];
-            l++;
+    /* 1. If prog contains '/', execute directly */
+    if (my_strchr(prog, '/')) {
+        execve(prog, actual_argv, environ);
+
+        char elf_name[128];
+        int l = strlen(prog);
+        if (l < 120) {
+            my_strcpy(elf_name, prog);
+            my_strcat(elf_name, ".elf");
+            execve(elf_name, actual_argv, environ);
         }
-        bin_path[5 + l] = '\0';
-        exec(bin_path, (const char* const*) cmd->argv);
+    } else {
+        /* 2. Search PATH */
+        const char* path_env = sh_getenv("PATH");
+        if (!path_env) path_env = "/bin:/";
 
-        bin_path[5 + l] = '.'; bin_path[5 + l + 1] = 'e';
-        bin_path[5 + l + 2] = 'l'; bin_path[5 + l + 3] = 'f';
-        bin_path[5 + l + 4] = '\0';
-        exec(bin_path, (const char* const*) cmd->argv);
+        const char* p = path_env;
+        while (*p) {
+            char dir[128];
+            int dlen = 0;
+            while (*p && *p != ':' && dlen < 120) {
+                dir[dlen++] = *p++;
+            }
+            dir[dlen] = '\0';
+            if (*p == ':') p++;
+
+            char candidate[256];
+            candidate[0] = '\0';
+            if (dlen == 0 || (dlen == 1 && dir[0] == '.')) {
+                my_strcpy(candidate, prog);
+            } else {
+                my_strcpy(candidate, dir);
+                if (dir[dlen - 1] != '/') my_strcat(candidate, "/");
+                my_strcat(candidate, prog);
+            }
+
+            execve(candidate, actual_argv, environ);
+
+            char candidate_elf[260];
+            my_strcpy(candidate_elf, candidate);
+            my_strcat(candidate_elf, ".elf");
+            execve(candidate_elf, actual_argv, environ);
+        }
     }
 
     write(2, "sh: command not found: ", 23);
-    write(2, cmd->argv[0], strlen(cmd->argv[0]));
+    write(2, prog, strlen(prog));
     write(2, "\n", 1);
     exit(127);
 }
@@ -621,8 +809,77 @@ static int builtin_nice(const command_t* cmd, int* last_status) {
     return 1;
 }
 
+static int builtin_env(int* last_status) {
+    for (int i = 0; i < env_count; i++) {
+        write(1, env_storage[i], strlen(env_storage[i]));
+        write(1, "\n", 1);
+    }
+    *last_status = 0;
+    return 1;
+}
+
+static int builtin_export(const command_t* cmd, int* last_status) {
+    if (cmd->argc == 1) {
+        for (int i = 0; i < env_count; i++) {
+            write(1, "export ", 7);
+            write(1, env_storage[i], strlen(env_storage[i]));
+            write(1, "\n", 1);
+        }
+        *last_status = 0;
+        return 1;
+    }
+    for (int i = 1; i < cmd->argc; i++) {
+        char* arg = cmd->argv[i];
+        char* eq = my_strchr(arg, '=');
+        if (eq) {
+            *eq = '\0';
+            sh_setenv(arg, eq + 1);
+        } else {
+            if (!sh_getenv(arg)) {
+                sh_setenv(arg, "");
+            }
+        }
+    }
+    *last_status = 0;
+    return 1;
+}
+
+static int builtin_unset(const command_t* cmd, int* last_status) {
+    for (int i = 1; i < cmd->argc; i++) {
+        sh_unsetenv(cmd->argv[i]);
+    }
+    *last_status = 0;
+    return 1;
+}
+
 static int run_builtin(const command_t* cmd, int* last_status) {
     if (cmd->argc == 0) return 1;
+
+    int all_assign = 1;
+    for (int i = 0; i < cmd->argc; i++) {
+        if (!is_assignment(cmd->argv[i])) { all_assign = 0; break; }
+    }
+    if (all_assign) {
+        for (int i = 0; i < cmd->argc; i++) {
+            char* eq = my_strchr(cmd->argv[i], '=');
+            *eq = '\0';
+            sh_setenv(cmd->argv[i], eq + 1);
+        }
+        *last_status = 0;
+        return 1;
+    }
+
+    if (strcmp(cmd->argv[0], "env") == 0) {
+        return builtin_env(last_status);
+    }
+
+    if (strcmp(cmd->argv[0], "export") == 0) {
+        return builtin_export(cmd, last_status);
+    }
+
+    if (strcmp(cmd->argv[0], "unset") == 0) {
+        return builtin_unset(cmd, last_status);
+    }
 
     if (strcmp(cmd->argv[0], "nice") == 0) {
         return builtin_nice(cmd, last_status);
@@ -639,6 +896,9 @@ static int run_builtin(const command_t* cmd, int* last_status) {
             "  fg [%n]       bring job to foreground\n"
             "  bg [%n]       resume stopped job in background\n"
             "  kill [%n|pid] send signal to job or process\n"
+            "  export [k=v]  set or list environment variables\n"
+            "  env           print all environment variables\n"
+            "  unset <var>   remove an environment variable\n"
             "  shinfo        print shell info (pid, ppid, pgid, frames)\n"
             "External binaries (loaded via fork + exec + waitpid from cwd or /bin):\n"
             "  ls, cat, echo, mkdir, rmdir, rm, cp, mv, touch, pwd, etc.\n";
@@ -685,6 +945,10 @@ static int run_builtin(const command_t* cmd, int* last_status) {
             write(2, ": No such file or directory\n", 28);
             *last_status = 1;
         } else {
+            char cwd[64];
+            if (getcwd(cwd, sizeof(cwd))) {
+                sh_setenv("PWD", cwd);
+            }
             *last_status = 0;
         }
         return 1;
@@ -902,9 +1166,10 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
     }
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv, char** envp) {
     (void) argc;
     (void) argv;
+    sh_env_init(envp ? envp : environ);
 
     is_interactive = isatty(0);
     if (is_interactive) {

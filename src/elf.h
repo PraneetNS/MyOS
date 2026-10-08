@@ -17,6 +17,7 @@ struct vnode;
 int elf_load_into(const uint8_t* image, uint32_t image_size,
                   struct vnode* vn,
                   address_space_t* as, int argc, const char* const* argv,
+                  int envc, const char* const* envp,
                   uint32_t* out_entry, uint32_t* out_stack_top,
                   vma_t** out_vmas);
 
