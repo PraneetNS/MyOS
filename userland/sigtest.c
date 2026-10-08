@@ -142,6 +142,31 @@ int main(int argc, char** argv) {
         }
     }
 
+    /* Test 7: nanosleep interrupted by signal returns -EINTR with remaining time > 0 */
+    usr1_received = 0;
+    signal(SIGUSR1, handle_usr1);
+    child = fork();
+    if (child == 0) {
+        struct timespec req = { 5, 0 };
+        struct timespec rem = { 0, 0 };
+        int ret = nanosleep(&req, &rem);
+        if (ret == -EINTR && rem.tv_sec > 0 && usr1_received) {
+            print_str("PASS: nanosleep interrupted returned -EINTR with remaining time > 0\n");
+            exit(0);
+        } else {
+            print_str("FAIL: nanosleep did not return -EINTR with remaining time\n");
+            exit(1);
+        }
+    } else {
+        usleep(50000);
+        kill(child, SIGUSR1);
+        int st = 0;
+        waitpid(child, &st, 0);
+        if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+            return 1;
+        }
+    }
+
     print_str("=== ALL SIGTESTS PASSED ===\n");
     return 0;
 }

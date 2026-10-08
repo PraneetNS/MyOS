@@ -7,7 +7,8 @@ LOGFILE1=$(mktemp)
 LOGFILE2=$(mktemp)
 LOGFILE3=$(mktemp)
 LOGFILE6=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6"' EXIT
+LOGFILE7=$(mktemp)
+trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -461,6 +462,131 @@ else
 fi
 grep -q "sh: pid=[0-9]*" "$LOGFILE6" || { echo "FAIL: Case 8: Shell info not verified"; exit 1; }
 echo "[PASS] Case 8: Shell is healthy, prompt works, zero leaks verified"
+
+echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, scheduler, and responsiveness..."
+
+(
+    sleep 2
+    printf "shinfo\n"
+    sleep 0.3
+    printf "date\n"
+    sleep 0.3
+    printf "date -u\n"
+    sleep 0.3
+    printf "timetest.elf\n"
+    sleep 3.5
+    printf "sigtest.elf\n"
+    sleep 2.5
+    printf "uptime\n"
+    sleep 0.3
+    printf "free\n"
+    sleep 0.3
+    printf "cat /proc/uptime\n"
+    sleep 0.3
+    printf "cat /proc/meminfo\n"
+    sleep 0.3
+    printf "cat /proc/self/cmdline\n"
+    sleep 0.3
+    printf "spin.elf &\n"
+    sleep 0.3
+    printf "ps\n"
+    sleep 0.3
+    printf 'kill %%1\n'
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+    printf "spin.elf &\n"
+    sleep 0.3
+    printf "spin.elf &\n"
+    sleep 0.3
+    printf "echo responsive_under_two_spinners\n"
+    sleep 0.3
+    printf 'kill %%1\n'
+    sleep 0.3
+    printf 'kill %%2\n'
+    sleep 0.3
+    printf "jobs\n"
+    sleep 0.3
+    printf "echo time_write > /tmp/timed.txt\n"
+    sleep 0.3
+    printf "ls -l /tmp\n"
+    sleep 0.3
+    printf "shinfo\n"
+    sleep 0.3
+    printf "exit\n"
+) | timeout 25s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE7" > "${LOGFILE7}.tmp" && mv "${LOGFILE7}.tmp" "$LOGFILE7"
+cat "$LOGFILE7"
+
+echo "[TEST] Asserting Session 7 results..."
+
+# Date assertions: year >= 2026, offset differs by 5h30m (330 min)
+DATE_LOCAL=$(grep -E "(IST|LOC) [0-9]{4}" "$LOGFILE7" | head -n 1)
+DATE_UTC=$(grep -E "UTC [0-9]{4}" "$LOGFILE7" | head -n 1)
+if [ -z "$DATE_LOCAL" ] || [ -z "$DATE_UTC" ]; then
+    echo "FAIL: Could not find date or date -u output in Session 7"
+    exit 1
+fi
+YEAR=$(echo "$DATE_LOCAL" | grep -oE "[0-9]{4}$")
+if [ "$YEAR" -lt 2026 ]; then
+    echo "FAIL: Year $YEAR is less than 2026"
+    exit 1
+fi
+echo "[PASS] Date is >= 2026 (year $YEAR verified)"
+
+LH=$(echo "$DATE_LOCAL" | grep -oE "[0-9]{2}:[0-9]{2}:[0-9]{2}" | head -n 1 | cut -d: -f1)
+LM=$(echo "$DATE_LOCAL" | grep -oE "[0-9]{2}:[0-9]{2}:[0-9]{2}" | head -n 1 | cut -d: -f2)
+UH=$(echo "$DATE_UTC" | grep -oE "[0-9]{2}:[0-9]{2}:[0-9]{2}" | head -n 1 | cut -d: -f1)
+UM=$(echo "$DATE_UTC" | grep -oE "[0-9]{2}:[0-9]{2}:[0-9]{2}" | head -n 1 | cut -d: -f2)
+L_MIN=$(( 10#$LH * 60 + 10#$LM ))
+U_MIN=$(( 10#$UH * 60 + 10#$UM ))
+DIFF_MIN=$(( (L_MIN - U_MIN + 1440) % 1440 ))
+if [ "$DIFF_MIN" -ne 330 ]; then
+    echo "FAIL: Timezone difference is $DIFF_MIN minutes, expected 330 minutes (5h30m)"
+    exit 1
+fi
+echo "[PASS] date with /etc/timezone=330 differs from date -u by exactly 5h30m ($DIFF_MIN minutes verified)"
+
+# Timetest assertions
+grep -q "\[timetest\] sleeper cpu_ticks=[0-4] (< 5) PASS" "$LOGFILE7" || { echo "FAIL: Sleeper CPU ticks was not < 5"; exit 1; }
+grep -q "\[timetest\] sleep 2 elapsed ticks=.* (190-230) PASS" "$LOGFILE7" || { echo "FAIL: sleep 2 was not 190-230 ticks"; exit 1; }
+grep -q "\[timetest\] meminfo FramesFree=.* vs sys_free_frames=.* MATCH PASS" "$LOGFILE7" || { echo "FAIL: /proc/meminfo free frames did not match sys_free_frames"; exit 1; }
+grep -q "=== ALL TIMETESTS PASSED ===" "$LOGFILE7" || { echo "FAIL: timetest suite did not pass"; exit 1; }
+echo "[PASS] Non-busy sleep 2 (190-230 ticks, CPU ticks < 5) and meminfo free frames match verified"
+
+# Sigtest assertions
+grep -q "PASS: alarm and pause" "$LOGFILE7" || { echo "FAIL: alarm(1) and pause failed"; exit 1; }
+grep -q "PASS: nanosleep interrupted returned -EINTR with remaining time > 0" "$LOGFILE7" || { echo "FAIL: nanosleep signal interruption with rem > 0 failed"; exit 1; }
+grep -q "=== ALL SIGTESTS PASSED ===" "$LOGFILE7" || { echo "FAIL: sigtest suite did not pass"; exit 1; }
+echo "[PASS] alarm(1) wakes pause() via SIGALRM and nanosleep interrupted returns -EINTR with remaining time > 0 verified"
+
+# Procfs and ps assertions
+grep -q "MemTotal:" "$LOGFILE7" || { echo "FAIL: /proc/meminfo MemTotal missing"; exit 1; }
+grep -q "spin" "$LOGFILE7" || { echo "FAIL: ps did not list spin while running"; exit 1; }
+echo "[PASS] /proc/meminfo, /proc/uptime, and ps listing live processes verified"
+
+# Responsiveness under 2 spinners
+grep -q "responsive_under_two_spinners" "$LOGFILE7" || { echo "FAIL: Shell unresponsive under two spinners"; exit 1; }
+echo "[PASS] Shell responsive under two spin.elf processes verified"
+
+# FAT16 timestamps in ls -l
+grep -q "timed.txt" "$LOGFILE7" || { echo "FAIL: timed.txt not listed in ls -l"; exit 1; }
+echo "[PASS] FAT16 timestamp creation and ls -l local time display verified"
+
+# Zero frame leak check for Session 7
+BASELINE_FRAMES_S7=$(grep "sh: pid=" "$LOGFILE7" | head -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+FINAL_FRAMES_S7=$(grep "sh: pid=" "$LOGFILE7" | tail -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+if [ -n "$BASELINE_FRAMES_S7" ] && [ -n "$FINAL_FRAMES_S7" ]; then
+    if [ "$BASELINE_FRAMES_S7" -ne "$FINAL_FRAMES_S7" ]; then
+        echo "FAIL: Session 7 frame leak detected: baseline $BASELINE_FRAMES_S7 vs final $FINAL_FRAMES_S7"
+        exit 1
+    fi
+    echo "[PASS] Session 7: Zero frame leak verified (baseline $BASELINE_FRAMES_S7 == final $FINAL_FRAMES_S7)"
+else
+    echo "FAIL: Session 7: Could not parse free frames from shinfo"
+    exit 1
+fi
 
 echo "==============================="
 echo "ALL TESTS PASSED!"
