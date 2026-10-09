@@ -13,7 +13,8 @@ OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o boot/paging_asm.
        src/pmm.o src/paging.o src/kheap.o src/tss.o src/syscall.o \
        src/ata.o src/fs.o src/elf.o src/shell.o src/vmm.o src/vma.o \
        src/process.o src/scheduler.o src/pipe.o src/serial.o src/bcache.o src/vfs.o src/fat16.o \
-       src/tty.o src/devfs.o src/signal.o src/rtc.o src/procfs.o src/fpu.o
+       src/tty.o src/devfs.o src/signal.o src/rtc.o src/procfs.o src/fpu.o \
+       src/ioremap.o src/fb.o
 
 KERNEL_BIN = isodir/boot/myos.bin
 ISO        = myos.iso
@@ -38,10 +39,10 @@ isodir/boot/grub/grub.cfg: boot/grub.cfg
 	cp boot/grub.cfg isodir/boot/grub/grub.cfg
 
 run: $(ISO)
-	qemu-system-i386 -m 256 -cdrom $(ISO) -serial stdio -display none -no-reboot
+	qemu-system-i386 -vga std -m 256 -cdrom $(ISO) -serial stdio -display none -no-reboot
 
 test: $(ISO) disk.img
-	timeout 10s qemu-system-i386 -m 256 -hda disk.img -cdrom $(ISO) -boot d -serial stdio -display none -no-reboot || true
+	timeout 10s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom $(ISO) -boot d -serial stdio -display none -no-reboot || true
 
 disk.img:
 	bash tools/build_disk.sh

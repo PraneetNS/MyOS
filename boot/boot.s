@@ -14,6 +14,15 @@ header_start:
     .long HEADER_LEN
     .long CHECKSUM
 
+    /* Framebuffer request tag (type 5) */
+    .align 8
+    .word 5    /* type: MULTIBOOT_HEADER_TAG_FRAMEBUFFER */
+    .word 1    /* flags: optional */
+    .long 20   /* size */
+    .long 1024 /* width */
+    .long 768  /* height */
+    .long 32   /* depth */
+
     /* end tag */
     .align 8
     .word 0    /* type */

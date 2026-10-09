@@ -67,7 +67,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "memtest\n"
     sleep 16
     printf "exit\n"
-) | timeout 90s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 90s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -76,6 +76,9 @@ echo "[TEST] Asserting Session 1 results..."
 # Core boot and shell assertions
 grep -q "BOOT OK" "$LOGFILE1" || { echo "FAIL: 'BOOT OK' not found"; exit 1; }
 echo "[PASS] 'BOOT OK' verified"
+
+grep -q "\[fb\] 1024x768x32" "$LOGFILE1" || { echo "FAIL: Framebuffer boot log not found"; exit 1; }
+echo "[PASS] Framebuffer boot log verified"
 
 grep -q "MyOS Userland Shell (sh)" "$LOGFILE1" || { echo "FAIL: Shell welcome not found"; exit 1; }
 echo "[PASS] Shell welcome verified"
@@ -202,7 +205,7 @@ echo "[TEST] Session 2: Persistence test across QEMU reboot with the SAME disk.i
     printf "cat /nest1/nest2/test.txt\n"
     sleep 1
     printf "exit\n"
-) | timeout 15s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE2" 2>&1 || true
+) | timeout 15s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE2" 2>&1 || true
 
 cat "$LOGFILE2"
 
@@ -245,7 +248,7 @@ echo "[TEST] Session 3: Stage 14 IPC, pipes, redirections, pipelines, filters, a
     printf 'stress\n'
     sleep 2
     printf 'exit\n'
-) | timeout 35s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
+) | timeout 35s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
 
 cat "$LOGFILE3"
 
@@ -306,7 +309,7 @@ echo "[PASS] Host mtype cross-check for persistent and created files verified"
 
 echo "[TEST] Session 5: Low-memory boot test (-m 64)..."
 LOGFILE5=$(mktemp)
-timeout 10s qemu-system-i386 -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE5" 2>&1 || true
+timeout 10s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE5" 2>&1 || true
 cat "$LOGFILE5"
 
 grep -q "BOOT OK" "$LOGFILE5" || { echo "FAIL: Low-memory boot failed (BOOT OK not found)"; rm -f "$LOGFILE5"; exit 1; }
@@ -405,7 +408,7 @@ echo "[TEST] Session 6: Live job control and interactive TTY signals over COM1..
     printf "shinfo\n"
     sleep 0.3
     printf "exit\n"
-) | timeout 18s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE6" 2>&1 || true
+) | timeout 18s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE6" 2>&1 || true
 
 cat "$LOGFILE6"
 
@@ -517,7 +520,7 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     printf "shinfo\n"
     sleep 0.3
     printf "exit\n"
-) | timeout 30s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
+) | timeout 30s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE7" > "${LOGFILE7}.tmp" && mv "${LOGFILE7}.tmp" "$LOGFILE7"
 cat "$LOGFILE7"
@@ -623,7 +626,7 @@ echo "[TEST] Session 8: Testing Newlib libc (libctest) and Lua 5.4 runtime..."
     printf "shinfo\n"
     sleep 1
     printf "exit\n"
-) | timeout 60s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE8" 2>&1 || true
+) | timeout 60s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE8" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE8" > "${LOGFILE8}.tmp" && mv "${LOGFILE8}.tmp" "$LOGFILE8"
 cat "$LOGFILE8"
