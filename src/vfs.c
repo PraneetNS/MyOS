@@ -132,6 +132,9 @@ void open_file_unref(open_file_t* of) {
     }
     of->refcount--;
     if (of->refcount == 0) {
+        if (of->type == OPEN_FILE_CONSOLE) {
+            console_restore_text_mode();
+        }
         if ((of->type == OPEN_FILE_VNODE || of->type == OPEN_FILE_CONSOLE) && of->vnode) {
             vnode_unref(of->vnode);
             of->vnode = 0;

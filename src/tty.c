@@ -1,5 +1,6 @@
 #include "tty.h"
 #include "vga.h"
+#include "console.h"
 #include "serial.h"
 #include "scheduler.h"
 #include "errno.h"
@@ -335,6 +336,28 @@ int tty_ioctl(tty_t* tty, unsigned long req, void* argp) {
             if (copy_from_user(&pgid, argp, sizeof(int)) != 0)
                 return -EFAULT;
             tty->fg_pgid = pgid;
+            return 0;
+        }
+        case KDSETMODE: {
+            int mode = (int)(uintptr_t) argp;
+            return console_set_mode(mode);
+        }
+        case KDGETMODE: {
+            if (!argp) return -EFAULT;
+            int mode = console_get_mode();
+            if (copy_to_user(argp, &mode, sizeof(int)) != 0)
+                return -EFAULT;
+            return 0;
+        }
+        case KDSKBMODE: {
+            int mode = (int)(uintptr_t) argp;
+            return console_set_kbmode(mode);
+        }
+        case KDGKBMODE: {
+            if (!argp) return -EFAULT;
+            int mode = console_get_kbmode();
+            if (copy_to_user(argp, &mode, sizeof(int)) != 0)
+                return -EFAULT;
             return 0;
         }
         default:
