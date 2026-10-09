@@ -7,6 +7,7 @@
 #include "bcache.h"
 #include "tty.h"
 #include "fpu.h"
+#include "console.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -144,6 +145,8 @@ void scheduler_exit_current(int exit_status) {
     if (exiting_pid == 1) {
         bcache_sync();
     }
+
+    console_restore_text_mode();
 
     /* Reparent children to PID 1 (init / shell) */
     for (int i = 0; i < MAX_PROCESSES; i++) {

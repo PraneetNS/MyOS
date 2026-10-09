@@ -3,6 +3,7 @@
 #include "ioremap.h"
 #include "serial.h"
 #include "vga.h"
+#include "console.h"
 
 struct fb_info g_fb_info;
 
@@ -86,6 +87,7 @@ void fb_init(uint32_t mb_info_addr) {
     }
 
     g_fb_info.present = 1;
+    console_switch_to_fb();
 
     serial_printf("[fb] %ux%ux%u pitch=%u at phys=0x%08x mapped at 0x%08x\n",
                   g_fb_info.width, g_fb_info.height, g_fb_info.bpp, g_fb_info.pitch,
