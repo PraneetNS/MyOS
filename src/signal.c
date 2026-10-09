@@ -80,6 +80,7 @@ int sig_send(process_t* proc, int sig) {
                 }
                 proc->state = PROC_READY;
                 proc->wait_channel = 0;
+                proc->num_poll_channels = 0;
                 timer_sleep_dequeue(proc);
             }
         }

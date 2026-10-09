@@ -75,6 +75,7 @@
 #define SYS_CLOCK_GETTIME 74
 #define SYS_NANOSLEEP  75
 #define SYS_NICE       77
+#define SYS_POLL       168
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -1081,6 +1082,12 @@ static void syscall_handler(struct registers* regs) {
             } else if (cmd == F_SETFD) {
                 me->fd_flags[fd] = (uint8_t) (arg & FD_CLOEXEC);
                 regs->eax = 0;
+            } else if (cmd == F_GETFL) {
+                regs->eax = (uint32_t) me->fds[fd]->flags;
+            } else if (cmd == F_SETFL) {
+                int allowed = O_APPEND | O_NONBLOCK | O_NONBLOCK_LINUX;
+                me->fds[fd]->flags = (me->fds[fd]->flags & ~allowed) | (arg & allowed);
+                regs->eax = 0;
             } else if (cmd == F_DUPFD) {
                 int min_fd = arg >= 0 ? arg : 0;
                 int new_fd = -1;
@@ -1570,6 +1577,154 @@ static void syscall_handler(struct registers* regs) {
             if (me->nice < -20) me->nice = -20;
             if (me->nice > 19) me->nice = 19;
             regs->eax = (uint32_t) me->nice;
+            break;
+        }
+
+        case SYS_POLL: {
+            struct pollfd* user_fds = (struct pollfd*) regs->ebx;
+            uint32_t nfds = (uint32_t) regs->ecx;
+            int timeout = (int) regs->edx;
+
+            if (nfds > MAX_POLL_CHANNELS) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            if (nfds > 0) {
+                if (!user_fds) {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
+                int err = validate_user_buffer(user_fds, nfds * sizeof(struct pollfd), 1);
+                if (err != 0) {
+                    regs->eax = (uint32_t) err;
+                    break;
+                }
+            }
+
+            process_t* me = scheduler_current();
+
+            uint32_t start_ticks = timer_get_ticks();
+            uint32_t deadline = 0;
+            if (timeout > 0) {
+                uint32_t wait_ticks = (uint32_t)((timeout + 9) / 10);
+                deadline = start_ticks + wait_ticks;
+            }
+
+            struct pollfd kfds[MAX_POLL_CHANNELS];
+            if (nfds > 0) {
+                if (copy_from_user(kfds, user_fds, nfds * sizeof(struct pollfd)) != 0) {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
+            }
+
+            int ret_val = 0;
+
+            for (;;) {
+                if (signal_has_deliverable(me)) {
+                    ret_val = -EINTR;
+                    break;
+                }
+
+                me->num_poll_channels = 0;
+                int ready_count = 0;
+
+                for (uint32_t i = 0; i < nfds; i++) {
+                    kfds[i].revents = 0;
+                    int fd = kfds[i].fd;
+                    if (fd < 0) {
+                        continue;
+                    }
+                    if (fd >= MAX_FDS || !me->fds[fd]) {
+                        kfds[i].revents = POLLNVAL;
+                        ready_count++;
+                        continue;
+                    }
+
+                    open_file_t* of = me->fds[fd];
+                    void* chan = 0;
+                    short rev = vfs_poll(of, kfds[i].events, &chan);
+                    kfds[i].revents = rev;
+                    if (rev != 0) {
+                        ready_count++;
+                    } else if (chan && me->num_poll_channels < MAX_POLL_CHANNELS) {
+                        int already = 0;
+                        for (int c = 0; c < me->num_poll_channels; c++) {
+                            if (me->poll_channels[c] == chan) {
+                                already = 1;
+                                break;
+                            }
+                        }
+                        if (!already) {
+                            me->poll_channels[me->num_poll_channels++] = chan;
+                        }
+                    }
+                }
+
+                if (ready_count > 0) {
+                    ret_val = ready_count;
+                    break;
+                }
+
+                if (timeout == 0) {
+                    ret_val = 0;
+                    break;
+                }
+
+                if (timeout > 0) {
+                    uint32_t now = timer_get_ticks();
+                    if (now >= deadline) {
+                        ret_val = 0;
+                        break;
+                    }
+                }
+
+                /* Need to wait */
+                if (timeout > 0) {
+                    timer_sleep_enqueue(me, deadline);
+                    if (me->num_poll_channels < MAX_POLL_CHANNELS) {
+                        me->poll_channels[me->num_poll_channels++] = &me->sleep_deadline;
+                    }
+                }
+
+                scheduler_wait_poll();
+
+                if (timeout > 0) {
+                    timer_sleep_dequeue(me);
+                }
+
+                /* Check timeout again after waking */
+                if (timeout > 0 && timer_get_ticks() >= deadline) {
+                    ready_count = 0;
+                    for (uint32_t i = 0; i < nfds; i++) {
+                        kfds[i].revents = 0;
+                        int fd = kfds[i].fd;
+                        if (fd < 0) continue;
+                        if (fd >= MAX_FDS || !me->fds[fd]) {
+                            kfds[i].revents = POLLNVAL;
+                            ready_count++;
+                            continue;
+                        }
+                        short rev = vfs_poll(me->fds[fd], kfds[i].events, 0);
+                        kfds[i].revents = rev;
+                        if (rev != 0) ready_count++;
+                    }
+                    ret_val = ready_count;
+                    break;
+                }
+            }
+
+            me->num_poll_channels = 0;
+
+            if (nfds > 0 && ret_val >= 0) {
+                if (copy_to_user(user_fds, kfds, nfds * sizeof(struct pollfd)) != 0) {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
+            }
+
+            regs->eax = (uint32_t) ret_val;
             break;
         }
 

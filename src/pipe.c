@@ -41,7 +41,7 @@ int pipe_create(pipe_t** out_pipe) {
     return 0;
 }
 
-int pipe_read(pipe_t* p, void* buf, uint32_t count) {
+int pipe_read(pipe_t* p, void* buf, uint32_t count, int nonblock) {
     if (!p) return -EBADF;
     if (count == 0) return 0;
 
@@ -51,6 +51,9 @@ int pipe_read(pipe_t* p, void* buf, uint32_t count) {
     while (p->count == 0) {
         if (p->writer_count == 0) {
             return 0; /* EOF */
+        }
+        if (nonblock) {
+            return -EAGAIN;
         }
         if (signal_has_deliverable(scheduler_current())) {
             return -EINTR;
@@ -73,7 +76,7 @@ int pipe_read(pipe_t* p, void* buf, uint32_t count) {
     return (int) read_bytes;
 }
 
-int pipe_write(pipe_t* p, const void* buf, uint32_t count) {
+int pipe_write(pipe_t* p, const void* buf, uint32_t count, int nonblock) {
     if (!p) return -EBADF;
     if (count == 0) return 0;
 
@@ -88,6 +91,9 @@ int pipe_write(pipe_t* p, const void* buf, uint32_t count) {
         }
 
         while (p->count == PIPE_CAPACITY) {
+            if (nonblock) {
+                return (written > 0) ? (int) written : -EAGAIN;
+            }
             if (signal_has_deliverable(scheduler_current())) {
                 return (written > 0) ? (int) written : -EINTR;
             }

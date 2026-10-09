@@ -69,6 +69,7 @@ static void timer_callback(struct registers* regs) {
         if (p->state == PROC_WAITING && !p->is_stopped) {
             p->state = PROC_READY;
             p->wait_channel = 0;
+            p->num_poll_channels = 0;
         }
     }
 

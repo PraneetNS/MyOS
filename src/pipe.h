@@ -18,8 +18,8 @@ typedef struct pipe {
 
 void pipe_init(void);
 int pipe_create(pipe_t** out_pipe);
-int pipe_read(pipe_t* p, void* buf, uint32_t count);
-int pipe_write(pipe_t* p, const void* buf, uint32_t count);
+int pipe_read(pipe_t* p, void* buf, uint32_t count, int nonblock);
+int pipe_write(pipe_t* p, const void* buf, uint32_t count, int nonblock);
 void pipe_close_end(pipe_t* p, int flags);
 int pipe_get_active_count(void);
 

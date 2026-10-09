@@ -10,9 +10,14 @@
 #define OPEN_FILE_POOL_SIZE 64
 
 static int active_open_files = 0;
+static int current_op_flags = 0;
 
 int vfs_get_active_open_files(void) {
     return active_open_files;
+}
+
+int vfs_get_current_flags(void) {
+    return current_op_flags;
 }
 
 typedef struct {
@@ -339,13 +344,16 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
 int vfs_read(open_file_t* of, void* buf, uint32_t count) {
     if (!of) return -EBADF;
 
+    int nonblock = (of->flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
+    current_op_flags = of->flags;
+
     if (of->type == OPEN_FILE_CONSOLE) {
         if (!of->vnode || !of->vnode->ops || !of->vnode->ops->read) return -EBADF;
         return of->vnode->ops->read(of->vnode, of->offset, (uint8_t*) buf, count);
     }
     if (of->type == OPEN_FILE_PIPE) {
         if ((of->flags & 3) == O_WRONLY) return -EBADF;
-        return pipe_read((pipe_t*) of->pipe, buf, count);
+        return pipe_read((pipe_t*) of->pipe, buf, count, nonblock);
     }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
@@ -360,13 +368,16 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
 int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
     if (!of) return -EBADF;
 
+    int nonblock = (of->flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
+    current_op_flags = of->flags;
+
     if (of->type == OPEN_FILE_CONSOLE) {
         if (!of->vnode || !of->vnode->ops || !of->vnode->ops->write) return -EBADF;
         return of->vnode->ops->write(of->vnode, of->offset, (const uint8_t*) buf, count);
     }
     if (of->type == OPEN_FILE_PIPE) {
         if ((of->flags & 3) == O_RDONLY) return -EBADF;
-        return pipe_write((pipe_t*) of->pipe, buf, count);
+        return pipe_write((pipe_t*) of->pipe, buf, count, nonblock);
     }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
@@ -504,4 +515,50 @@ void vfs_path_canonical(const char* path, const char* cwd, char* out, int max) {
         }
     }
     out[pos] = '\0';
+}
+
+short vfs_poll(open_file_t* of, short events, void** chan_out) {
+    if (!of) return POLLNVAL;
+
+    if (of->type == OPEN_FILE_PIPE) {
+        pipe_t* p = (pipe_t*) of->pipe;
+        if (!p) return POLLNVAL;
+        short revents = 0;
+        int is_write = ((of->flags & 3) == O_WRONLY);
+        int is_read = ((of->flags & 3) == O_RDONLY || (of->flags & 3) == O_RDWR);
+
+        if (is_read) {
+            if (p->count > 0) revents |= POLLIN;
+            if (p->writer_count == 0) revents |= POLLHUP;
+            if (!(revents & (POLLIN | POLLHUP)) && (events & POLLIN) && chan_out && !*chan_out) {
+                *chan_out = &p->read_wait;
+            }
+        }
+        if (is_write) {
+            if (p->reader_count == 0) {
+                revents |= POLLERR;
+            } else if (p->count < PIPE_CAPACITY) {
+                revents |= POLLOUT;
+            } else if ((events & POLLOUT) && chan_out && !*chan_out) {
+                *chan_out = &p->write_wait;
+            }
+        }
+        return revents;
+    }
+
+    if (of->type == OPEN_FILE_CONSOLE) {
+        if (of->vnode && of->vnode->ops && of->vnode->ops->poll) {
+            return of->vnode->ops->poll(of->vnode, events, chan_out);
+        }
+        return (POLLIN | POLLOUT) & events;
+    }
+
+    if (of->type == OPEN_FILE_VNODE && of->vnode) {
+        if (of->vnode->ops && of->vnode->ops->poll) {
+            return of->vnode->ops->poll(of->vnode, events, chan_out);
+        }
+        return (POLLIN | POLLOUT) & events;
+    }
+
+    return POLLNVAL;
 }

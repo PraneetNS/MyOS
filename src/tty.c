@@ -1,4 +1,5 @@
 #include "tty.h"
+#include "vfs.h"
 #include "vga.h"
 #include "console.h"
 #include "serial.h"
@@ -205,7 +206,7 @@ void tty_input_string(tty_t* tty, const char* s) {
     }
 }
 
-int tty_read(tty_t* tty, char* buf, uint32_t count) {
+int tty_read(tty_t* tty, char* buf, uint32_t count, int nonblock) {
     if (!tty || !buf || count == 0) return 0;
 
     process_t* cur = scheduler_current();
@@ -221,6 +222,9 @@ int tty_read(tty_t* tty, char* buf, uint32_t count) {
     if (tty->termios.c_lflag & ICANON) {
         /* Canonical mode: wait until line available or EOF */
         while (tty->line_count == 0 && !tty->eof_pending) {
+            if (nonblock) {
+                return -EAGAIN;
+            }
             if (signal_has_deliverable(scheduler_current())) {
                 return -EINTR;
             }
@@ -249,6 +253,9 @@ int tty_read(tty_t* tty, char* buf, uint32_t count) {
         if (vmin > 0) {
             uint32_t needed = (vmin < count) ? vmin : count;
             while (tty->raw_count < (int) needed) {
+                if (nonblock) {
+                    return (tty->raw_count > 0) ? tty->raw_count : -EAGAIN;
+                }
                 if (signal_has_deliverable(scheduler_current())) {
                     return -EINTR;
                 }
@@ -363,4 +370,26 @@ int tty_ioctl(tty_t* tty, unsigned long req, void* argp) {
         default:
             return -EINVAL;
     }
+}
+
+short tty_poll(tty_t* tty, short events, void** chan_out) {
+    if (!tty) return POLLNVAL;
+    short revents = 0;
+    if (events & POLLOUT) {
+        revents |= POLLOUT;
+    }
+    if (events & POLLIN) {
+        int ready = 0;
+        if (tty->termios.c_lflag & ICANON) {
+            ready = (tty->line_count > 0 || tty->eof_pending);
+        } else {
+            ready = (tty->raw_count > 0);
+        }
+        if (ready) {
+            revents |= POLLIN;
+        } else if (chan_out && !*chan_out) {
+            *chan_out = &tty->read_wait;
+        }
+    }
+    return revents;
 }
