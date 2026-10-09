@@ -816,6 +816,45 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 
 ---
 
+## Stage 17 (done): Cross Toolchain, Newlib Libc, FPU/SSE, and Ported Software (Lua 5.4, Kilo)
+
+- **Kernel FPU / SSE Architecture** (`src/fpu.c`, `src/fpu.h`, `src/process.c`, `src/process.h`):
+  - Hardware CPUID detection for FPU, FXSR, SSE, SSE2, and AVX capabilities.
+  - Boot initialization: executes `fninit`, enables `CR4.OSFXSR` and `CR4.OSXMMEXCPT`, clears `CR0.EM`, sets `CR0.MP`.
+  - Per-process 512-byte 16-byte aligned FXSAVE area embedded within `process_t`.
+  - Context switching: saves and restores userland FPU/SSE state using `fxsave` and `fxrstor`.
+  - `fork()` clones active FPU state; `exec()` resets FPU state to clean defaults; signal trampoline preserves FPU state in user signal frames.
+  - Exception routing: #MF (vector 16) and #XM (vector 19) map to `SIGFPE`.
+  - Verified through `userland/fputest.c`: 3 concurrent processes and forked children performing high-iteration floating-point and SSE math across context switches without state corruption.
+
+- **Cross Toolchain Build System** (`tools/toolchain/build.sh`, `tools/myos-gcc`):
+  - Builds pinned GNU Binutils 2.42, GCC 13.2.0 (C only), and Newlib 4.4.0 targeting `i686-elf` to `$HOME/opt/myos-cross`.
+  - Non-interactive, idempotent with post-install verification markers (`$PREFIX/.built-<pkg>`) and automatic source/build cleanup.
+  - Smoke tests in `tools/toolchain/smoke.sh` verifying pinned versions, elf32-i386 output, and math/malloc/setjmp linking.
+  - Compiler wrapper `tools/myos-gcc`: passes default MyOS CFLAGS (`-m32 -march=i686 -fno-pie -fno-stack-protector`), includes Newlib C headers and `libmyos` headers, links `crt0.o`, `libmyos.a`, `libc.a`, `libm.a`, and `libgcc.a`.
+
+- **POSIX Emulation & Syscall Glue: `libmyos`** (`libmyos/`):
+  - Implements Newlib system call stubs in `libmyos/stubs.c` (`_open`, `_close`, `_read`, `_write`, `_lseek`, `_fstat`, `_stat`, `_sbrk`, `_getpid`, `_kill`, `_fork`, `_execve`, `_wait`, `_times`, `_gettimeofday`, `_unlink`, `_rename`).
+  - Implements POSIX API layer in `libmyos/posix.c`: `nanosleep`, `clock_gettime`, `tcgetattr`, `tcsetattr`, `ioctl`, `sigaction`, `sigprocmask`, `sigreturn`, `opendir`, `readdir`, `closedir`, `getcwd`, `chdir`, `dup`, `dup2`, `fcntl`, `pipe`, `waitpid`, `setenv`, `unsetenv`, `getenv`, `mmap`, `munmap`, `flockfile`, `popen`, `pclose`, `getline`, `getdelim`.
+  - Translates kernel 32-bit types (e.g. `struct timespec`, `struct timeval`, `struct dirent`) to Newlib's 64-bit `time_t` layout and standard POSIX structs.
+  - Setjmp forwarders in `libmyos/setjmp_alias.S` bridging `_setjmp`/`_longjmp` to Newlib's assembly `setjmp`/`longjmp`.
+
+- **Environment Variables End-to-End**:
+  - `execve` serializes `char *const envp[]` into user space below `argv`.
+  - `crt0.S` extracts `environ` pointer and initializes Newlib's global `environ`.
+  - `getenv`, `setenv`, and `unsetenv` supported end-to-end with inheritance across `fork` and `exec`.
+
+- **Real Software Ported**:
+  - **Lua 5.4.6** (`userland/lua.elf`, `userland/luac.elf`): Full ANSI Lua 5.4 bytecode compiler and interpreter with standard libraries (`math`, `string`, `table`, `io`, `os`), REPL on TTY, and execution of scripts like `/home/demo.lua`.
+  - **Kilo Editor** (`userland/edit.elf`): Text editor with syntax highlighting, ANSI escape codes, terminal raw mode, window size detection (`TIOCGWINSZ`), and disk file saving.
+  - **Demo Script** (`/home/demo.lua`): Demonstrates Fibonacci recursion, libm / FPU math (`sin`, `sqrt`, `exp`, `log`), string manipulation, table sort benchmark, disk file I/O, and real-time clock dates.
+
+- **Comprehensive Test Suite & Session 8 Validation**:
+  - `userland/libctest.c`: Exhaustive test suite verifying printf/sprintf/snprintf formats, sscanf, stdio file I/O, malloc/calloc/realloc/free pattern stress, qsort/bsearch, strtol/strtoul/strtod/atof, string/ctype functions, setjmp/longjmp, getenv/setenv, time/strftime/localtime, libm math functions (sin, cos, tan, sqrt, exp, log, pow, floor, ceil, fmod), errno mapping, opendir/readdir, fork/pipe/waitpid, sigaction, and anonymous mmap.
+  - `tools/test_boot.sh` Session 8: Validates `libctest`, Lua one-liner expressions, `/home/demo.lua`, piped Lua streaming (`ls /bin | lua ... | head`), Lua syntax error handling (exit 1), Lua stack overflow detection on deep recursion without kernel panic, 20MB table allocation/collection, and zero physical frame leaks.
+
+---
+
 ## Notes on the toolchain choices made here
 
 - **Multiboot2 + GRUB** instead of a hand-rolled bootloader: lets us skip

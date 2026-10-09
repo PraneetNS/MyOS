@@ -8,7 +8,8 @@ LOGFILE2=$(mktemp)
 LOGFILE3=$(mktemp)
 LOGFILE6=$(mktemp)
 LOGFILE7=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7"' EXIT
+LOGFILE8=$(mktemp)
+trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -592,6 +593,80 @@ if [ -n "$BASELINE_FRAMES_S7" ] && [ -n "$FINAL_FRAMES_S7" ]; then
     echo "[PASS] Session 7: Zero frame leak verified (baseline $BASELINE_FRAMES_S7 == final $FINAL_FRAMES_S7)"
 else
     echo "FAIL: Session 7: Could not parse free frames from shinfo"
+    exit 1
+fi
+
+echo "[TEST] Session 8: Testing Newlib libc (libctest) and Lua 5.4 runtime..."
+
+(
+    sleep 2
+    printf "libctest.elf\n"
+    sleep 4
+    printf "lua.elf -e \"print(1+1)\"\n"
+    sleep 1
+    printf "lua.elf /home/demo.lua\n"
+    sleep 3
+    printf "ls /bin | lua.elf -e \"for l in io.lines() do if l:find('elf') then print(l) end end\" | head -n 3\n"
+    sleep 2
+    printf "lua.elf -e \"invalid lua syntax !!!\"\n"
+    sleep 1
+    printf "echo LUA_ERR=\$?\n"
+    sleep 1
+    printf "lua.elf -e \"function f() f() end; f()\"\n"
+    sleep 1
+    printf "echo LUA_RECURSE_ERR=\$?\n"
+    sleep 1
+    printf "shinfo\n"
+    sleep 1
+    printf "lua.elf /home/alloc.lua\n"
+    sleep 3
+    printf "shinfo\n"
+    sleep 1
+    printf "exit\n"
+) | timeout 60s qemu-system-i386 -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE8" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE8" > "${LOGFILE8}.tmp" && mv "${LOGFILE8}.tmp" "$LOGFILE8"
+cat "$LOGFILE8"
+
+echo "[TEST] Asserting Session 8 results..."
+
+grep -q "\[libctest\] ALL TESTS PASSED" "$LOGFILE8" || { echo "FAIL: libctest suite did not pass"; exit 1; }
+echo "[PASS] Newlib libc comprehensive test suite (libctest) verified"
+
+grep -q "^2$" "$LOGFILE8" || { echo "FAIL: Lua 1+1 expression failed"; exit 1; }
+echo "[PASS] Lua -e expression evaluation verified"
+
+grep -q "=== MyOS Lua 5.4 Demo ===" "$LOGFILE8" || { echo "FAIL: Lua demo banner not found"; exit 1; }
+grep -q "Fibonacci(10) = 55" "$LOGFILE8" || { echo "FAIL: Lua Fibonacci failed"; exit 1; }
+grep -q "math: sin(pi/2)=1.0000" "$LOGFILE8" || { echo "FAIL: Lua math/FPU failed"; exit 1; }
+grep -q "Sorted table of 100 elements" "$LOGFILE8" || { echo "FAIL: Lua table sort failed"; exit 1; }
+grep -q "File I/O read back line 1: Lua 5.4 file I/O test on MyOS" "$LOGFILE8" || { echo "FAIL: Lua file I/O failed"; exit 1; }
+grep -q "=== Demo Complete ===" "$LOGFILE8" || { echo "FAIL: Lua demo completion not found"; exit 1; }
+echo "[PASS] Lua /home/demo.lua execution verified"
+
+grep -q "argtest.elf" "$LOGFILE8" || { echo "FAIL: Lua pipeline failed"; exit 1; }
+echo "[PASS] Shell to Lua stdin/stdout pipeline verified"
+
+grep -q "LUA_ERR=1" "$LOGFILE8" || { echo "FAIL: Lua syntax error exit status not 1"; exit 1; }
+echo "[PASS] Lua syntax error handled gracefully with non-zero exit code"
+
+grep -q "stack overflow" "$LOGFILE8" || { echo "FAIL: Lua recursion stack overflow message not found"; exit 1; }
+grep -q "LUA_RECURSE_ERR=1" "$LOGFILE8" || { echo "FAIL: Lua recursion error exit status not 1"; exit 1; }
+echo "[PASS] Lua deep recursion error caught without kernel crash"
+
+grep -q "LUA_20MB_ALLOC_OK" "$LOGFILE8" || { echo "FAIL: Lua 20MB allocation failed"; exit 1; }
+echo "[PASS] Lua 20MB allocation and garbage collection verified"
+
+BASELINE_FRAMES_S8=$(grep "sh: pid=" "$LOGFILE8" | head -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+FINAL_FRAMES_S8=$(grep "sh: pid=" "$LOGFILE8" | tail -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+if [ -n "$BASELINE_FRAMES_S8" ] && [ -n "$FINAL_FRAMES_S8" ]; then
+    if [ "$BASELINE_FRAMES_S8" -ne "$FINAL_FRAMES_S8" ]; then
+        echo "FAIL: Session 8 frame leak detected: baseline $BASELINE_FRAMES_S8 vs final $FINAL_FRAMES_S8"
+        exit 1
+    fi
+    echo "[PASS] Session 8: Zero frame leak verified (baseline $BASELINE_FRAMES_S8 == final $FINAL_FRAMES_S8)"
+else
+    echo "FAIL: Session 8: Could not parse free frames from shinfo"
     exit 1
 fi
 
