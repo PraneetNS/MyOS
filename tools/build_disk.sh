@@ -18,6 +18,8 @@ mmd -i "$IMAGE" "::/dev"
 mmd -i "$IMAGE" "::/etc"
 mmd -i "$IMAGE" "::/proc"
 mmd -i "$IMAGE" "::/home"
+mmd -i "$IMAGE" "::/share" || true
+mmd -i "$IMAGE" "::/share/fonts" || true
 
 echo "Setting /etc/timezone to 330..."
 printf "330\n" > /tmp/myos_timezone
@@ -52,6 +54,11 @@ fi
 
 if [ -f "userland/alloc.lua" ]; then
     mcopy -i "$IMAGE" userland/alloc.lua "::/home/alloc.lua"
+fi
+
+if [ -f "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" ]; then
+    echo "Copying DejaVuSans font..."
+    mcopy -i "$IMAGE" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "::/share/fonts/dejavu.ttf"
 fi
 
 echo "Hello from FAT16 on MyOS!" > /tmp/fat_hello.txt

@@ -747,14 +747,18 @@ echo "[TEST] Session 10: Stage 18A poll(), select(), and non-blocking I/O..."
 LOGFILE10=$(mktemp)
 (
     sleep 2
-    printf "shinfo\n"
-    sleep 1
     printf "polltest.elf\n"
     sleep 3
+    printf "gfxtest.elf\n"
+    sleep 4
+    printf "shinfo\n"
+    sleep 1
+    printf "gfxtest.elf\n"
+    sleep 4
     printf "shinfo\n"
     sleep 1
     printf "exit\n"
-) | timeout 25s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10" 2>&1 || true
+) | timeout 45s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE10" > "${LOGFILE10}.tmp" && mv "${LOGFILE10}.tmp" "$LOGFILE10"
 cat "$LOGFILE10"
@@ -763,6 +767,9 @@ echo "[TEST] Asserting Session 10 results..."
 
 grep -q "=== polltest results: 17 passed, 0 failed ===" "$LOGFILE10" || { echo "FAIL: polltest.elf did not pass all tests"; rm -f "$LOGFILE10"; exit 1; }
 echo "[PASS] poll(), select(), and non-blocking I/O (polltest.elf) verified"
+
+grep -q "=== gfxtest results: 29 passed, 0 failed ===" "$LOGFILE10" || { echo "FAIL: gfxtest.elf did not pass all tests"; rm -f "$LOGFILE10"; exit 1; }
+echo "[PASS] libgfx 2D primitives, TTF, BMP, and context (gfxtest.elf) verified"
 
 BASELINE_FRAMES_S10=$(grep "sh: pid=" "$LOGFILE10" | head -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
 FINAL_FRAMES_S10=$(grep "sh: pid=" "$LOGFILE10" | tail -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')

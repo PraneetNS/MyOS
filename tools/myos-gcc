@@ -24,6 +24,7 @@ done
 BASE_FLAGS=(
     -O2 -Wall -fno-pie -fno-stack-protector -static
     -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -D_POSIX_TIMERS
+    -isystem "$ROOT_DIR/userland/libgfx"
     -isystem "$LIBMYOS_INC"
     -isystem "$SYSROOT/include"
 )
@@ -39,8 +40,9 @@ if [ "$IS_LINKING" -eq 1 ]; then
         "${START_OBJS[@]}" \
         "$@" \
         -L"$SYSROOT/lib" \
+        -L"$ROOT_DIR/userland/libgfx" \
         -L"$ROOT_DIR/libmyos" \
-        -Wl,--start-group -lmyos -lc -lm -Wl,--end-group -lgcc
+        -Wl,--start-group -lgfx -lmyos -lc -lm -Wl,--end-group -lgcc
 else
     exec "$CC" "${BASE_FLAGS[@]}" "$@"
 fi
