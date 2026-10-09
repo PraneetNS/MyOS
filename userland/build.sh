@@ -13,6 +13,7 @@ if [ ! -x "$MYOS_GCC" ]; then
 fi
 
 make -C ../libmyos all
+make -C libgfx all
 
 for src in *.c; do
     name="${src%.c}"

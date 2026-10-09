@@ -33,3 +33,14 @@ This document tracks third-party components included in or distributed with MyOS
 ## Newlib
 - **Source**: Red Hat Newlib C Library
 - **License**: Various BSD/MIT-style licenses (see `COPYING.NEWLIB`)
+
+## stb_truetype and stb_image
+- **Source**: Sean Barrett (https://github.com/nothings/stb)
+- **Files**: `userland/libgfx/stb_truetype.h`, `userland/libgfx/stb_image.h`
+- **License**: Dual-licensed: Public Domain (Unlicense) or MIT License
+
+## DejaVu Sans TrueType Font
+- **Source**: DejaVu Fonts project (https://dejavu-fonts.github.io/)
+- **File**: `/share/fonts/dejavu.ttf` on `disk.img`
+- **License**: Free license based on Bitstream Vera Font license and Arev Fonts license
+

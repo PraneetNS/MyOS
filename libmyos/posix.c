@@ -707,6 +707,15 @@ int ftruncate(int fd, off_t length) {
     return 0;
 }
 
+int access(const char *path, int mode) {
+    struct stat st;
+    if (stat(path, &st) < 0) {
+        return -1;
+    }
+    (void) mode;
+    return 0;
+}
+
 int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     int ret = __syscall3(SYS_POLL, (long)fds, (long)nfds, (long)timeout);
     return __check_syscall_err(ret);
