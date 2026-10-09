@@ -50,6 +50,10 @@ if [ -f "userland/demo.lua" ]; then
     mcopy -i "$IMAGE" userland/demo.lua "::/home/demo.lua"
 fi
 
+if [ -f "userland/alloc.lua" ]; then
+    mcopy -i "$IMAGE" userland/alloc.lua "::/home/alloc.lua"
+fi
+
 echo "Hello from FAT16 on MyOS!" > /tmp/fat_hello.txt
 mcopy -i "$IMAGE" /tmp/fat_hello.txt "::/fat.txt"
 rm -f /tmp/fat_hello.txt

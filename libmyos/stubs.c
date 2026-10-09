@@ -172,6 +172,11 @@ int _unlink(const char *file) {
     return __check_syscall_err(ret);
 }
 
+int _rename(const char *oldpath, const char *newpath) {
+    int ret = __syscall2(SYS_RENAME, (long)oldpath, (long)newpath);
+    return __check_syscall_err(ret);
+}
+
 pid_t _fork(void) {
     int ret = __syscall0(SYS_FORK);
     return __check_syscall_err(ret);
@@ -239,6 +244,7 @@ int kill(pid_t pid, int sig) { return _kill(pid, sig); }
 pid_t getpid(void) { return _getpid(); }
 int link(const char *oldname, const char *newname) { return _link(oldname, newname); }
 int unlink(const char *file) { return _unlink(file); }
+int rename(const char *oldpath, const char *newpath) { return _rename(oldpath, newpath); }
 pid_t fork(void) { return _fork(); }
 int execve(const char *name, char *const argv[], char *const envp[]) { return _execve(name, argv, envp); }
 pid_t wait(int *status) { return _wait(status); }

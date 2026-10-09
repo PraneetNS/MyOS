@@ -160,10 +160,6 @@ char *getcwd(char *buf, size_t size) {
     return buf;
 }
 
-int rename(const char *oldpath, const char *newpath) {
-    int ret = __syscall2(SYS_RENAME, (long)oldpath, (long)newpath);
-    return __check_syscall_err(ret);
-}
 
 /* Directory Streams */
 DIR *opendir(const char *name) {
