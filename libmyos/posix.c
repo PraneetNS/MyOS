@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <poll.h>
+#include <sys/select.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -703,4 +705,109 @@ int ftruncate(int fd, off_t length) {
     (void)fd;
     (void)length;
     return 0;
+}
+
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    int ret = __syscall3(SYS_POLL, (long)fds, (long)nfds, (long)timeout);
+    return __check_syscall_err(ret);
+}
+
+int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) {
+    if (nfds < 0 || nfds > FD_SETSIZE) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct pollfd pfds[FD_SETSIZE];
+    int pfd_map[FD_SETSIZE];
+    nfds_t pcount = 0;
+
+    for (int fd = 0; fd < nfds; fd++) {
+        short events = 0;
+        if (readfds && FD_ISSET(fd, readfds)) {
+            events |= POLLIN;
+        }
+        if (writefds && FD_ISSET(fd, writefds)) {
+            events |= POLLOUT;
+        }
+        if (exceptfds && FD_ISSET(fd, exceptfds)) {
+            events |= POLLPRI;
+        }
+        if (events != 0) {
+            pfds[pcount].fd = fd;
+            pfds[pcount].events = events;
+            pfds[pcount].revents = 0;
+            pfd_map[pcount] = fd;
+            pcount++;
+        }
+    }
+
+    int timeout_ms = -1;
+    if (timeout) {
+        if (timeout->tv_sec < 0 || timeout->tv_usec < 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        timeout_ms = timeout->tv_sec * 1000 + (timeout->tv_usec + 999) / 1000;
+    }
+
+    int pret = poll(pfds, pcount, timeout_ms);
+    if (pret < 0) {
+        return -1;
+    }
+
+    if (readfds) FD_ZERO(readfds);
+    if (writefds) FD_ZERO(writefds);
+    if (exceptfds) FD_ZERO(exceptfds);
+
+    int ready_count = 0;
+    for (nfds_t i = 0; i < pcount; i++) {
+        int fd = pfd_map[i];
+        int set_any = 0;
+        if (readfds && (pfds[i].revents & (POLLIN | POLLHUP | POLLERR))) {
+            FD_SET(fd, readfds);
+            set_any = 1;
+        }
+        if (writefds && (pfds[i].revents & (POLLOUT | POLLERR))) {
+            FD_SET(fd, writefds);
+            set_any = 1;
+        }
+        if (exceptfds && (pfds[i].revents & POLLPRI)) {
+            FD_SET(fd, exceptfds);
+            set_any = 1;
+        }
+        if (set_any) {
+            ready_count++;
+        }
+    }
+
+    return ready_count;
+}
+
+int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+            const struct timespec *timeout, const sigset_t *sigmask) {
+    struct timeval tv;
+    struct timeval *tvp = NULL;
+    if (timeout) {
+        tv.tv_sec = timeout->tv_sec;
+        tv.tv_usec = timeout->tv_nsec / 1000;
+        tvp = &tv;
+    }
+
+    sigset_t origmask;
+    if (sigmask) {
+        if (sigprocmask(SIG_SETMASK, sigmask, &origmask) < 0) {
+            return -1;
+        }
+    }
+
+    int ret = select(nfds, readfds, writefds, exceptfds, tvp);
+
+    if (sigmask) {
+        int saved_errno = errno;
+        sigprocmask(SIG_SETMASK, &origmask, NULL);
+        errno = saved_errno;
+    }
+
+    return ret;
 }

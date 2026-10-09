@@ -763,6 +763,12 @@ static int fat16_stat(vnode_t* node, struct stat* st) {
     return 0;
 }
 
+static short fat16_poll(vnode_t* node, short events, void** chan_out) {
+    (void) node;
+    (void) chan_out;
+    return (POLLIN | POLLOUT) & events;
+}
+
 static const struct fs_ops fat16_ops = {
     .lookup   = fat16_lookup,
     .read     = fat16_read,
@@ -775,6 +781,7 @@ static const struct fs_ops fat16_ops = {
     .readdir  = fat16_readdir,
     .truncate = fat16_truncate,
     .stat     = fat16_stat,
+    .poll     = fat16_poll
 };
 
 static vnode_t fat16_root_vnode;

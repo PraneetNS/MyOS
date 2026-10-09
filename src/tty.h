@@ -154,8 +154,9 @@ tty_t* tty_get_global(void);
 int tty_is_canonical(tty_t* tty);
 void tty_input_char(tty_t* tty, char c);
 void tty_input_string(tty_t* tty, const char* s);
-int tty_read(tty_t* tty, char* buf, uint32_t count);
+int tty_read(tty_t* tty, char* buf, uint32_t count, int nonblock);
 int tty_write(tty_t* tty, const char* buf, uint32_t count);
 int tty_ioctl(tty_t* tty, unsigned long req, void* argp);
+short tty_poll(tty_t* tty, short events, void** chan_out);
 
 #endif

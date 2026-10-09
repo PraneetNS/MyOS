@@ -47,9 +47,9 @@ void input_push_mouse_raw(uint8_t buttons, int8_t dx, int8_t dy);
 void input_push_key(uint16_t keycode, int32_t value);
 
 /* Consumer interfaces for devfs */
-int input_read_mouse0(uint8_t *buf, uint32_t count);
-int input_read_kbd0(uint8_t *buf, uint32_t count);
-int input_read_mice(uint8_t *buf, uint32_t count);
+int input_read_mouse0(uint8_t *buf, uint32_t count, int nonblock);
+int input_read_kbd0(uint8_t *buf, uint32_t count, int nonblock);
+int input_read_mice(uint8_t *buf, uint32_t count, int nonblock);
 
 /* Polling checks */
 int input_mouse0_poll(void);

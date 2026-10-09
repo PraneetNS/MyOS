@@ -10,6 +10,8 @@
 #include "timer.h"
 #include "scheduler.h"
 #include "serial.h"
+#include "errno.h"
+#include "signal.h"
 #include <string.h>
 
 #define RING_CAP 256  /* Must be a power of 2 */
@@ -132,14 +134,23 @@ void input_push_key(uint16_t keycode, int32_t value) {
 
 /* --- Read functions --- */
 
-int input_read_mouse0(uint8_t *buf, uint32_t count) {
+int input_read_mouse0(uint8_t *buf, uint32_t count, int nonblock) {
     if (count == 0) return 0;
     uint32_t ev_size = sizeof(struct input_event);
     count = (count / ev_size) * ev_size;
     if (count == 0) return 0;
 
     while (mouse0_head == mouse0_tail) {
+        if (nonblock) {
+            return -EAGAIN;
+        }
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
         scheduler_wait_channel(&g_mouse0_channel_token);
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
     }
 
     uint32_t n = 0;
@@ -152,14 +163,23 @@ int input_read_mouse0(uint8_t *buf, uint32_t count) {
     return (int) n;
 }
 
-int input_read_kbd0(uint8_t *buf, uint32_t count) {
+int input_read_kbd0(uint8_t *buf, uint32_t count, int nonblock) {
     if (count == 0) return 0;
     uint32_t ev_size = sizeof(struct input_event);
     count = (count / ev_size) * ev_size;
     if (count == 0) return 0;
 
     while (kbd0_head == kbd0_tail) {
+        if (nonblock) {
+            return -EAGAIN;
+        }
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
         scheduler_wait_channel(&g_kbd0_channel_token);
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
     }
 
     uint32_t n = 0;
@@ -172,13 +192,22 @@ int input_read_kbd0(uint8_t *buf, uint32_t count) {
     return (int) n;
 }
 
-int input_read_mice(uint8_t *buf, uint32_t count) {
+int input_read_mice(uint8_t *buf, uint32_t count, int nonblock) {
     if (count == 0) return 0;
     count = (count / IMPS2_PACKET_SIZE) * IMPS2_PACKET_SIZE;
     if (count == 0) return 0;
 
     while (mice_head == mice_tail) {
+        if (nonblock) {
+            return -EAGAIN;
+        }
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
         scheduler_wait_channel(&g_mice_channel_token);
+        if (signal_has_deliverable(scheduler_current())) {
+            return -EINTR;
+        }
     }
 
     uint32_t n = 0;

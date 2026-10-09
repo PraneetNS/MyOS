@@ -32,6 +32,7 @@ void wake_waiters_for(int pid);
 /* Stage 14: generic channel sleep/wakeup mechanism for blocked pipes/events */
 void scheduler_wait_channel(void* channel);
 void scheduler_wake_channel(void* channel);
+void scheduler_wait_poll(void);
 
 /* Yield CPU voluntarily to the next ready task */
 void scheduler_yield(void);

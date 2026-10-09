@@ -261,15 +261,37 @@ void scheduler_wait_channel(void* channel) {
     me->wait_channel = channel;
     wait_or_idle(me);
     me->wait_channel = 0;
+    me->num_poll_channels = 0;
+}
+
+void scheduler_wait_poll(void) {
+    process_t* me = current;
+    if (!me) return;
+    me->state = PROC_WAITING;
+    me->wait_channel = 0;
+    wait_or_idle(me);
+    me->wait_channel = 0;
+    me->num_poll_channels = 0;
 }
 
 void scheduler_wake_channel(void* channel) {
     if (!channel) return;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
-        if (p && p->state == PROC_WAITING && p->wait_channel == channel) {
+        if (!p || p->state != PROC_WAITING) continue;
+        if (p->wait_channel == channel) {
             p->state = PROC_READY;
             p->wait_channel = 0;
+            p->num_poll_channels = 0;
+            continue;
+        }
+        for (int c = 0; c < p->num_poll_channels; c++) {
+            if (p->poll_channels[c] == channel) {
+                p->state = PROC_READY;
+                p->wait_channel = 0;
+                p->num_poll_channels = 0;
+                break;
+            }
         }
     }
 }

@@ -377,5 +377,5 @@ void keyboard_install(void) {
 }
 
 int keyboard_read_line(char* out, int maxlen) {
-    return tty_read(global_tty, out, maxlen);
+    return tty_read(global_tty, out, maxlen, 0);
 }

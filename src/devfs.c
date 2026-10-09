@@ -31,13 +31,20 @@ static const char* dev_names[NUM_DEVICES] = {
 static int console_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
     (void) offset;
-    return tty_read(global_tty, (char*) buf, count);
+    int flags = vfs_get_current_flags();
+    int nonblock = (flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
+    return tty_read(global_tty, (char*) buf, count, nonblock);
 }
 
 static int console_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
     (void) vn;
     (void) offset;
     return tty_write(global_tty, (const char*) buf, count);
+}
+
+static short console_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    return tty_poll(global_tty, events, chan_out);
 }
 
 static int null_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
@@ -53,6 +60,12 @@ static int null_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t
     (void) offset;
     (void) buf;
     return (int) count; /* Swallow bytes */
+}
+
+static short null_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    (void) chan_out;
+    return (POLLIN | POLLOUT) & events;
 }
 
 static int zero_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
@@ -71,13 +84,25 @@ static int zero_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t
     return (int) count; /* Swallow bytes */
 }
 
+static short zero_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    (void) chan_out;
+    return (POLLIN | POLLOUT) & events;
+}
+
 static int serial0_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
     (void) offset;
     if (count == 0) return 0;
+    int flags = vfs_get_current_flags();
+    int nonblock = (flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
 
-    while (!serial_received()) {
-        scheduler_yield();
+    if (!serial_received()) {
+        if (nonblock) return -EAGAIN;
+        while (!serial_received()) {
+            if (signal_has_deliverable(scheduler_current())) return -EINTR;
+            scheduler_yield();
+        }
     }
 
     uint32_t n = 0;
@@ -96,6 +121,17 @@ static int serial0_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint3
     return (int) count;
 }
 
+static short serial0_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    (void) chan_out;
+    short revents = 0;
+    if (events & POLLOUT) revents |= POLLOUT;
+    if (events & POLLIN) {
+        if (serial_received()) revents |= POLLIN;
+    }
+    return revents;
+}
+
 static int dev_chr_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
     st->st_ino = (uint32_t) vn;
@@ -110,25 +146,29 @@ static int dev_chr_stat(vnode_t* vn, struct stat* st) {
 static const struct fs_ops console_ops = {
     .read = console_read,
     .write = console_write,
-    .stat = dev_chr_stat
+    .stat = dev_chr_stat,
+    .poll = console_poll
 };
 
 static const struct fs_ops null_ops = {
     .read = null_read,
     .write = null_write,
-    .stat = dev_chr_stat
+    .stat = dev_chr_stat,
+    .poll = null_poll
 };
 
 static const struct fs_ops zero_ops = {
     .read = zero_read,
     .write = zero_write,
-    .stat = dev_chr_stat
+    .stat = dev_chr_stat,
+    .poll = zero_poll
 };
 
 static const struct fs_ops serial0_ops = {
     .read = serial0_read,
     .write = serial0_write,
-    .stat = dev_chr_stat
+    .stat = dev_chr_stat,
+    .poll = serial0_poll
 };
 
 #define FBIOGET_VSCREENINFO 0x4600
@@ -288,12 +328,19 @@ static int fb0_mmap(vnode_t* vn, vma_t* vma) {
     return 0;
 }
 
+static short fb0_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    (void) chan_out;
+    return (POLLIN | POLLOUT) & events;
+}
+
 static const struct fs_ops fb0_ops = {
     .read = fb0_read,
     .write = fb0_write,
     .stat = fb0_stat,
     .ioctl = fb0_ioctl,
-    .mmap = fb0_mmap
+    .mmap = fb0_mmap,
+    .poll = fb0_poll
 };
 
 /* ------------------------------------------------------------------ */
@@ -319,12 +366,28 @@ static int streq(const char* a, const char* b) {
 static int mice_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
     (void) offset;
-    return input_read_mice(buf, count);
+    int flags = vfs_get_current_flags();
+    int nonblock = (flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
+    return input_read_mice(buf, count, nonblock);
 }
 
 static int mice_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
     (void) vn; (void) offset; (void) buf;
     return (int) count; /* silently ignore writes like Linux does */
+}
+
+static short mice_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    short revents = 0;
+    if (events & POLLOUT) revents |= POLLOUT;
+    if (events & POLLIN) {
+        if (input_mice_poll()) {
+            revents |= POLLIN;
+        } else if (chan_out && !*chan_out) {
+            *chan_out = &g_mice_channel_token;
+        }
+    }
+    return revents;
 }
 
 static int mice_stat(vnode_t* vn, struct stat* st) {
@@ -341,7 +404,8 @@ static int mice_stat(vnode_t* vn, struct stat* st) {
 static const struct fs_ops mice_ops = {
     .read  = mice_read,
     .write = mice_write,
-    .stat  = mice_stat
+    .stat  = mice_stat,
+    .poll  = mice_poll
 };
 
 /* ------------------------------------------------------------------ */
@@ -350,13 +414,30 @@ static const struct fs_ops mice_ops = {
 
 static int mouse0_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn; (void) offset;
-    return input_read_mouse0(buf, count);
+    int flags = vfs_get_current_flags();
+    int nonblock = (flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
+    return input_read_mouse0(buf, count, nonblock);
+}
+
+static short mouse0_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    short revents = 0;
+    if (events & POLLOUT) revents |= POLLOUT;
+    if (events & POLLIN) {
+        if (input_mouse0_poll()) {
+            revents |= POLLIN;
+        } else if (chan_out && !*chan_out) {
+            *chan_out = &g_mouse0_channel_token;
+        }
+    }
+    return revents;
 }
 
 static const struct fs_ops mouse0_ops = {
     .read  = mouse0_read,
     .write = mice_write,
-    .stat  = mice_stat
+    .stat  = mice_stat,
+    .poll  = mouse0_poll
 };
 
 /* ------------------------------------------------------------------ */
@@ -367,10 +448,26 @@ static const struct fs_ops mouse0_ops = {
 
 static int kbd0_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn; (void) offset;
-    return input_read_kbd0(buf, count);
+    int flags = vfs_get_current_flags();
+    int nonblock = (flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
+    return input_read_kbd0(buf, count, nonblock);
 }
 
-static int kbd0_ioctl(vnode_t* vn, uint32_t cmd, void* argp) {
+static short kbd0_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn;
+    short revents = 0;
+    if (events & POLLOUT) revents |= POLLOUT;
+    if (events & POLLIN) {
+        if (input_kbd0_poll()) {
+            revents |= POLLIN;
+        } else if (chan_out && !*chan_out) {
+            *chan_out = &g_kbd0_channel_token;
+        }
+    }
+    return revents;
+}
+
+static int kbd0_ioctl(vnode_t* vn, unsigned long cmd, void* argp) {
     (void) vn;
     if (cmd == KBD_IOC_GETMODS) {
         if (!argp) return -EFAULT;
@@ -386,7 +483,8 @@ static const struct fs_ops kbd0_ops = {
     .read  = kbd0_read,
     .write = mice_write,
     .ioctl = kbd0_ioctl,
-    .stat  = mice_stat
+    .stat  = mice_stat,
+    .poll  = kbd0_poll
 };
 
 /* ------------------------------------------------------------------ */

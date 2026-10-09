@@ -54,6 +54,7 @@
 #define SYS_CLOCK_GETTIME 74
 #define SYS_NANOSLEEP    75
 #define SYS_NICE         77
+#define SYS_POLL         168
 
 static inline int __syscall0(int num) {
     int ret;

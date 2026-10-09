@@ -25,6 +25,8 @@ typedef enum {
 #define O_CREAT     0x0040
 #define O_TRUNC     0x0200
 #define O_APPEND    0x0400
+#define O_NONBLOCK  0x4000
+#define O_NONBLOCK_LINUX 0x0800
 #define O_CLOEXEC   0x80000
 
 #define FD_CLOEXEC  1
@@ -91,6 +93,19 @@ struct dirent {
 typedef struct vnode vnode_t;
 typedef struct vma vma_t;
 
+#define POLLIN      0x0001
+#define POLLPRI     0x0002
+#define POLLOUT     0x0004
+#define POLLERR     0x0008
+#define POLLHUP     0x0010
+#define POLLNVAL    0x0020
+
+struct pollfd {
+    int   fd;
+    short events;
+    short revents;
+};
+
 struct fs_ops {
     int (*lookup)(struct vnode* dir, const char* name, struct vnode** out);
     int (*read)(struct vnode* node, uint32_t offset, uint8_t* buf, uint32_t count);
@@ -105,6 +120,7 @@ struct fs_ops {
     int (*stat)(struct vnode* node, struct stat* st);
     int (*mmap)(struct vnode* node, struct vma* vma);
     int (*ioctl)(struct vnode* node, unsigned long req, void* argp);
+    short (*poll)(struct vnode* node, short events, void** chan_out);
 };
 
 typedef struct vnode {
@@ -158,5 +174,7 @@ int vfs_lseek(open_file_t* of, int offset, int whence);
 int vfs_readdir(open_file_t* of, struct dirent* entry);
 int vfs_stat(vnode_t* vn, struct stat* st);
 void vfs_path_canonical(const char* path, const char* cwd, char* out, int max);
+short vfs_poll(open_file_t* of, short events, void** chan_out);
+int vfs_get_current_flags(void);
 
 #endif
