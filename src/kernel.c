@@ -3,6 +3,8 @@
 #include "idt.h"
 #include "timer.h"
 #include "keyboard.h"
+#include "mouse.h"
+#include "input.h"
 #include "pmm.h"
 #include "paging.h"
 #include "kheap.h"
@@ -73,6 +75,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     keyboard_install();
     kprintf("[ok] Keyboard driver installed\n");
+
+    input_init();
+    mouse_install();
+    kprintf("[ok] PS/2 mouse driver installed (IRQ12)\n");
 
     serial_install_irq();
     kprintf("[ok] Serial COM1 IRQ installed\n");

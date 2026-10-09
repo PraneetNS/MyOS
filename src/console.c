@@ -437,6 +437,12 @@ void console_restore_text_mode(void) {
     g_kb_mode = K_XLATE;
 }
 
+void console_on_process_exit(int pid) {
+    if (g_kd_mode == KD_GRAPHICS && (g_graphics_pid == 0 || g_graphics_pid == pid)) {
+        console_restore_text_mode();
+    }
+}
+
 void console_repaint(void) {
     if (g_kd_mode != KD_TEXT) return;
 

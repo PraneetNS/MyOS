@@ -17,5 +17,6 @@ uint16_t pmm_refcount(uint32_t phys_addr);
 uint32_t pmm_free_count(void);
 uint32_t pmm_free_frame_count(void); /* backwards compatibility */
 uint32_t pmm_total_count(void);
+int      pmm_is_ram(uint32_t phys_addr);
 
 #endif

@@ -12,6 +12,8 @@
 #define VMA_FLAG_FILE    0x02
 #define VMA_FLAG_STACK   0x04
 #define VMA_FLAG_HEAP    0x08
+#define VMA_FLAG_DEVICE  0x10
+#define VMA_FLAG_SHARED  0x20
 
 struct vnode;
 struct process;

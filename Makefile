@@ -3,7 +3,7 @@ AS      = as
 LD      = ld
 
 CFLAGS  = -m32 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic \
-          -fno-strict-aliasing -O2 -Wall -Wextra -nostdlib
+          -fno-strict-aliasing -O2 -Wall -Wextra -nostdlib -MMD -MP
 ASFLAGS = --32
 LDFLAGS = -m elf_i386 -T boot/linker.ld -nostdlib
 
@@ -14,12 +14,16 @@ OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o boot/paging_asm.
        src/ata.o src/fs.o src/elf.o src/shell.o src/vmm.o src/vma.o \
        src/process.o src/scheduler.o src/pipe.o src/serial.o src/bcache.o src/vfs.o src/fat16.o \
        src/tty.o src/devfs.o src/signal.o src/rtc.o src/procfs.o src/fpu.o \
-       src/ioremap.o src/fb.o
+       src/ioremap.o src/fb.o src/mouse.o src/input.o
+
+DEPS = $(OBJS:.o=.d)
 
 KERNEL_BIN = isodir/boot/myos.bin
 ISO        = myos.iso
 
 all: $(ISO)
+
+-include $(DEPS)
 
 boot/%.o: boot/%.s
 	$(AS) $(ASFLAGS) $< -o $@
@@ -48,7 +52,7 @@ disk.img:
 	bash tools/build_disk.sh
 
 clean:
-	rm -f boot/*.o src/*.o $(KERNEL_BIN) $(ISO)
+	rm -f boot/*.o src/*.o boot/*.d src/*.d $(KERNEL_BIN) $(ISO)
 	rm -rf isodir
 
 .PHONY: all run test clean

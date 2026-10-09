@@ -126,7 +126,12 @@ static void page_fault_handler(struct registers* regs) {
         }
     }
 
-    /* 2. Unhandled / Fatal page fault: log and terminate process */
+    if (in_uaccess) {
+        regs->eip = (uint32_t) copy_user_fault;
+        return;
+    }
+
+    /* 3. Unhandled / Fatal page fault: log and terminate process */
     kprintf("\n*** PAGE FAULT at 0x%08x (err=0x%08x, %s, %s, eip=0x%08x) ***\n",
             faulting_addr, regs->err_code,
             (regs->err_code & 0x4) ? "user-mode" : "kernel-mode",
@@ -151,11 +156,6 @@ static void page_fault_handler(struct registers* regs) {
             sig_send(proc, SIGSEGV);
         }
         signal_handle_pending(regs);
-        return;
-    }
-
-    if (in_uaccess) {
-        regs->eip = (uint32_t) copy_user_fault;
         return;
     }
 

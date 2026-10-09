@@ -58,6 +58,8 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 1
     printf "badwrite.elf\n"
     sleep 1
+    printf "fbtest.elf\n"
+    sleep 2
     printf "ttytest\n"
     sleep 2
     printf "sigtest\n"
@@ -79,6 +81,9 @@ echo "[PASS] 'BOOT OK' verified"
 
 grep -q "\[fb\] 1024x768x32" "$LOGFILE1" || { echo "FAIL: Framebuffer boot log not found"; exit 1; }
 echo "[PASS] Framebuffer boot log verified"
+
+grep -q "\[mouse\] PS/2 mouse ready" "$LOGFILE1" || { echo "FAIL: PS/2 mouse init log not found"; exit 1; }
+echo "[PASS] PS/2 mouse driver initialised (IRQ12)"
 
 grep -q "MyOS Userland Shell (sh)" "$LOGFILE1" || { echo "FAIL: Shell welcome not found"; exit 1; }
 echo "[PASS] Shell welcome verified"
@@ -146,6 +151,9 @@ echo "[PASS] heaptest.elf verified"
 
 grep -q "PAGE FAULT" "$LOGFILE1" || { echo "FAIL: badwrite page fault not caught"; exit 1; }
 echo "[PASS] badwrite.elf protection verified"
+
+grep -q "\[fbtest\] PASS" "$LOGFILE1" || { echo "FAIL: fbtest failed"; exit 1; }
+echo "[PASS] Framebuffer /dev/fb0 and mmap fork test verified"
 
 grep -q "TTYTEST_PASSED" "$LOGFILE1" || { echo "FAIL: ttytest failed"; exit 1; }
 echo "[PASS] ttytest (isatty, devfs nodes, termios, winsize, raw mode) verified"
@@ -672,6 +680,67 @@ else
     echo "FAIL: Session 8: Could not parse free frames from shinfo"
     exit 1
 fi
+
+echo "[TEST] Session 9: Stage 18A /dev/fb0 mmap, mouse driver, and keyboard input layer..."
+
+LOGFILE9=$(mktemp)
+(
+    sleep 2
+    printf "fbtest.elf\n"
+    sleep 3
+    printf "mousetest.elf\n"
+    sleep 3
+    printf "kbdtest.elf\n"
+    sleep 3
+    printf "ls /dev/input\n"
+    sleep 1
+    printf "exit\n"
+) | timeout 25s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE9" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE9" > "${LOGFILE9}.tmp" && mv "${LOGFILE9}.tmp" "$LOGFILE9"
+cat "$LOGFILE9"
+
+echo "[TEST] Asserting Session 9 results..."
+
+grep -q "\[fbtest\] PASS" "$LOGFILE9" || { echo "FAIL: fbtest.elf failed"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] /dev/fb0 and device mmap (fbtest.elf) verified"
+
+grep -q "\[mouse\] PS/2 mouse ready" "$LOGFILE9" || { echo "FAIL: PS/2 mouse driver did not init"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] PS/2 mouse driver initialised"
+
+grep -q "\[input\] input event layer ready" "$LOGFILE9" || { echo "FAIL: input event layer did not init"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] Input event ring buffer initialised"
+
+grep -q "\[mousetest\] PASS: /dev/input is a directory" "$LOGFILE9" || { echo "FAIL: /dev/input not a directory"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] /dev/input is a directory"
+
+grep -q "\[mousetest\] PASS: 'mice' found in /dev/input" "$LOGFILE9" || { echo "FAIL: 'mice' not found in /dev/input listing"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] 'mice' entry present in /dev/input directory"
+
+grep -q "\[mousetest\] PASS: /dev/input/mice opened" "$LOGFILE9" || { echo "FAIL: /dev/input/mice could not be opened"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] /dev/input/mice opened successfully"
+
+grep -q "\[mousetest\] PASS: /dev/input/mouse0 is a character device" "$LOGFILE9" || { echo "FAIL: /dev/input/mouse0 is not a char device"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] /dev/input/mouse0 is a character device"
+
+grep -q "\[mousetest\] ALL MOUSE TESTS PASSED" "$LOGFILE9" || { echo "FAIL: mousetest did not complete"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] mousetest.elf all tests passed"
+
+grep -q "\[kbdtest\] PASS: /dev/input/kbd0 opened" "$LOGFILE9" || { echo "FAIL: /dev/input/kbd0 could not be opened"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] /dev/input/kbd0 opened successfully"
+
+grep -q "\[kbdtest\] PASS: KDSKBMODE set K_OFF verified" "$LOGFILE9" || { echo "FAIL: KDSKBMODE K_OFF failed"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] Console KDSKBMODE (K_OFF and K_XLATE) verified"
+
+grep -q "\[kbdtest\] ALL KEYBOARD TESTS PASSED" "$LOGFILE9" || { echo "FAIL: kbdtest did not complete"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] kbdtest.elf all tests passed"
+
+grep -q "mice" "$LOGFILE9" || { echo "FAIL: 'mice' not shown in ls /dev/input"; rm -f "$LOGFILE9"; exit 1; }
+grep -q "mouse0" "$LOGFILE9" || { echo "FAIL: 'mouse0' not shown in ls /dev/input"; rm -f "$LOGFILE9"; exit 1; }
+grep -q "kbd0" "$LOGFILE9" || { echo "FAIL: 'kbd0' not shown in ls /dev/input"; rm -f "$LOGFILE9"; exit 1; }
+echo "[PASS] ls /dev/input shows mice, mouse0, and kbd0"
+
+rm -f "$LOGFILE9"
 
 echo "==============================="
 echo "ALL TESTS PASSED!"

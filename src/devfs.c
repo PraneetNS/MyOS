@@ -3,15 +3,29 @@
 #include "serial.h"
 #include "errno.h"
 #include "scheduler.h"
+#include "fb.h"
+#include "vma.h"
+#include "uaccess.h"
+#include "paging.h"
+#include "vmm.h"
+#include "input.h"
+#include "keyboard.h"
+#include <string.h>
 
-#define NUM_DEVICES 5
+/* Flat device count (console, tty, null, zero, serial0, fb0, input_dir, mice, mouse0, kbd0) */
+#define NUM_DEVICES 10
 
 static const char* dev_names[NUM_DEVICES] = {
     "console",
     "tty",
     "null",
     "zero",
-    "serial0"
+    "serial0",
+    "fb0",
+    "input",   /* index 6: /dev/input  (directory) */
+    "mice",    /* index 7: /dev/input/mice */
+    "mouse0",  /* index 8: /dev/input/mouse0 */
+    "kbd0"     /* index 9: /dev/input/kbd0 */
 };
 
 static int console_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
@@ -117,13 +131,178 @@ static const struct fs_ops serial0_ops = {
     .stat = dev_chr_stat
 };
 
-static vnode_t dev_nodes[NUM_DEVICES];
-static vnode_t dev_root_node;
+#define FBIOGET_VSCREENINFO 0x4600
+#define FBIOPUT_VSCREENINFO 0x4601
+#define FBIOGET_FSCREENINFO 0x4602
 
-int devfs_is_tty_vnode(vnode_t* vn) {
-    if (!vn) return 0;
-    return (vn == &dev_nodes[0] || vn == &dev_nodes[1]);
+struct fb_bitfield {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t msb_right;
+};
+
+struct fb_var_screeninfo {
+    uint32_t xres;
+    uint32_t yres;
+    uint32_t xres_virtual;
+    uint32_t yres_virtual;
+    uint32_t xoffset;
+    uint32_t yoffset;
+    uint32_t bits_per_pixel;
+    uint32_t grayscale;
+    struct fb_bitfield red;
+    struct fb_bitfield green;
+    struct fb_bitfield blue;
+    struct fb_bitfield transp;
+    uint32_t nonstd;
+    uint32_t activate;
+    uint32_t height;
+    uint32_t width;
+    uint32_t accel_flags;
+    uint32_t line_length;
+    uint32_t reserved[6];
+};
+
+struct fb_fix_screeninfo {
+    char id[16];
+    uint32_t smem_start;
+    uint32_t smem_len;
+    uint32_t type;
+    uint32_t type_aux;
+    uint32_t visual;
+    uint16_t xpanstep;
+    uint16_t ypanstep;
+    uint16_t ywrapstep;
+    uint32_t line_length;
+    uint32_t mmio_start;
+    uint32_t mmio_len;
+    uint32_t accel;
+    uint16_t capabilities;
+    uint16_t reserved[2];
+};
+
+static int fb0_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    if (!fb_is_present() || !g_fb_info.virt_addr) return -ENODEV;
+    uint32_t smem_len = g_fb_info.pitch * g_fb_info.height;
+    if (offset >= smem_len) return 0;
+    if (offset + count > smem_len) count = smem_len - offset;
+    memcpy(buf, (const uint8_t*)g_fb_info.virt_addr + offset, count);
+    return (int) count;
 }
+
+static int fb0_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
+    (void) vn;
+    if (!fb_is_present() || !g_fb_info.virt_addr) return -ENODEV;
+    uint32_t smem_len = g_fb_info.pitch * g_fb_info.height;
+    if (offset >= smem_len) return 0;
+    if (offset + count > smem_len) count = smem_len - offset;
+    memcpy((uint8_t*)g_fb_info.virt_addr + offset, buf, count);
+    return (int) count;
+}
+
+static int fb0_stat(vnode_t* vn, struct stat* st) {
+    st->st_dev = 0;
+    st->st_ino = (uint32_t) vn;
+    st->st_mode = S_IFCHR | 0666;
+    st->st_nlink = 1;
+    st->st_size = fb_is_present() ? (g_fb_info.pitch * g_fb_info.height) : 0;
+    st->st_blksize = 4096;
+    st->st_blocks = (st->st_size + 511) / 512;
+    return 0;
+}
+
+static int fb0_ioctl(vnode_t* vn, unsigned long req, void* argp) {
+    (void) vn;
+    if (!fb_is_present()) return -ENODEV;
+    if (!argp) return -EFAULT;
+
+    switch (req) {
+        case FBIOGET_VSCREENINFO: {
+            struct fb_var_screeninfo vi;
+            memset(&vi, 0, sizeof(vi));
+            vi.xres = g_fb_info.width;
+            vi.yres = g_fb_info.height;
+            vi.xres_virtual = g_fb_info.width;
+            vi.yres_virtual = g_fb_info.height;
+            vi.bits_per_pixel = g_fb_info.bpp;
+            vi.line_length = g_fb_info.pitch;
+
+            vi.red.offset = g_fb_info.red_pos;
+            vi.red.length = g_fb_info.red_mask;
+            vi.green.offset = g_fb_info.green_pos;
+            vi.green.length = g_fb_info.green_mask;
+            vi.blue.offset = g_fb_info.blue_pos;
+            vi.blue.length = g_fb_info.blue_mask;
+
+            if (copy_to_user(argp, &vi, sizeof(vi)) != 0) return -EFAULT;
+            return 0;
+        }
+        case FBIOGET_FSCREENINFO: {
+            struct fb_fix_screeninfo fi;
+            memset(&fi, 0, sizeof(fi));
+            strncpy(fi.id, "myos_fb0", 16);
+            fi.smem_start = g_fb_info.phys_addr;
+            fi.smem_len = g_fb_info.pitch * g_fb_info.height;
+            fi.line_length = g_fb_info.pitch;
+
+            if (copy_to_user(argp, &fi, sizeof(fi)) != 0) return -EFAULT;
+            return 0;
+        }
+        default:
+            return -EINVAL;
+    }
+}
+
+static int fb0_mmap(vnode_t* vn, vma_t* vma) {
+    (void) vn;
+    if (!fb_is_present()) return -ENODEV;
+    process_t* me = scheduler_current();
+    if (!me) return -ESRCH;
+
+    uint32_t smem_len = g_fb_info.pitch * g_fb_info.height;
+    if (vma->offset >= smem_len) return -EINVAL;
+
+    uint32_t size = vma->end - vma->start;
+    uint32_t num_pages = (size + 4095) / 4096;
+
+    uint32_t cache_bits = 0;
+    if (g_fb_info.is_wc) {
+        cache_bits = 0x80u; /* PAT WC */
+    } else {
+        cache_bits = 0x10u; /* PCD Uncached */
+    }
+
+    uint32_t pte_flags = PAGE_PRESENT | PAGE_USER | cache_bits;
+    if (vma->prot & VMA_PROT_WRITE) pte_flags |= PAGE_WRITE;
+
+    for (uint32_t i = 0; i < num_pages; i++) {
+        uint32_t page_va = vma->start + i * 4096;
+        uint32_t page_pa = g_fb_info.phys_addr + vma->offset + i * 4096;
+        if (vmm_map_page(&me->as, page_va, page_pa, pte_flags) != 0) {
+            return -ENOMEM;
+        }
+        asm volatile ("invlpg (%0)" :: "r"(page_va) : "memory");
+    }
+
+    return 0;
+}
+
+static const struct fs_ops fb0_ops = {
+    .read = fb0_read,
+    .write = fb0_write,
+    .stat = fb0_stat,
+    .ioctl = fb0_ioctl,
+    .mmap = fb0_mmap
+};
+
+/* ------------------------------------------------------------------ */
+/* Global device node arrays (declared early so all fs_ops can see them) */
+/* ------------------------------------------------------------------ */
+
+vnode_t dev_nodes[NUM_DEVICES];
+vnode_t dev_root_node;
+static vnode_t input_dir_node;
 
 static int streq(const char* a, const char* b) {
     while (*a && *b) {
@@ -131,6 +310,172 @@ static int streq(const char* a, const char* b) {
         a++; b++;
     }
     return *a == *b;
+}
+
+/* ------------------------------------------------------------------ */
+/* /dev/input/mice                                                      */
+/* ------------------------------------------------------------------ */
+
+static int mice_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    (void) offset;
+    return input_read_mice(buf, count);
+}
+
+static int mice_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
+    (void) vn; (void) offset; (void) buf;
+    return (int) count; /* silently ignore writes like Linux does */
+}
+
+static int mice_stat(vnode_t* vn, struct stat* st) {
+    st->st_dev   = 0;
+    st->st_ino   = (uint32_t) vn;
+    st->st_mode  = S_IFCHR | 0666;
+    st->st_nlink = 1;
+    st->st_size  = 0;
+    st->st_blksize = 3;
+    st->st_blocks  = 0;
+    return 0;
+}
+
+static const struct fs_ops mice_ops = {
+    .read  = mice_read,
+    .write = mice_write,
+    .stat  = mice_stat
+};
+
+/* ------------------------------------------------------------------ */
+/* /dev/input/mouse0                                                   */
+/* ------------------------------------------------------------------ */
+
+static int mouse0_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn; (void) offset;
+    return input_read_mouse0(buf, count);
+}
+
+static const struct fs_ops mouse0_ops = {
+    .read  = mouse0_read,
+    .write = mice_write,
+    .stat  = mice_stat
+};
+
+/* ------------------------------------------------------------------ */
+/* /dev/input/kbd0                                                     */
+/* ------------------------------------------------------------------ */
+
+#define KBD_IOC_GETMODS 0x4B60
+
+static int kbd0_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn; (void) offset;
+    return input_read_kbd0(buf, count);
+}
+
+static int kbd0_ioctl(vnode_t* vn, uint32_t cmd, void* argp) {
+    (void) vn;
+    if (cmd == KBD_IOC_GETMODS) {
+        if (!argp) return -EFAULT;
+        uint32_t mods = keyboard_get_modifiers();
+        if (copy_to_user(argp, &mods, sizeof(uint32_t)) != 0)
+            return -EFAULT;
+        return 0;
+    }
+    return -EINVAL;
+}
+
+static const struct fs_ops kbd0_ops = {
+    .read  = kbd0_read,
+    .write = mice_write,
+    .ioctl = kbd0_ioctl,
+    .stat  = mice_stat
+};
+
+/* ------------------------------------------------------------------ */
+/* /dev/input  directory node                                           */
+/* ------------------------------------------------------------------ */
+
+static int input_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    (void) dir;
+    if (!name || !out) return -EINVAL;
+    if (name[0] == '.' && name[1] == '\0') {
+        *out = &input_dir_node;
+        vnode_ref(&input_dir_node);
+        return 0;
+    }
+    if (name[0] == '.' && name[1] == '.' && name[2] == '\0') {
+        *out = &dev_root_node;
+        vnode_ref(&dev_root_node);
+        return 0;
+    }
+    if (streq(name, "mice")) {
+        *out = &dev_nodes[7];
+        vnode_ref(&dev_nodes[7]);
+        return 0;
+    }
+    if (streq(name, "mouse0")) {
+        *out = &dev_nodes[8];
+        vnode_ref(&dev_nodes[8]);
+        return 0;
+    }
+    if (streq(name, "kbd0")) {
+        *out = &dev_nodes[9];
+        vnode_ref(&dev_nodes[9]);
+        return 0;
+    }
+    return -ENOENT;
+}
+
+static int input_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (!entry) return -EINVAL;
+    if (index == 0) {
+        entry->d_ino  = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino  = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+    if (index == 2) {
+        entry->d_ino  = 20; entry->d_type = 1; entry->d_size = 0;
+        entry->d_name[0] = 'm'; entry->d_name[1] = 'i'; entry->d_name[2] = 'c';
+        entry->d_name[3] = 'e'; entry->d_name[4] = '\0';
+        return 1;
+    }
+    if (index == 3) {
+        entry->d_ino  = 21; entry->d_type = 1; entry->d_size = 0;
+        strcpy(entry->d_name, "mouse0");
+        return 1;
+    }
+    if (index == 4) {
+        entry->d_ino  = 22; entry->d_type = 1; entry->d_size = 0;
+        strcpy(entry->d_name, "kbd0");
+        return 1;
+    }
+    return 0;
+}
+
+static int input_dir_stat(vnode_t* vn, struct stat* st) {
+    st->st_dev  = 0;
+    st->st_ino  = (uint32_t) vn;
+    st->st_mode = S_IFDIR | 0755;
+    st->st_nlink= 2;
+    st->st_size = 0;
+    st->st_blksize = 512;
+    st->st_blocks  = 0;
+    return 0;
+}
+
+static const struct fs_ops input_dir_ops = {
+    .lookup  = input_dir_lookup,
+    .readdir = input_dir_readdir,
+    .stat    = input_dir_stat
+};
+
+int devfs_is_tty_vnode(vnode_t* vn) {
+    if (!vn) return 0;
+    return (vn == &dev_nodes[0] || vn == &dev_nodes[1]);
 }
 
 static int devfs_lookup(vnode_t* dir, const char* name, vnode_t** out) {
@@ -151,7 +496,16 @@ static int devfs_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         return 0;
     }
 
-    for (int i = 0; i < NUM_DEVICES; i++) {
+    /* "input" resolves to the /dev/input directory node, not to dev_nodes[6] */
+    if (streq(name, "input")) {
+        *out = &input_dir_node;
+        vnode_ref(&input_dir_node);
+        return 0;
+    }
+
+    /* Skip index 6 ("input" dir) and index 7 ("mice") from the flat /dev listing;
+       mice is only accessible via /dev/input/mice */
+    for (int i = 0; i < 6; i++) {
         if (streq(name, dev_names[i])) {
             *out = &dev_nodes[i];
             vnode_ref(&dev_nodes[i]);
@@ -180,10 +534,12 @@ static int devfs_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
         return 1;
     }
 
+    /* Expose: console, tty, null, zero, serial0, fb0, input (dir) */
+    /* We show dev_names[0..5] as char devices, dev_names[6] as a directory */
     int dev_idx = (int) index - 2;
-    if (dev_idx >= 0 && dev_idx < NUM_DEVICES) {
-        entry->d_ino = 10 + dev_idx;
-        entry->d_type = 1; /* regular/char device */
+    if (dev_idx >= 0 && dev_idx < 7) {   /* 0..5 = char devs, 6 = input dir */
+        entry->d_ino  = 10 + dev_idx;
+        entry->d_type = (dev_idx == 6) ? 2 : 1;
         entry->d_size = 0;
         int k = 0;
         while (dev_names[dev_idx][k]) {
@@ -261,6 +617,54 @@ void devfs_init(void) {
     dev_nodes[4].ops = &serial0_ops;
     dev_nodes[4].refcount = 1000;
     dev_nodes[4].parent = &dev_root_node;
+
+    /* 5: fb0 */
+    dev_nodes[5].type = VNODE_FILE;
+    dev_nodes[5].size = fb_is_present() ? (g_fb_info.pitch * g_fb_info.height) : 0;
+    dev_nodes[5].fs_data = 0;
+    dev_nodes[5].ops = &fb0_ops;
+    dev_nodes[5].refcount = 1000;
+    dev_nodes[5].parent = &dev_root_node;
+
+    /* 6: input directory (placeholder in flat array; real node = input_dir_node) */
+    dev_nodes[6].type     = VNODE_DIR;
+    dev_nodes[6].size     = 0;
+    dev_nodes[6].fs_data  = 0;
+    dev_nodes[6].ops      = &input_dir_ops;
+    dev_nodes[6].refcount = 1000;
+    dev_nodes[6].parent   = &dev_root_node;
+
+    /* 7: /dev/input/mice */
+    dev_nodes[7].type     = VNODE_CONSOLE;
+    dev_nodes[7].size     = 0;
+    dev_nodes[7].fs_data  = 0;
+    dev_nodes[7].ops      = &mice_ops;
+    dev_nodes[7].refcount = 1000;
+    dev_nodes[7].parent   = &input_dir_node;
+
+    /* 8: /dev/input/mouse0 */
+    dev_nodes[8].type     = VNODE_CONSOLE;
+    dev_nodes[8].size     = 0;
+    dev_nodes[8].fs_data  = 0;
+    dev_nodes[8].ops      = &mouse0_ops;
+    dev_nodes[8].refcount = 1000;
+    dev_nodes[8].parent   = &input_dir_node;
+
+    /* 9: /dev/input/kbd0 */
+    dev_nodes[9].type     = VNODE_CONSOLE;
+    dev_nodes[9].size     = 0;
+    dev_nodes[9].fs_data  = 0;
+    dev_nodes[9].ops      = &kbd0_ops;
+    dev_nodes[9].refcount = 1000;
+    dev_nodes[9].parent   = &input_dir_node;
+
+    /* /dev/input directory node */
+    input_dir_node.type     = VNODE_DIR;
+    input_dir_node.size     = 0;
+    input_dir_node.fs_data  = 0;
+    input_dir_node.ops      = &input_dir_ops;
+    input_dir_node.refcount = 1000;
+    input_dir_node.parent   = &dev_root_node;
 }
 
 vnode_t* devfs_get_root(void) {

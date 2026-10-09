@@ -6,4 +6,5 @@ tools/toolchain/build/
 *.bin
 *.iso
 *.o
+*.d
 build/
