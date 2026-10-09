@@ -88,7 +88,8 @@ struct dirent {
     uint32_t d_size;
 };
 
-struct vnode;
+typedef struct vnode vnode_t;
+typedef struct vma vma_t;
 
 struct fs_ops {
     int (*lookup)(struct vnode* dir, const char* name, struct vnode** out);
@@ -102,6 +103,8 @@ struct fs_ops {
     int (*readdir)(struct vnode* dir, uint32_t index, struct dirent* entry);
     int (*truncate)(struct vnode* node, uint32_t length);
     int (*stat)(struct vnode* node, struct stat* st);
+    int (*mmap)(struct vnode* node, struct vma* vma);
+    int (*ioctl)(struct vnode* node, unsigned long req, void* argp);
 };
 
 typedef struct vnode {

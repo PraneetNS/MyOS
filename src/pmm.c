@@ -262,3 +262,8 @@ uint32_t pmm_free_frame_count(void) {
 uint32_t pmm_total_count(void) {
     return total_usable_frames;
 }
+
+int pmm_is_ram(uint32_t phys_addr) {
+    uint32_t frame = phys_addr / FRAME_SIZE;
+    return (frame < MAX_FRAMES && frame <= highest_frame);
+}

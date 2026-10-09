@@ -74,7 +74,9 @@ void vmm_unmap_user_page(address_space_t* as, uint32_t vaddr) {
     if (table[table_index] & PAGE_PRESENT) {
         uint32_t frame_phys = table[table_index] & ~0xFFFu;
         table[table_index] = 0;
-        pmm_unref(frame_phys);
+        if (pmm_is_ram(frame_phys)) {
+            pmm_unref(frame_phys);
+        }
         asm volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
 
         /* Check if page table is now empty */
@@ -106,7 +108,9 @@ void vmm_destroy_address_space(address_space_t* as) {
             uint32_t page_entry = table[table_index];
             if (page_entry & PAGE_PRESENT) {
                 uint32_t frame_phys = page_entry & ~0xFFFu;
-                pmm_unref(frame_phys);
+                if (pmm_is_ram(frame_phys)) {
+                    pmm_unref(frame_phys);
+                }
             }
         }
         as->directory[dir_index] = 0;
@@ -132,23 +136,29 @@ int vmm_clone_user_pages(address_space_t* dst, address_space_t* src) {
 
             uint32_t frame_phys = page_entry & ~0xFFFu;
             uint32_t flags = page_entry & 0xFFFu;
-
-            /* If the page was writable, clear write bit and set COW bit in both */
-            if (flags & PAGE_WRITE) {
-                flags &= ~PAGE_WRITE;
-                flags |= PTE_COW;
-                table[table_index] = frame_phys | flags;
-            }
-
             uint32_t vaddr = (dir_index << 22) | (table_index << 12);
 
-            /* Map into destination with identical flags (read-only + COW) */
-            if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
-                return -1;
-            }
+            if (pmm_is_ram(frame_phys)) {
+                /* If the page was writable, clear write bit and set COW bit in both */
+                if (flags & PAGE_WRITE) {
+                    flags &= ~PAGE_WRITE;
+                    flags |= PTE_COW;
+                    table[table_index] = frame_phys | flags;
+                }
 
-            /* Increment reference count for shared frame */
-            pmm_ref(frame_phys);
+                /* Map into destination with identical flags (read-only + COW) */
+                if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
+                    return -1;
+                }
+
+                /* Increment reference count for shared frame */
+                pmm_ref(frame_phys);
+            } else {
+                /* Device page: never COW, shared directly between processes, no refcounting */
+                if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
+                    return -1;
+                }
+            }
         }
     }
 

@@ -63,6 +63,7 @@ void console_switch_to_fb(void);
 int  console_set_mode(int mode);
 int  console_get_mode(void);
 void console_restore_text_mode(void);
+void console_on_process_exit(int pid);
 void console_repaint(void);
 
 int  console_set_kbmode(int mode);

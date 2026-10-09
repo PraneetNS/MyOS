@@ -1148,13 +1148,9 @@ static void syscall_handler(struct registers* regs) {
 
             len = (len + 4095) & ~4095u;
 
-            if (!(flags & MAP_PRIVATE)) {
-                regs->eax = (uint32_t) -EINVAL;
-                break;
-            }
-
             struct vnode* file = NULL;
             uint32_t file_size = 0;
+            int is_device = 0;
 
             if (!(flags & MAP_ANON)) {
                 if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
@@ -1162,16 +1158,34 @@ static void syscall_handler(struct registers* regs) {
                     break;
                 }
                 open_file_t* of = me->fds[fd];
-                if (of->type != OPEN_FILE_VNODE || !of->vnode) {
+                if (!of->vnode) {
                     regs->eax = (uint32_t) -EACCES;
                     break;
                 }
                 file = of->vnode;
+                if (file->ops && file->ops->mmap) {
+                    is_device = 1;
+                } else if (of->type != OPEN_FILE_VNODE) {
+                    regs->eax = (uint32_t) -EACCES;
+                    break;
+                }
                 if (offset < file->size) {
                     uint32_t rem = file->size - offset;
                     file_size = (len < rem) ? len : rem;
                 } else {
                     file_size = 0;
+                }
+            }
+
+            if (!is_device) {
+                if (!(flags & MAP_PRIVATE)) {
+                    regs->eax = (uint32_t) -EINVAL;
+                    break;
+                }
+            } else {
+                if (!(flags & (MAP_SHARED | MAP_PRIVATE))) {
+                    regs->eax = (uint32_t) -EINVAL;
+                    break;
                 }
             }
 
@@ -1198,6 +1212,10 @@ static void syscall_handler(struct registers* regs) {
             }
 
             uint32_t vma_flags = (flags & MAP_ANON) ? VMA_FLAG_ANON : VMA_FLAG_FILE;
+            if (is_device) {
+                vma_flags |= VMA_FLAG_DEVICE;
+                if (flags & MAP_SHARED) vma_flags |= VMA_FLAG_SHARED;
+            }
             uint32_t vma_prot = 0;
             if (prot & PROT_READ)  vma_prot |= VMA_PROT_READ;
             if (prot & PROT_WRITE) vma_prot |= VMA_PROT_WRITE;
@@ -1215,6 +1233,15 @@ static void syscall_handler(struct registers* regs) {
                 kfree(new_vma);
                 regs->eax = (uint32_t) -ENOMEM;
                 break;
+            }
+
+            if (is_device && file && file->ops && file->ops->mmap) {
+                int mr = file->ops->mmap(file, new_vma);
+                if (mr != 0) {
+                    vma_unmap_range(me, target_addr, len);
+                    regs->eax = (uint32_t) mr;
+                    break;
+                }
             }
 
             regs->eax = target_addr;
@@ -1262,6 +1289,11 @@ static void syscall_handler(struct registers* regs) {
             }
 
             open_file_t* of = me->fds[fd];
+            if (of->vnode && of->vnode->ops && of->vnode->ops->ioctl) {
+                regs->eax = (uint32_t) of->vnode->ops->ioctl(of->vnode, req, argp);
+                break;
+            }
+
             if (of->type != OPEN_FILE_CONSOLE || !of->vnode || !devfs_is_tty_vnode(of->vnode)) {
                 regs->eax = (uint32_t) -ENOTTY;
                 break;

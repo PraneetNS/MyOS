@@ -146,7 +146,7 @@ void scheduler_exit_current(int exit_status) {
         bcache_sync();
     }
 
-    console_restore_text_mode();
+    console_on_process_exit(exiting_pid);
 
     /* Reparent children to PID 1 (init / shell) */
     for (int i = 0; i < MAX_PROCESSES; i++) {
