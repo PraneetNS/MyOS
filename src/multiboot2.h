@@ -44,4 +44,28 @@ struct mb2_tag_mmap {
 
 #define MB2_MEMORY_AVAILABLE 1
 
+#define MB2_TAG_TYPE_FRAMEBUFFER 8
+
+#define MULTIBOOT_FRAMEBUFFER_TYPE_INDEXED  0
+#define MULTIBOOT_FRAMEBUFFER_TYPE_RGB      1
+#define MULTIBOOT_FRAMEBUFFER_TYPE_EGA_TEXT 2
+
+struct mb2_tag_framebuffer {
+    uint32_t type;
+    uint32_t size;
+    uint64_t addr;
+    uint32_t pitch;
+    uint32_t width;
+    uint32_t height;
+    uint8_t  bpp;
+    uint8_t  framebuffer_type;
+    uint16_t reserved;
+    uint8_t  red_field_position;
+    uint8_t  red_mask_size;
+    uint8_t  green_field_position;
+    uint8_t  green_mask_size;
+    uint8_t  blue_field_position;
+    uint8_t  blue_mask_size;
+} __attribute__((packed));
+
 #endif

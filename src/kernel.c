@@ -24,6 +24,7 @@
 #include "procfs.h"
 #include "rtc.h"
 #include "fpu.h"
+#include "fb.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -81,6 +82,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     pmm_init(mb_info_addr);
     paging_init();
     kheap_init();
+
+    fb_init(mb_info_addr);
 
     asm volatile ("sti");
     kprintf("[ok] Interrupts enabled\n");
