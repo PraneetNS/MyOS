@@ -8,3 +8,5 @@ tools/toolchain/build/
 *.o
 *.d
 build/
+__pycache__/
+*.pyc

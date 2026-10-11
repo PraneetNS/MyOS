@@ -832,6 +832,9 @@ echo "[PASS] Generated BMP images present in /tmp verified"
 
 rm -f "$LOGFILE11"
 
+echo "[TEST] Session 12: Stage 18A Step 8 Monitor Screendump, Color Channels, Input Injection, and VGA Fallback..."
+python3 tools/test_step8.py || { echo "FAIL: Session 12 Step 8 automated tests failed"; exit 1; }
+
 echo "==============================="
 echo "ALL TESTS PASSED!"
 echo "==============================="

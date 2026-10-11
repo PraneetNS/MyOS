@@ -855,6 +855,50 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 
 ---
 
+## Stage 18A (done): Graphics Foundation
+
+- **Multiboot2 Framebuffer & PAT Write-Combining**:
+  - 1024x768 32bpp linear framebuffer boot negotiated via Multiboot2 tags 5 and 8.
+  - Page Attribute Table (PAT) write-combining MSR configuration and `ioremap` at virtual range `0xF0000000-0xFFBFFFFF`.
+  - Automatic fallback to standard 80x25 VGA text console when framebuffer is unavailable (`-vga none`).
+
+- **Graphical Text Console & PSF2 Font**:
+  - 128x48 character grid at 1024x768 with embedded Terminus 8x16 PSF2 bitmap font.
+  - Dirty-row RAM shadow buffer preventing slow reads from video memory during scrolling and rendering.
+  - Full ANSI escape sequence support (colors, bold, cursor movement, erase commands).
+  - Virtual terminal control ioctls (`KDSETMODE` for `KD_TEXT` vs `KD_GRAPHICS`, `KDSKBMODE` for `K_XLATE` vs `K_OFF`).
+
+- **Input Subsystem & Raw Event Ring Buffer**:
+  - PS/2 keyboard and IntelliMouse driver with 4-byte wheel stream and absolute mouse coordinate clamping.
+  - Linux-compatible device nodes: `/dev/input/mice`, `/dev/input/mouse0`, `/dev/input/kbd0` delivering `struct input_event` structures.
+  - Kernel-side emergency restore: `Ctrl + Alt + F1` resets keyboard translation to `K_XLATE`.
+
+- **Framebuffer Device `/dev/fb0`**:
+  - Screen geometry query ioctls: `FBIOGET_VSCREENINFO` and `FBIOGET_FSCREENINFO`.
+  - Page-granular device `mmap()` with write-combining attributes allowing direct zero-copy userland rendering.
+
+- **Non-blocking I/O & Multiplexing**:
+  - `poll()` system call and `select()` wrapper in `libmyos` supporting pipes, TTY, and input devices.
+  - Non-blocking I/O flag support (`O_NONBLOCK`).
+
+- **2D Graphics Library (`libgfx`)**:
+  - Fast Bresenham lines, rectangles, circles, rounded rectangles, gradients, and alpha blending (`ARGB` source-over compositing).
+  - Embedded PSF2 console bitmap font and scalable TrueType font rendering via vendored `stb_truetype.h` (`DejaVuSans.ttf`).
+  - Multi-format image loading (BMP, PNG, JPEG) via `stb_image.h` and optimized single-buffer BMP exporter (`gfx_save_bmp`).
+  - Unified input event pump (`gfx_poll_event`, `gfx_wait_event`) with automatic software cursor overlay.
+
+- **Demo Applications**:
+  - `gfxdemo`: Animated gradient and bouncing physics balls, plus deterministic `--still` mode with exact reference color patches for automated pixel testing.
+  - `paint`: Multi-tool drawing program (pencil, line, rect, fill_rect, circle, fill_circle) with 14-color palette, canvas clearing, and BMP saving (`s` key).
+  - `view`: Multi-format image viewer supporting BMP, PNG, and JPEG.
+  - `screenshot`: Direct framebuffer capture utility exporting 24-bit BMP to disk.
+  - `crash_safety_test`: Switches to `KD_GRAPHICS` and `K_OFF` and triggers page fault to prove kernel cleanup and console recovery.
+
+- **Automated Verification & QEMU Monitor (`tools/qmon.py`, `tools/test_step8.py`)**:
+  - Session 12 automated test suite verifying screendump framebuffers, RGB byte order, ESC console restoration, raw mouse and keyboard event injection, and `-vga none` text fallback boot.
+
+---
+
 ## Notes on the toolchain choices made here
 
 - **Multiboot2 + GRUB** instead of a hand-rolled bootloader: lets us skip
