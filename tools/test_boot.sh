@@ -783,6 +783,55 @@ fi
 
 rm -f "$LOGFILE10"
 
+echo "[TEST] Session 11: Stage 18A Demo Apps (paint, screenshot, view, gfxdemo) and Crash Safety..."
+
+LOGFILE11=$(mktemp)
+(
+    sleep 6
+    printf "paint.elf --auto\n"
+    sleep 2
+    printf "screenshot.elf /tmp/shot.bmp\n"
+    sleep 2
+    printf "view.elf /share/sample.bmp --still\n"
+    sleep 2
+    printf "gfxdemo.elf --still --timeout 500\n"
+    sleep 2
+    printf "crash_sa.elf\n"
+    sleep 2
+    printf "echo AFTER_CRASH=\$?\n"
+    sleep 2
+    printf "ls -l /tmp\n"
+    sleep 2
+    printf "exit\n"
+) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE11" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE11" > "${LOGFILE11}.tmp" && mv "${LOGFILE11}.tmp" "$LOGFILE11"
+cat "$LOGFILE11"
+
+echo "[TEST] Asserting Session 11 results..."
+
+grep -q "\[paint\] Automated test passed: saved canvas to /tmp/canvas.bmp" "$LOGFILE11" || { echo "FAIL: paint.elf --auto failed"; rm -f "$LOGFILE11"; exit 1; }
+echo "[PASS] paint.elf --auto verified"
+
+grep -q "\[screenshot\] Saved 1024 x 768 screenshot to /tmp/shot.bmp" "$LOGFILE11" || { echo "FAIL: screenshot.elf failed"; rm -f "$LOGFILE11"; exit 1; }
+echo "[PASS] screenshot.elf framebuffer capture verified"
+
+grep -q "\[view\] Displayed 128x128 image /share/sample.bmp" "$LOGFILE11" || { echo "FAIL: view.elf failed"; rm -f "$LOGFILE11"; exit 1; }
+echo "[PASS] view.elf image display verified"
+
+grep -q "\[gfxdemo\] Still mode completed: 1024x768 reference frame rendered" "$LOGFILE11" || { echo "FAIL: gfxdemo.elf --still failed"; rm -f "$LOGFILE11"; exit 1; }
+echo "[PASS] gfxdemo.elf --still reference frame verified"
+
+grep -q "Process .* terminated (page fault at 0x00000000" "$LOGFILE11" || { echo "FAIL: crash_safety_test page fault not caught"; rm -f "$LOGFILE11"; exit 1; }
+grep -q "AFTER_CRASH=139" "$LOGFILE11" || { echo "FAIL: console/keyboard recovery after segfault failed"; rm -f "$LOGFILE11"; exit 1; }
+echo "[PASS] Crash safety: graphics mode + K_OFF + segfault -> console & keyboard recovery verified"
+
+grep -q "canvas.bmp" "$LOGFILE11" || { echo "FAIL: canvas.bmp not found in /tmp"; rm -f "$LOGFILE11"; exit 1; }
+grep -q "shot.bmp" "$LOGFILE11" || { echo "FAIL: shot.bmp not found in /tmp"; rm -f "$LOGFILE11"; exit 1; }
+echo "[PASS] Generated BMP images present in /tmp verified"
+
+rm -f "$LOGFILE11"
+
 echo "==============================="
 echo "ALL TESTS PASSED!"
 echo "==============================="
