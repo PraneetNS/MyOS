@@ -41,67 +41,67 @@ int gfx_save_bmp(const gfx_surface_t *s, const char *path) {
         return -1;
     }
 
-    FILE *f = fopen(path, "wb");
-    if (!f) return -1;
-
     int w = s->width;
     int h = s->height;
     int row_bytes = w * 3;
     int row_padded = (row_bytes + 3) & ~3;
-    int pad_len = row_padded - row_bytes;
     uint32_t image_size = (uint32_t)(row_padded * h);
     uint32_t file_size = 54 + image_size;
 
-    struct bmp_file_header bfh;
-    bfh.bf_type = 0x4D42;
-    bfh.bf_size = file_size;
-    bfh.bf_reserved1 = 0;
-    bfh.bf_reserved2 = 0;
-    bfh.bf_off_bits = 54;
+    uint8_t *file_buf = (uint8_t *) malloc((size_t) file_size);
+    if (!file_buf) return -1;
 
-    struct bmp_info_header bih;
-    bih.bi_size = sizeof(struct bmp_info_header);
-    bih.bi_width = w;
-    bih.bi_height = h; /* bottom-up */
-    bih.bi_planes = 1;
-    bih.bi_bit_count = 24;
-    bih.bi_compression = 0;
-    bih.bi_size_image = image_size;
-    bih.bi_x_pels_per_meter = 2835; /* 72 DPI */
-    bih.bi_y_pels_per_meter = 2835;
-    bih.bi_clr_used = 0;
-    bih.bi_clr_important = 0;
+    struct bmp_file_header *bfh = (struct bmp_file_header *) file_buf;
+    bfh->bf_type = 0x4D42;
+    bfh->bf_size = file_size;
+    bfh->bf_reserved1 = 0;
+    bfh->bf_reserved2 = 0;
+    bfh->bf_off_bits = 54;
 
-    fwrite(&bfh, 1, sizeof(bfh), f);
-    fwrite(&bih, 1, sizeof(bih), f);
-
-    uint8_t *row_buf = (uint8_t *) malloc((size_t) row_padded);
-    if (!row_buf) {
-        fclose(f);
-        return -1;
-    }
-    if (pad_len > 0) {
-        memset(row_buf + row_bytes, 0, (size_t) pad_len);
-    }
+    struct bmp_info_header *bih = (struct bmp_info_header *) (file_buf + 14);
+    bih->bi_size = sizeof(struct bmp_info_header);
+    bih->bi_width = w;
+    bih->bi_height = h; /* bottom-up */
+    bih->bi_planes = 1;
+    bih->bi_bit_count = 24;
+    bih->bi_compression = 0;
+    bih->bi_size_image = image_size;
+    bih->bi_x_pels_per_meter = 2835; /* 72 DPI */
+    bih->bi_y_pels_per_meter = 2835;
+    bih->bi_clr_used = 0;
+    bih->bi_clr_important = 0;
 
     int pitch_words = s->pitch / sizeof(uint32_t);
+    uint8_t *dst_rows = file_buf + 54;
 
     /* Write rows from bottom (h - 1) to top (0) */
     for (int y = h - 1; y >= 0; y--) {
         const uint32_t *src_row = s->pixels + y * pitch_words;
+        int row_idx = (h - 1 - y) * row_padded;
+        uint8_t *dst = dst_rows + row_idx;
         int idx = 0;
         for (int x = 0; x < w; x++) {
             uint32_t c = src_row[x];
-            row_buf[idx++] = (uint8_t) GFX_GET_B(c);
-            row_buf[idx++] = (uint8_t) GFX_GET_G(c);
-            row_buf[idx++] = (uint8_t) GFX_GET_R(c);
+            dst[idx++] = (uint8_t) GFX_GET_B(c);
+            dst[idx++] = (uint8_t) GFX_GET_G(c);
+            dst[idx++] = (uint8_t) GFX_GET_R(c);
         }
-        fwrite(row_buf, 1, (size_t) row_padded, f);
+        while (idx < row_padded) {
+            dst[idx++] = 0;
+        }
     }
 
-    free(row_buf);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        free(file_buf);
+        return -1;
+    }
+
+    size_t written = fwrite(file_buf, 1, file_size, f);
+    free(file_buf);
     fclose(f);
-    return 0;
+
+    return (written == file_size) ? 0 : -1;
 }
 
 gfx_surface_t *gfx_load_image(const char *path) {

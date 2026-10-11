@@ -40,6 +40,14 @@ for elf in userland/*.elf; do
             mcopy -i "$IMAGE" "$elf" "::/$base"
             mcopy -i "$IMAGE" "$elf" "::/bin/$base"
         fi
+        # If base name > 8 chars, also copy first 8 characters for direct FAT16 to_dos_name matching
+        if [ ${#base} -gt 8 ]; then
+            short8="${base:0:8}"
+            mcopy -o -i "$IMAGE" "$elf" "::/${short8}.elf"
+            mcopy -o -i "$IMAGE" "$elf" "::/bin/${short8}.elf"
+            mcopy -o -i "$IMAGE" "$elf" "::/${short8}"
+            mcopy -o -i "$IMAGE" "$elf" "::/bin/${short8}"
+        fi
     fi
 done
 
@@ -60,6 +68,28 @@ if [ -f "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" ]; then
     echo "Copying DejaVuSans font..."
     mcopy -i "$IMAGE" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "::/share/fonts/dejavu.ttf"
 fi
+
+python3 -c "
+import struct
+w, h = 128, 128
+row_padded = (w * 3 + 3) & ~3
+img_size = row_padded * h
+file_size = 54 + img_size
+header = struct.pack('<2sIHHI', b'BM', file_size, 0, 0, 54)
+dib = struct.pack('<IIIHHIIIIII', 40, w, h, 1, 24, 0, img_size, 2835, 2835, 0, 0)
+pixels = bytearray(img_size)
+for y in range(h):
+    row_offset = (h - 1 - y) * row_padded
+    for x in range(w):
+        b = int(255 * x / w)
+        g = int(255 * y / h)
+        r = int(255 * (w - x) / w)
+        pixels[row_offset + x*3 : row_offset + x*3 + 3] = bytes([b, g, r])
+with open('/tmp/sample.bmp', 'wb') as f:
+    f.write(header + dib + pixels)
+"
+mcopy -i "$IMAGE" /tmp/sample.bmp "::/share/sample.bmp"
+rm -f /tmp/sample.bmp
 
 echo "Hello from FAT16 on MyOS!" > /tmp/fat_hello.txt
 mcopy -i "$IMAGE" /tmp/fat_hello.txt "::/fat.txt"
