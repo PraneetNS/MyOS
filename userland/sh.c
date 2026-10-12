@@ -430,9 +430,9 @@ static void exec_command(const command_t* cmd) {
     if (my_strchr(prog, '/')) {
         execve(prog, actual_argv, environ);
 
-        char elf_name[128];
+        static char elf_name[1024];
         int l = strlen(prog);
-        if (l < 120) {
+        if (l < 1020) {
             my_strcpy(elf_name, prog);
             my_strcat(elf_name, ".elf");
             execve(elf_name, actual_argv, environ);
@@ -444,15 +444,15 @@ static void exec_command(const command_t* cmd) {
 
         const char* p = path_env;
         while (*p) {
-            char dir[128];
+            static char dir[1024];
             int dlen = 0;
-            while (*p && *p != ':' && dlen < 120) {
+            while (*p && *p != ':' && dlen < 1020) {
                 dir[dlen++] = *p++;
             }
             dir[dlen] = '\0';
             if (*p == ':') p++;
 
-            char candidate[256];
+            static char candidate[1024];
             candidate[0] = '\0';
             if (dlen == 0 || (dlen == 1 && dir[0] == '.')) {
                 my_strcpy(candidate, prog);
@@ -464,7 +464,7 @@ static void exec_command(const command_t* cmd) {
 
             execve(candidate, actual_argv, environ);
 
-            char candidate_elf[260];
+            static char candidate_elf[1024];
             my_strcpy(candidate_elf, candidate);
             my_strcat(candidate_elf, ".elf");
             execve(candidate_elf, actual_argv, environ);
@@ -489,7 +489,7 @@ typedef struct {
     int jid;
     int pgid;
     job_status_t status;
-    char cmd[64];
+    char cmd[256];
 } job_t;
 
 static int is_interactive = 0;
@@ -938,7 +938,7 @@ static int run_builtin(const command_t* cmd, int* last_status) {
             write(2, ": No such file or directory\n", 28);
             *last_status = 1;
         } else {
-            char cwd[64];
+            static char cwd[1024];
             if (getcwd(cwd, sizeof(cwd))) {
                 sh_setenv("PWD", cwd);
             }
@@ -1039,13 +1039,13 @@ static void execute_pipeline(char* tokens[], int ntok, int* last_status) {
         }
     }
 
-    char cmd_str[64];
+    static char cmd_str[256];
     cmd_str[0] = '\0';
     int clen = 0;
-    for (int i = 0; i < ntok && clen < 60; i++) {
-        if (i > 0 && clen < 60) cmd_str[clen++] = ' ';
+    for (int i = 0; i < ntok && clen < 250; i++) {
+        if (i > 0 && clen < 250) cmd_str[clen++] = ' ';
         int sl = strlen(tokens[i]);
-        if (clen + sl >= 60) sl = 60 - clen;
+        if (clen + sl >= 250) sl = 250 - clen;
         for (int k = 0; k < sl; k++) cmd_str[clen++] = tokens[i][k];
         cmd_str[clen] = '\0';
     }
@@ -1164,6 +1164,11 @@ int main(int argc, char** argv, char** envp) {
     (void) argv;
     sh_env_init(envp ? envp : environ);
 
+    for (int i = 0; i < MAX_JOBS; i++) {
+        job_table[i].status = JOB_EMPTY;
+        job_table[i].cmd[0] = '\0';
+    }
+
     is_interactive = isatty(0);
     if (is_interactive) {
         setpgid(0, 0);
@@ -1176,8 +1181,8 @@ int main(int argc, char** argv, char** envp) {
         write(1, welcome, strlen(welcome));
     }
 
-    char line[256];
-    char token_buf[512];
+    static char line[1024];
+    static char token_buf[1024];
     char* tokens[64];
     int last_status = 0;
 
@@ -1186,7 +1191,7 @@ int main(int argc, char** argv, char** envp) {
         reap_background_jobs();
 
         if (is_interactive) {
-            char cwd[64];
+            static char cwd[1024];
             if (!getcwd(cwd, sizeof(cwd))) {
                 cwd[0] = '/';
                 cwd[1] = '\0';

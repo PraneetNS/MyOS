@@ -13,9 +13,17 @@
 #define DT_LNK     10
 #define DT_SOCK    12
 
+#ifndef NAME_MAX
+#define NAME_MAX 255
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 1024
+#endif
+
 struct dirent {
     uint32_t     d_ino;
-    char         d_name[64];
+    char         d_name[NAME_MAX + 1];
     uint32_t     d_type;
     uint32_t     d_size;
 };

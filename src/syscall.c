@@ -246,6 +246,11 @@ static void syscall_handler(struct registers* regs) {
             vnode_t* vn = 0;
             int ret = vfs_resolve_path(path, me->cwd, &vn);
             if (ret == 0 && vn) {
+                if ((flags & O_CREAT) && (flags & O_EXCL)) {
+                    vnode_unref(vn);
+                    regs->eax = (uint32_t) -EEXIST;
+                    break;
+                }
                 if (vn->type == VNODE_DIR && ((flags & O_WRONLY) || (flags & O_RDWR))) {
                     vnode_unref(vn);
                     regs->eax = (uint32_t) -EISDIR;
@@ -264,7 +269,7 @@ static void syscall_handler(struct registers* regs) {
                 }
                 /* Create file */
                 vnode_t* parent = 0;
-                char child_name[64];
+                char child_name[NAME_MAX + 1];
                 ret = vfs_resolve_parent(path, me->cwd, &parent, child_name, sizeof(child_name));
                 if (ret != 0 || !parent) {
                     regs->eax = (uint32_t) (ret ? ret : -ENOENT);
@@ -412,9 +417,9 @@ static void syscall_handler(struct registers* regs) {
             int err = validate_user_string(name);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
-            char kname[64];
+            static char kname[PATH_MAX];
             int ki = 0;
-            while (name[ki] && ki < 63) {
+            while (name[ki] && ki < PATH_MAX - 1) {
                 kname[ki] = name[ki];
                 ki++;
             }
@@ -423,10 +428,10 @@ static void syscall_handler(struct registers* regs) {
             process_t* me = scheduler_current();
             vnode_t* vn = 0;
             if (vfs_resolve_path(kname, me->cwd, &vn) != 0 || !vn) {
-                char bin_path[64];
+                static char bin_path[PATH_MAX];
                 bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
                 int l = 0;
-                while (kname[l] && l < 50) {
+                while (kname[l] && l < PATH_MAX - 6) {
                     bin_path[5 + l] = kname[l];
                     l++;
                 }
@@ -439,7 +444,7 @@ static void syscall_handler(struct registers* regs) {
 
             /* Copy arguments from user space before tearing down address space */
             int argc = 0;
-            char kargv_buf[16][64];
+            static char kargv_buf[16][NAME_MAX + 1];
             const char* kargv[17];
             if (uargv) {
                 int bad = 0;
@@ -453,7 +458,7 @@ static void syscall_handler(struct registers* regs) {
                         bad = 1; break;
                     }
                     int j = 0;
-                    while (uarg[j] && j < 63) {
+                    while (uarg[j] && j < NAME_MAX) {
                         kargv_buf[argc][j] = uarg[j];
                         j++;
                     }
@@ -469,7 +474,7 @@ static void syscall_handler(struct registers* regs) {
             }
             if (argc == 0) {
                 int j = 0;
-                while (kname[j] && j < 63) {
+                while (kname[j] && j < NAME_MAX) {
                     kargv_buf[0][j] = kname[j];
                     j++;
                 }
@@ -859,7 +864,7 @@ static void syscall_handler(struct registers* regs) {
 
             process_t* me = scheduler_current();
             vnode_t* parent = 0;
-            char child[64];
+            char child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
             if (ret != 0 || !parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
@@ -886,7 +891,7 @@ static void syscall_handler(struct registers* regs) {
 
             process_t* me = scheduler_current();
             vnode_t* parent = 0;
-            char child[64];
+            char child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
             if (ret != 0 || !parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
@@ -911,7 +916,7 @@ static void syscall_handler(struct registers* regs) {
 
             process_t* me = scheduler_current();
             vnode_t* parent = 0;
-            char child[64];
+            char child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
             if (ret != 0 || !parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
@@ -939,7 +944,7 @@ static void syscall_handler(struct registers* regs) {
 
             process_t* me = scheduler_current();
             vnode_t *old_parent = 0, *new_parent = 0;
-            char old_child[64], new_child[64];
+            char old_child[NAME_MAX + 1], new_child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(oldpath, me->cwd, &old_parent, old_child, sizeof(old_child));
             if (ret != 0 || !old_parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);

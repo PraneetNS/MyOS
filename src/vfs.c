@@ -179,6 +179,12 @@ open_file_t* vfs_get_console_stderr(void) {
     return 0;
 }
 
+static int kstrlen(const char* s) {
+    int n = 0;
+    while (s && s[n]) n++;
+    return n;
+}
+
 static int streq(const char* a, const char* b) {
     while (*a && *b) {
         if (*a != *b) return 0;
@@ -189,8 +195,9 @@ static int streq(const char* a, const char* b) {
 
 int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
     if (!path || !*path || !out) return -EINVAL;
+    if (kstrlen(path) >= PATH_MAX) return -ENAMETOOLONG;
 
-    char canon[128];
+    char canon[PATH_MAX];
     vfs_path_canonical(path, cwd, canon, sizeof(canon));
 
     int best_mount = -1;
@@ -234,13 +241,14 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
         return 0;
     }
 
-    char token[64];
+    char token[NAME_MAX + 1];
     while (*p) {
         while (*p == '/') p++;
         if (!*p) break;
 
         int idx = 0;
-        while (*p && *p != '/' && idx < 63) {
+        while (*p && *p != '/') {
+            if (idx >= NAME_MAX) return -ENAMETOOLONG;
             token[idx++] = *p++;
         }
         token[idx] = '\0';
@@ -289,6 +297,7 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
         if (path[len] == '/') last_slash = len;
         len++;
     }
+    if (len >= PATH_MAX) return -ENAMETOOLONG;
 
     /* Trailing slash removal if any */
     while (last_slash == len - 1 && last_slash > 0) {
@@ -301,6 +310,7 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
 
     if (last_slash < 0) {
         /* No slash: parent is cwd */
+        if (len > NAME_MAX) return -ENAMETOOLONG;
         int ret = vfs_resolve_path(cwd ? cwd : "/", "/", dir_out);
         if (ret != 0) return ret;
         int j = 0;
@@ -313,13 +323,13 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
     }
 
     /* Extract parent path */
-    char parent_path[128];
+    char parent_path[PATH_MAX];
     if (last_slash == 0) {
         parent_path[0] = '/';
         parent_path[1] = '\0';
     } else {
         int i = 0;
-        while (i < last_slash && i < 127) {
+        while (i < last_slash && i < (int)sizeof(parent_path) - 1) {
             parent_path[i] = path[i];
             i++;
         }
@@ -329,15 +339,20 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
     int ret = vfs_resolve_path(parent_path, cwd, dir_out);
     if (ret != 0) return ret;
 
-    /* Extract child name */
     const char* child_start = path + last_slash + 1;
-    int j = 0;
-    while (child_start[j] && j < name_max - 1) {
-        name_out[j] = child_start[j];
-        j++;
+    int child_len = len - (last_slash + 1);
+    if (child_len > NAME_MAX) {
+        vnode_unref(*dir_out);
+        *dir_out = 0;
+        return -ENAMETOOLONG;
     }
-    name_out[j] = '\0';
 
+    int k = 0;
+    while (k < child_len && k < name_max - 1) {
+        name_out[k] = child_start[k];
+        k++;
+    }
+    name_out[k] = '\0';
     return 0;
 }
 
@@ -348,6 +363,7 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
     current_op_flags = of->flags;
 
     if (of->type == OPEN_FILE_CONSOLE) {
+        if ((of->flags & 3) == O_WRONLY) return -EBADF;
         if (!of->vnode || !of->vnode->ops || !of->vnode->ops->read) return -EBADF;
         return of->vnode->ops->read(of->vnode, of->offset, (uint8_t*) buf, count);
     }
@@ -356,6 +372,7 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
         return pipe_read((pipe_t*) of->pipe, buf, count, nonblock);
     }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
+        if ((of->flags & 3) == O_WRONLY) return -EBADF;
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
         if (!of->vnode->ops || !of->vnode->ops->read) return -EINVAL;
         int n = of->vnode->ops->read(of->vnode, of->offset, (uint8_t*) buf, count);
@@ -372,6 +389,7 @@ int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
     current_op_flags = of->flags;
 
     if (of->type == OPEN_FILE_CONSOLE) {
+        if ((of->flags & 3) == O_RDONLY) return -EBADF;
         if (!of->vnode || !of->vnode->ops || !of->vnode->ops->write) return -EBADF;
         return of->vnode->ops->write(of->vnode, of->offset, (const uint8_t*) buf, count);
     }
@@ -380,6 +398,7 @@ int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
         return pipe_write((pipe_t*) of->pipe, buf, count, nonblock);
     }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
+        if ((of->flags & 3) == O_RDONLY) return -EBADF;
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
         if (!of->vnode->ops || !of->vnode->ops->write) return -EROFS;
         if (of->flags & O_APPEND) of->offset = of->vnode->size;
@@ -448,53 +467,49 @@ int vfs_stat(vnode_t* vn, struct stat* st) {
 
 void vfs_path_canonical(const char* path, const char* cwd, char* out, int max) {
     if (!out || max <= 1) return;
-    char combined[128];
+    char combined[PATH_MAX + 128];
     int p = 0;
     if (path && path[0] == '/') {
-        while (path[p] && p < 126) {
+        while (path[p] && p < PATH_MAX) {
             combined[p] = path[p];
             p++;
         }
         combined[p] = '\0';
     } else {
         const char* c = (cwd && *cwd) ? cwd : "/";
-        while (c[p] && p < 120) {
-            combined[p] = c[p];
-            p++;
+        int cp = 0;
+        while (c[cp] && p < PATH_MAX) {
+            combined[p++] = c[cp++];
         }
-        if (p > 0 && combined[p - 1] != '/') {
+        if (p > 0 && combined[p - 1] != '/' && p < PATH_MAX) {
             combined[p++] = '/';
         }
         int j = 0;
-        while (path && path[j] && p < 126) {
+        while (path && path[j] && p < PATH_MAX) {
             combined[p++] = path[j++];
         }
         combined[p] = '\0';
     }
 
-    char segs[16][32];
+    int seg_start[64];
+    int seg_len[64];
     int nsegs = 0;
     int i = 0;
     while (combined[i]) {
         while (combined[i] == '/') i++;
         if (!combined[i]) break;
-        char tok[32];
-        int tlen = 0;
-        while (combined[i] && combined[i] != '/' && tlen < 31) {
-            tok[tlen++] = combined[i++];
-        }
-        tok[tlen] = '\0';
+        int start = i;
         while (combined[i] && combined[i] != '/') i++;
+        int len = i - start;
 
-        if (tok[0] == '.' && tok[1] == '\0') {
+        if (len == 1 && combined[start] == '.') {
             continue;
-        } else if (tok[0] == '.' && tok[1] == '.' && tok[2] == '\0') {
+        } else if (len == 2 && combined[start] == '.' && combined[start + 1] == '.') {
             if (nsegs > 0) nsegs--;
         } else {
-            if (nsegs < 16) {
-                int k = 0;
-                while (tok[k]) { segs[nsegs][k] = tok[k]; k++; }
-                segs[nsegs][k] = '\0';
+            if (nsegs < 64) {
+                seg_start[nsegs] = start;
+                seg_len[nsegs] = len;
                 nsegs++;
             }
         }
@@ -509,9 +524,8 @@ void vfs_path_canonical(const char* path, const char* cwd, char* out, int max) {
     int pos = 0;
     for (int s = 0; s < nsegs; s++) {
         if (pos < max - 1) out[pos++] = '/';
-        int k = 0;
-        while (segs[s][k] && pos < max - 1) {
-            out[pos++] = segs[s][k++];
+        for (int k = 0; k < seg_len[s] && pos < max - 1; k++) {
+            out[pos++] = combined[seg_start[s] + k];
         }
     }
     out[pos] = '\0';

@@ -742,11 +742,13 @@ echo "[PASS] ls /dev/input shows mice, mouse0, and kbd0"
 
 rm -f "$LOGFILE9"
 
-echo "[TEST] Session 10: Stage 18A poll(), select(), and non-blocking I/O..."
+echo "[TEST] Session 10: Stage 18A poll(), select(), non-blocking I/O, and libc flag translation tests..."
 
 LOGFILE10=$(mktemp)
 (
     sleep 2
+    printf "flagtest.elf\n"
+    sleep 3
     printf "polltest.elf\n"
     sleep 3
     printf "gfxtest.elf\n"
@@ -758,12 +760,15 @@ LOGFILE10=$(mktemp)
     printf "shinfo\n"
     sleep 1
     printf "exit\n"
-) | timeout 45s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10" 2>&1 || true
+) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE10" > "${LOGFILE10}.tmp" && mv "${LOGFILE10}.tmp" "$LOGFILE10"
 cat "$LOGFILE10"
 
 echo "[TEST] Asserting Session 10 results..."
+
+grep -q "=== flagtest results: 43 passed, 0 failed ===" "$LOGFILE10" || { echo "FAIL: flagtest.elf did not pass all tests"; rm -f "$LOGFILE10"; exit 1; }
+echo "[PASS] libc/newlib open/fcntl/access flag translations (flagtest.elf) verified"
 
 grep -q "=== polltest results: 17 passed, 0 failed ===" "$LOGFILE10" || { echo "FAIL: polltest.elf did not pass all tests"; rm -f "$LOGFILE10"; exit 1; }
 echo "[PASS] poll(), select(), and non-blocking I/O (polltest.elf) verified"

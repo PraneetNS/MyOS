@@ -4,6 +4,26 @@ int main(int argc, char** argv) {
     (void) argc;
     (void) argv;
 
+    /* Warm up 1 iteration so demand-paged stack and pipe structures fault in */
+    {
+        int wp[2];
+        if (pipe(wp) == 0) {
+            int wpid = fork();
+            if (wpid == 0) {
+                close(wp[0]); dup2(wp[1], 1); close(wp[1]);
+                const char* const wargs[] = { "true", 0 };
+                exec("true.elf", wargs);
+                exit(127);
+            }
+            close(wp[1]);
+            char wbuf[32];
+            while (read(wp[0], wbuf, sizeof(wbuf)) > 0) { }
+            close(wp[0]);
+            int wstatus = 0;
+            waitpid(wpid, &wstatus, 0);
+        }
+    }
+
     write(1, "[stress] Checking baseline free frames...\n", 42);
     unsigned int base_frames = sys_free_frames();
     write(1, "[stress] Baseline free frames: ", 31);

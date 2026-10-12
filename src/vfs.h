@@ -23,6 +23,7 @@ typedef enum {
 #define O_WRONLY    0x0001
 #define O_RDWR      0x0002
 #define O_CREAT     0x0040
+#define O_EXCL      0x0080
 #define O_TRUNC     0x0200
 #define O_APPEND    0x0400
 #define O_NONBLOCK  0x4000
@@ -83,9 +84,17 @@ struct timezone {
 #define CLOCK_REALTIME  0
 #define CLOCK_MONOTONIC 1
 
+#ifndef NAME_MAX
+#define NAME_MAX 255
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 1024
+#endif
+
 struct dirent {
     uint32_t d_ino;
-    char d_name[64];
+    char d_name[NAME_MAX + 1];
     uint32_t d_type; /* 1 = file, 2 = dir */
     uint32_t d_size;
 };
