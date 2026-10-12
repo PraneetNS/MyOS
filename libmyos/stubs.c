@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <string.h>
+#include <fcntl.h>
 
 struct kernel_stat {
     unsigned int k_dev;
@@ -61,26 +62,44 @@ void _exit(int status) {
     }
 }
 
+/* Kernel open flag constants (must match src/vfs.h) */
+#define KERN_O_RDONLY    0x0000
+#define KERN_O_WRONLY    0x0001
+#define KERN_O_RDWR      0x0002
+#define KERN_O_CREAT     0x0040
+#define KERN_O_EXCL      0x0080
+#define KERN_O_TRUNC     0x0200
+#define KERN_O_APPEND    0x0400
+#define KERN_O_NONBLOCK  0x4000
+#define KERN_O_CLOEXEC   0x80000
+
+/* Compile-time verification that Newlib headers define expected flag values */
+_Static_assert(_FAPPEND    == 0x0008,  "Newlib _FAPPEND must be 0x0008");
+_Static_assert(_FCREAT     == 0x0200,  "Newlib _FCREAT must be 0x0200");
+_Static_assert(_FTRUNC     == 0x0400,  "Newlib _FTRUNC must be 0x0400");
+_Static_assert(_FEXCL      == 0x0800,  "Newlib _FEXCL must be 0x0800");
+_Static_assert(_FNONBLOCK  == 0x4000,  "Newlib _FNONBLOCK must be 0x4000");
+_Static_assert(_FNOINHERIT == 0x40000, "Newlib _FNOINHERIT must be 0x40000");
+
+_Static_assert(O_APPEND   == _FAPPEND,    "Newlib O_APPEND alias mismatch");
+_Static_assert(O_CREAT    == _FCREAT,     "Newlib O_CREAT alias mismatch");
+_Static_assert(O_TRUNC    == _FTRUNC,     "Newlib O_TRUNC alias mismatch");
+_Static_assert(O_EXCL     == _FEXCL,      "Newlib O_EXCL alias mismatch");
+_Static_assert(O_NONBLOCK == _FNONBLOCK,  "Newlib O_NONBLOCK alias mismatch");
+_Static_assert(O_CLOEXEC  == _FNOINHERIT, "Newlib O_CLOEXEC alias mismatch");
+
 static int translate_open_flags(int flags) {
     int kflags = 0;
     int acc = flags & 3; /* O_RDONLY, O_WRONLY, O_RDWR */
     kflags |= acc;
 
     /* Newlib -> Kernel flags */
-    if (flags & 0x0200) /* _FCREAT */
-        kflags |= 0x0040; /* Kernel O_CREAT */
-    if (flags & 0x0400) /* _FTRUNC */
-        kflags |= 0x0200; /* Kernel O_TRUNC */
-    if (flags & 0x0008) /* _FAPPEND */
-        kflags |= 0x0400; /* Kernel O_APPEND */
-    if (flags & 0x40000) /* _FNOINHERIT / O_CLOEXEC */
-        kflags |= 0x80000; /* Kernel O_CLOEXEC */
-
-    /* Also preserve direct kernel flags if passed: */
-    if (flags & 0x0040)
-        kflags |= 0x0040;
-    if (flags & 0x80000)
-        kflags |= 0x80000;
+    if (flags & _FCREAT)     kflags |= KERN_O_CREAT;
+    if (flags & _FEXCL)      kflags |= KERN_O_EXCL;
+    if (flags & _FTRUNC)     kflags |= KERN_O_TRUNC;
+    if (flags & _FAPPEND)    kflags |= KERN_O_APPEND;
+    if (flags & _FNONBLOCK)  kflags |= KERN_O_NONBLOCK;
+    if (flags & _FNOINHERIT) kflags |= KERN_O_CLOEXEC;
 
     return kflags;
 }

@@ -123,12 +123,12 @@ int main(int argc, char** argv) {
             print_uint(de.d_size);
             write(1, "\t", 1);
 
-            char item_path[128];
+            char item_path[PATH_MAX];
             int p = 0;
-            while (path[p] && p < 100) { item_path[p] = path[p]; p++; }
-            if (p > 0 && item_path[p - 1] != '/') item_path[p++] = '/';
+            while (path[p] && p < (int)sizeof(item_path) - 1) { item_path[p] = path[p]; p++; }
+            if (p > 0 && item_path[p - 1] != '/' && p < (int)sizeof(item_path) - 1) item_path[p++] = '/';
             int d = 0;
-            while (de.d_name[d] && p < 126) { item_path[p++] = de.d_name[d++]; }
+            while (de.d_name[d] && p < (int)sizeof(item_path) - 1) { item_path[p++] = de.d_name[d++]; }
             item_path[p] = '\0';
 
             struct stat st;

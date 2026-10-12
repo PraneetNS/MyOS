@@ -130,7 +130,24 @@ int fcntl(int fd, int cmd, ...) {
     va_start(ap, cmd);
     long arg = va_arg(ap, long);
     va_end(ap);
+
+    if (cmd == F_SETFL) {
+        int karg = 0;
+        if (arg & _FAPPEND)   karg |= 0x0400; /* Kernel O_APPEND */
+        if (arg & 0x0400)     karg |= 0x0400; /* Direct Kernel O_APPEND */
+        if (arg & _FNONBLOCK) karg |= 0x4000; /* Kernel O_NONBLOCK */
+        if (arg & 0x0800)     karg |= 0x4000; /* Linux O_NONBLOCK */
+        arg = karg;
+    }
+
     int ret = __syscall3(SYS_FCNTL, fd, cmd, arg);
+    if (ret >= 0 && cmd == F_GETFL) {
+        int uflags = ret & 3; /* O_RDONLY, O_WRONLY, O_RDWR */
+        if (ret & 0x0400) uflags |= _FAPPEND;   /* Kernel O_APPEND -> Newlib _FAPPEND */
+        if (ret & 0x4000) uflags |= _FNONBLOCK; /* Kernel O_NONBLOCK -> Newlib _FNONBLOCK */
+        if (ret & 0x0800) uflags |= _FNONBLOCK; /* Linux O_NONBLOCK */
+        return uflags;
+    }
     return __check_syscall_err(ret);
 }
 

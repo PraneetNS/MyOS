@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -98,29 +100,28 @@ struct gfx_font {
 };
 
 gfx_font_t *gfx_load_font(const char *path, float pixel_height) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
 
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    off_t size = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
     if (size <= 0) {
-        fclose(f);
+        close(fd);
         return NULL;
     }
 
     unsigned char *buf = (unsigned char *) malloc((size_t) size);
     if (!buf) {
-        fclose(f);
+        close(fd);
         return NULL;
     }
 
-    if (fread(buf, 1, (size_t) size, f) != (size_t) size) {
+    ssize_t rd = read(fd, buf, (size_t) size);
+    close(fd);
+    if (rd != (ssize_t) size) {
         free(buf);
-        fclose(f);
         return NULL;
     }
-    fclose(f);
 
     gfx_font_t *font = (gfx_font_t *) calloc(1, sizeof(gfx_font_t));
     if (!font) {

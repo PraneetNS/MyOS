@@ -21,7 +21,7 @@ setjmp_alias.o: setjmp_alias.S
 stubs.o: stubs.c syscall.h
 	$(CC) $(CFLAGS) -c stubs.c -o stubs.o
 
-posix.o: posix.c syscall.h
+posix.o: posix.c syscall.h include/dirent.h
 	$(CC) $(CFLAGS) -c posix.c -o posix.o
 
 init.o: init.c

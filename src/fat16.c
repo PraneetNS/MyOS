@@ -113,18 +113,21 @@ static void fat_set_entry(uint16_t cluster, uint16_t val) {
     }
 }
 
+static uint16_t last_alloc_cluster = 2;
+
 static uint16_t fat_alloc_cluster(void) {
-    for (uint32_t c = 2; c < total_data_clusters + 2; c++) {
+    uint32_t start = last_alloc_cluster;
+    if (start < 2 || start >= total_data_clusters + 2) start = 2;
+
+    for (uint32_t i = 0; i < total_data_clusters; i++) {
+        uint32_t c = start + i;
+        if (c >= total_data_clusters + 2) {
+            c = 2 + (c - (total_data_clusters + 2));
+        }
         if (fat_get_entry((uint16_t) c) == 0) {
             uint16_t clus = (uint16_t) c;
             fat_set_entry(clus, 0xFFFF);
-
-            uint32_t lba = cluster_to_lba(clus);
-            uint8_t zero[512];
-            for (int i = 0; i < 512; i++) zero[i] = 0;
-            for (uint32_t s = 0; s < bpb.sectors_per_cluster; s++) {
-                bcache_write(lba + s, zero);
-            }
+            last_alloc_cluster = clus + 1;
             return clus;
         }
     }
@@ -410,18 +413,19 @@ static int fat16_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint3
         uint32_t lba = cluster_to_lba(curr) + (cluster_off / 512);
         uint32_t sec_off = cluster_off % 512;
 
-        uint8_t sbuf[512];
-        if (sec_off != 0 || (count - done < 512)) {
-            bcache_read(lba, sbuf);
-        }
-
         uint32_t chunk = 512 - sec_off;
         if (chunk > count - done) chunk = count - done;
 
-        for (uint32_t i = 0; i < chunk; i++) {
-            sbuf[sec_off + i] = buf[done + i];
+        if (sec_off == 0 && chunk == 512) {
+            if (bcache_write(lba, buf + done) != 0) break;
+        } else {
+            uint8_t sbuf[512];
+            bcache_read(lba, sbuf);
+            for (uint32_t i = 0; i < chunk; i++) {
+                sbuf[sec_off + i] = buf[done + i];
+            }
+            if (bcache_write(lba, sbuf) != 0) break;
         }
-        if (bcache_write(lba, sbuf) != 0) break;
 
         done += chunk;
         cluster_off += chunk;
@@ -552,6 +556,10 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     dotdot->fst_clus_lo = dnode->is_root ? 0 : dnode->first_cluster;
 
     bcache_write(clus_lba, sbuf);
+    for (int i = 0; i < 512; i++) sbuf[i] = 0;
+    for (uint32_t s = 1; s < bpb.sectors_per_cluster; s++) {
+        bcache_write(clus_lba + s, sbuf);
+    }
 
     uint32_t sec, off;
     int err = alloc_entry_in_dir(dnode, &sec, &off);

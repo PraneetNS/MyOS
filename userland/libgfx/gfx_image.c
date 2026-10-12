@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -91,17 +93,17 @@ int gfx_save_bmp(const gfx_surface_t *s, const char *path) {
         }
     }
 
-    FILE *f = fopen(path, "wb");
-    if (!f) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
         free(file_buf);
         return -1;
     }
 
-    size_t written = fwrite(file_buf, 1, file_size, f);
+    ssize_t written = write(fd, file_buf, file_size);
     free(file_buf);
-    fclose(f);
+    close(fd);
 
-    return (written == file_size) ? 0 : -1;
+    return (written == (ssize_t) file_size) ? 0 : -1;
 }
 
 gfx_surface_t *gfx_load_image(const char *path) {
