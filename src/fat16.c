@@ -424,6 +424,122 @@ static int find_entry_in_dir(fat_node_t* dir, const char* name_83, fat_dirent_t*
     return 0;
 }
 
+static __attribute__((unused)) int fat16_needs_lfn(const char* name) {
+    if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+        return 0;
+    }
+    int dot_count = 0;
+    int base_len = 0;
+    int ext_len = 0;
+    int after_dot = 0;
+
+    for (int i = 0; name[i]; i++) {
+        char c = name[i];
+        if (c == '.') {
+            dot_count++;
+            after_dot = 1;
+            continue;
+        }
+        if (c >= 'a' && c <= 'z') return 1; /* lowercase requires LFN */
+        if (c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') {
+            return 1; /* spaces or invalid 8.3 chars */
+        }
+        if (!after_dot) {
+            base_len++;
+        } else {
+            ext_len++;
+        }
+    }
+
+    if (dot_count > 1 || base_len > 8 || ext_len > 3 || base_len == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static int fat_strlen(const char* s) {
+    int n = 0;
+    while (s && s[n]) n++;
+    return n;
+}
+
+static __attribute__((unused)) int fat16_generate_short_alias(fat_node_t* dir, const char* name, char out_83[11]) {
+    /* If it doesn't need LFN, standard to_dos_name is sufficient */
+    if (!fat16_needs_lfn(name)) {
+        to_dos_name(name, out_83);
+        return 0;
+    }
+
+    char clean_base[16];
+    char clean_ext[4];
+    int cb_len = 0;
+    int ce_len = 0;
+
+    /* Find last dot for extension */
+    int last_dot = -1;
+    for (int i = 0; name[i]; i++) {
+        if (name[i] == '.') last_dot = i;
+    }
+
+    /* Extract clean base */
+    int end_base = (last_dot >= 0) ? last_dot : fat_strlen(name);
+    for (int i = 0; i < end_base && cb_len < 8; i++) {
+        char c = name[i];
+        if (c == '.' || c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') {
+            continue;
+        }
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        clean_base[cb_len++] = c;
+    }
+    if (cb_len == 0) clean_base[cb_len++] = '_';
+
+    /* Extract clean ext */
+    if (last_dot >= 0) {
+        for (int i = last_dot + 1; name[i] && ce_len < 3; i++) {
+            char c = name[i];
+            if (c == '.' || c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') {
+                continue;
+            }
+            if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+            clean_ext[ce_len++] = c;
+        }
+    }
+
+    /* Try numeric tails ~1 through ~999 */
+    for (int num = 1; num <= 999; num++) {
+        char tail[8];
+        int tlen = 0;
+        tail[tlen++] = '~';
+        if (num >= 100) {
+            tail[tlen++] = (char)('0' + (num / 100));
+            tail[tlen++] = (char)('0' + ((num / 10) % 10));
+            tail[tlen++] = (char)('0' + (num % 10));
+        } else if (num >= 10) {
+            tail[tlen++] = (char)('0' + (num / 10));
+            tail[tlen++] = (char)('0' + (num % 10));
+        } else {
+            tail[tlen++] = (char)('0' + num);
+        }
+
+        char candidate[11];
+        for (int k = 0; k < 11; k++) candidate[k] = ' ';
+
+        int max_base_chars = 8 - tlen;
+        int take_base = (cb_len < max_base_chars) ? cb_len : max_base_chars;
+        for (int k = 0; k < take_base; k++) candidate[k] = clean_base[k];
+        for (int k = 0; k < tlen; k++) candidate[take_base + k] = tail[k];
+        for (int k = 0; k < ce_len; k++) candidate[8 + k] = clean_ext[k];
+
+        /* Check collision */
+        if (!find_entry_in_dir(dir, candidate, 0, 0, 0)) {
+            for (int k = 0; k < 11; k++) out_83[k] = candidate[k];
+            return 0;
+        }
+    }
+
+    return -EEXIST;
+}
+
 static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t* out,
                                  uint32_t* out_sec, uint32_t* out_off,
                                  uint32_t* out_lfn_sec, uint32_t* out_lfn_off, uint32_t* out_lfn_slots) {
