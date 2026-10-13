@@ -130,6 +130,7 @@ struct fs_ops {
     int (*mmap)(struct vnode* node, struct vma* vma);
     int (*ioctl)(struct vnode* node, unsigned long req, void* argp);
     short (*poll)(struct vnode* node, short events, void** chan_out);
+    int (*cleanup)(struct vnode* node);
 };
 
 typedef struct vnode {
