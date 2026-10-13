@@ -46,6 +46,8 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 1
     printf "fstest\n"
     sleep 2
+    printf "lfntest\n"
+    sleep 3
     printf "hello.elf\n"
     sleep 1
     printf "argtest hello world 123\n"
@@ -69,7 +71,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "memtest\n"
     sleep 16
     printf "exit\n"
-) | timeout 90s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 95s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -124,6 +126,9 @@ echo "[PASS] Nested directories read/write verified"
 
 grep -q "\[fstest\] ALL FSTESTS COMPLETED" "$LOGFILE1" || { echo "FAIL: fstest did not complete successfully"; exit 1; }
 echo "[PASS] All fstest assertions passed"
+
+grep -q "\[lfntest\] ALL LFN TESTS PASSED SUCCESSFULLY!" "$LOGFILE1" || { echo "FAIL: lfntest did not complete successfully"; exit 1; }
+echo "[PASS] All lfntest assertions passed"
 
 # Non-regression assertions
 grep -q "Hello from a REAL ELF binary" "$LOGFILE1" || { echo "FAIL: hello.elf failed"; exit 1; }
