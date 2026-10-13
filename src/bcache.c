@@ -59,7 +59,18 @@ static int pick_victim(void) {
     return victim;
 }
 
+static inline uint32_t bcache_lock(void) {
+    uint32_t flags;
+    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    return flags;
+}
+
+static inline void bcache_unlock(uint32_t flags) {
+    asm volatile ("push %0; popf" : : "r"(flags));
+}
+
 int bcache_read(uint32_t lba, uint8_t* out) {
+    uint32_t flags = bcache_lock();
     access_counter++;
     int slot = find_slot(lba);
     if (slot >= 0) {
@@ -67,14 +78,19 @@ int bcache_read(uint32_t lba, uint8_t* out) {
         for (int i = 0; i < BCACHE_BLOCK_SIZE; i++) {
             out[i] = cache[slot].data[i];
         }
+        bcache_unlock(flags);
         return 0;
     }
 
     /* Miss: pick victim and read from ATA */
     slot = pick_victim();
-    if (slot < 0) return -1;
+    if (slot < 0) {
+        bcache_unlock(flags);
+        return -1;
+    }
 
     if (ata_read_sector(lba, cache[slot].data) != 0) {
+        bcache_unlock(flags);
         return -1;
     }
 
@@ -86,15 +102,20 @@ int bcache_read(uint32_t lba, uint8_t* out) {
     for (int i = 0; i < BCACHE_BLOCK_SIZE; i++) {
         out[i] = cache[slot].data[i];
     }
+    bcache_unlock(flags);
     return 0;
 }
 
 int bcache_write(uint32_t lba, const uint8_t* in) {
+    uint32_t flags = bcache_lock();
     access_counter++;
     int slot = find_slot(lba);
     if (slot < 0) {
         slot = pick_victim();
-        if (slot < 0) return -1;
+        if (slot < 0) {
+            bcache_unlock(flags);
+            return -1;
+        }
         cache[slot].lba = lba;
         cache[slot].valid = 1;
     }
@@ -104,10 +125,12 @@ int bcache_write(uint32_t lba, const uint8_t* in) {
     }
     cache[slot].dirty = 1;
     cache[slot].last_used = access_counter;
+    bcache_unlock(flags);
     return 0;
 }
 
 int bcache_sync(void) {
+    uint32_t flags = bcache_lock();
     int err = 0;
     for (int i = 0; i < BCACHE_NUM_BLOCKS; i++) {
         if (cache[i].valid && cache[i].dirty) {
@@ -121,5 +144,6 @@ int bcache_sync(void) {
     if (ata_flush() != 0) {
         err = -1;
     }
+    bcache_unlock(flags);
     return err;
 }
