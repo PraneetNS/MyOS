@@ -71,10 +71,11 @@ typedef struct process {
     /* Stage 17: FPU / SSE state area (512 bytes + 16 bytes alignment pad) */
     uint8_t fpu_buffer[512 + 16];
 
-    /* Stage 18A: poll wait channels */
+    /* Stage 18A: poll wait channels and op flags */
 #define MAX_POLL_CHANNELS 32
     void* poll_channels[MAX_POLL_CHANNELS];
     int   num_poll_channels;
+    int   current_op_flags;     /* Per-process active VFS operation flags (prevents global static race) */
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as either the resident

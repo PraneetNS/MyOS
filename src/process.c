@@ -124,6 +124,7 @@ void process_init_table(int use_kshell) {
     shell->sleep_next = 0;
     shell->cpu_ticks = 0;
     shell->nice = 0;
+    shell->current_op_flags = 0;
     init_fds(shell);
     signal_init_proc(shell);
 
@@ -249,6 +250,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->nice = (parent_pid > 0 && process_find_by_pid(parent_pid)) ? process_find_by_pid(parent_pid)->nice : 0;
     p->heap_end = HEAP_BASE;
     p->heap_mapped_up_to = HEAP_BASE;
+    p->current_op_flags = 0;
     init_fds(p);
     signal_init_proc(p);
     fpu_init_proc(p);
@@ -335,6 +337,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;
+    p->current_op_flags = 0;
 
     fpu_save(parent);
     fpu_copy(p, parent);
