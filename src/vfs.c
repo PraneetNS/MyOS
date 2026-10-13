@@ -4,20 +4,22 @@
 #include "keyboard.h"
 #include "kheap.h"
 #include "pipe.h"
+#include "scheduler.h"
 
 #define MAX_MOUNTS 4
 #define VNODE_POOL_SIZE 128
 #define OPEN_FILE_POOL_SIZE 64
 
 static int active_open_files = 0;
-static int current_op_flags = 0;
 
 int vfs_get_active_open_files(void) {
     return active_open_files;
 }
 
 int vfs_get_current_flags(void) {
-    return current_op_flags;
+    process_t* me = scheduler_current();
+    if (me) return me->current_op_flags;
+    return 0;
 }
 
 typedef struct {
@@ -74,7 +76,18 @@ vnode_t* vfs_get_root(void) {
     return 0;
 }
 
+static inline uint32_t vfs_lock(void) {
+    uint32_t flags;
+    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    return flags;
+}
+
+static inline void vfs_unlock(uint32_t flags) {
+    asm volatile ("push %0; popf" : : "r"(flags));
+}
+
 vnode_t* vnode_alloc(vnode_type_t type, const struct fs_ops* ops, void* fs_data) {
+    uint32_t f = vfs_lock();
     for (int i = 0; i < VNODE_POOL_SIZE; i++) {
         if (vnode_pool[i].refcount == 0) {
             vnode_pool[i].type = type;
@@ -83,28 +96,46 @@ vnode_t* vnode_alloc(vnode_type_t type, const struct fs_ops* ops, void* fs_data)
             vnode_pool[i].size = 0;
             vnode_pool[i].refcount = 1;
             vnode_pool[i].parent = 0;
+            vfs_unlock(f);
             return &vnode_pool[i];
         }
     }
+    vfs_unlock(f);
     return 0;
 }
 
 void vnode_ref(vnode_t* vn) {
-    if (vn) vn->refcount++;
+    if (!vn) return;
+    uint32_t f = vfs_lock();
+    vn->refcount++;
+    vfs_unlock(f);
 }
 
 void vnode_unref(vnode_t* vn) {
-    if (vn && vn->refcount > 0) {
-        if (vn->refcount > 500) return; /* permanent vnode (e.g. devfs) */
+    if (!vn) return;
+    uint32_t f = vfs_lock();
+    if (vn->refcount > 0) {
+        if (vn->refcount > 500) { vfs_unlock(f); return; } /* permanent vnode (e.g. devfs) */
         vn->refcount--;
-        if (vn->refcount == 0 && vn->parent) {
-            vnode_unref(vn->parent);
-            vn->parent = 0;
+        if (vn->refcount == 0) {
+            if (vn->ops && vn->ops->cleanup) {
+                vn->ops->cleanup(vn);
+            }
+            vn->fs_data = 0;
+            if (vn->parent) {
+                vnode_t* p = vn->parent;
+                vn->parent = 0;
+                vfs_unlock(f);
+                vnode_unref(p);
+                return;
+            }
         }
     }
+    vfs_unlock(f);
 }
 
 open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
+    uint32_t f = vfs_lock();
     for (int i = 0; i < OPEN_FILE_POOL_SIZE; i++) {
         if (of_pool[i].refcount == 0) {
             of_pool[i].type = type;
@@ -115,24 +146,30 @@ open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
             of_pool[i].refcount = 1;
             if (vn) vnode_ref(vn);
             active_open_files++;
+            vfs_unlock(f);
             return &of_pool[i];
         }
     }
+    vfs_unlock(f);
     return 0;
 }
 
 void open_file_ref(open_file_t* of) {
     if (!of) return;
+    uint32_t f = vfs_lock();
     if (of->refcount <= 0) {
         kprintf("[vfs] ASSERTION FAILED: open_file %p refcount <= 0 in ref (%d)\n", of, of->refcount);
     }
     of->refcount++;
+    vfs_unlock(f);
 }
 
 void open_file_unref(open_file_t* of) {
     if (!of) return;
+    uint32_t f = vfs_lock();
     if (of->refcount <= 0) {
         kprintf("[vfs] ASSERTION FAILED: open_file %p refcount <= 0 in unref (%d)\n", of, of->refcount);
+        vfs_unlock(f);
         return;
     }
     of->refcount--;
@@ -140,11 +177,14 @@ void open_file_unref(open_file_t* of) {
         if (of->type == OPEN_FILE_CONSOLE) {
             console_restore_text_mode();
         }
+        vnode_t* vto_unref = 0;
+        pipe_t* pto_close = 0;
+        int pflags = of->flags;
         if ((of->type == OPEN_FILE_VNODE || of->type == OPEN_FILE_CONSOLE) && of->vnode) {
-            vnode_unref(of->vnode);
+            vto_unref = of->vnode;
             of->vnode = 0;
         } else if (of->type == OPEN_FILE_PIPE && of->pipe) {
-            pipe_close_end((pipe_t*) of->pipe, of->flags);
+            pto_close = (pipe_t*) of->pipe;
             of->pipe = 0;
         }
         of->type = OPEN_FILE_NONE;
@@ -152,7 +192,12 @@ void open_file_unref(open_file_t* of) {
         if (active_open_files < 0) {
             kprintf("[vfs] ASSERTION FAILED: active_open_files negative: %d\n", active_open_files);
         }
+        vfs_unlock(f);
+        if (vto_unref) vnode_unref(vto_unref);
+        if (pto_close) pipe_close_end(pto_close, pflags);
+        return;
     }
+    vfs_unlock(f);
 }
 
 open_file_t* vfs_get_console_stdin(void) {
@@ -273,12 +318,18 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
         vnode_t* next = 0;
         int ret = curr->ops->lookup(curr, token, &next);
         if (ret != 0 || !next) {
+            if (curr != mount_table[best_mount].root) {
+                vnode_unref(curr);
+            }
             return -ENOENT;
         }
 
         if (!next->parent) {
             next->parent = curr;
             vnode_ref(curr);
+        }
+        if (curr != mount_table[best_mount].root) {
+            vnode_unref(curr);
         }
         curr = next;
     }
@@ -360,7 +411,8 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
     if (!of) return -EBADF;
 
     int nonblock = (of->flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
-    current_op_flags = of->flags;
+    process_t* me = scheduler_current();
+    if (me) me->current_op_flags = of->flags;
 
     if (of->type == OPEN_FILE_CONSOLE) {
         if ((of->flags & 3) == O_WRONLY) return -EBADF;
@@ -386,7 +438,8 @@ int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
     if (!of) return -EBADF;
 
     int nonblock = (of->flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
-    current_op_flags = of->flags;
+    process_t* me = scheduler_current();
+    if (me) me->current_op_flags = of->flags;
 
     if (of->type == OPEN_FILE_CONSOLE) {
         if ((of->flags & 3) == O_RDONLY) return -EBADF;
