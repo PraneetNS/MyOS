@@ -417,26 +417,38 @@ static void syscall_handler(struct registers* regs) {
             int err = validate_user_string(name);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
-            static char kname[PATH_MAX];
+            typedef struct {
+                char kname[PATH_MAX];
+                char bin_path[PATH_MAX];
+                char kargv_buf[16][NAME_MAX + 1];
+                char kenvp_buf[32][128];
+            } exec_params_t;
+
+            exec_params_t* ep = (exec_params_t*) kmalloc(sizeof(exec_params_t));
+            if (!ep) {
+                regs->eax = (uint32_t) -ENOMEM;
+                break;
+            }
+
             int ki = 0;
             while (name[ki] && ki < PATH_MAX - 1) {
-                kname[ki] = name[ki];
+                ep->kname[ki] = name[ki];
                 ki++;
             }
-            kname[ki] = '\0';
+            ep->kname[ki] = '\0';
 
             process_t* me = scheduler_current();
             vnode_t* vn = 0;
-            if (vfs_resolve_path(kname, me->cwd, &vn) != 0 || !vn) {
-                static char bin_path[PATH_MAX];
-                bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
+            if (vfs_resolve_path(ep->kname, me->cwd, &vn) != 0 || !vn) {
+                ep->bin_path[0] = '/'; ep->bin_path[1] = 'b'; ep->bin_path[2] = 'i'; ep->bin_path[3] = 'n'; ep->bin_path[4] = '/';
                 int l = 0;
-                while (kname[l] && l < PATH_MAX - 6) {
-                    bin_path[5 + l] = kname[l];
+                while (ep->kname[l] && l < PATH_MAX - 6) {
+                    ep->bin_path[5 + l] = ep->kname[l];
                     l++;
                 }
-                bin_path[5 + l] = '\0';
-                if (vfs_resolve_path(bin_path, me->cwd, &vn) != 0 || !vn) {
+                ep->bin_path[5 + l] = '\0';
+                if (vfs_resolve_path(ep->bin_path, me->cwd, &vn) != 0 || !vn) {
+                    kfree(ep);
                     regs->eax = (uint32_t)-1;
                     break;
                 }
@@ -444,7 +456,6 @@ static void syscall_handler(struct registers* regs) {
 
             /* Copy arguments from user space before tearing down address space */
             int argc = 0;
-            static char kargv_buf[16][NAME_MAX + 1];
             const char* kargv[17];
             if (uargv) {
                 int bad = 0;
@@ -459,34 +470,34 @@ static void syscall_handler(struct registers* regs) {
                     }
                     int j = 0;
                     while (uarg[j] && j < NAME_MAX) {
-                        kargv_buf[argc][j] = uarg[j];
+                        ep->kargv_buf[argc][j] = uarg[j];
                         j++;
                     }
-                    kargv_buf[argc][j] = '\0';
-                    kargv[argc] = kargv_buf[argc];
+                    ep->kargv_buf[argc][j] = '\0';
+                    kargv[argc] = ep->kargv_buf[argc];
                     argc++;
                 }
                 if (bad) {
                     vnode_unref(vn);
+                    kfree(ep);
                     regs->eax = (uint32_t) -EFAULT;
                     break;
                 }
             }
             if (argc == 0) {
                 int j = 0;
-                while (kname[j] && j < NAME_MAX) {
-                    kargv_buf[0][j] = kname[j];
+                while (ep->kname[j] && j < NAME_MAX) {
+                    ep->kargv_buf[0][j] = ep->kname[j];
                     j++;
                 }
-                kargv_buf[0][j] = '\0';
-                kargv[0] = kargv_buf[0];
+                ep->kargv_buf[0][j] = '\0';
+                kargv[0] = ep->kargv_buf[0];
                 argc = 1;
             }
             kargv[argc] = 0;
 
             /* Copy environment variables from user space if provided, or default */
             int envc = 0;
-            static char kenvp_buf[32][128];
             const char* kenvp[33];
             static const char* const default_env[5] = {
                 "HOME=/",
@@ -509,15 +520,16 @@ static void syscall_handler(struct registers* regs) {
                     }
                     int j = 0;
                     while (uenv[j] && j < 127) {
-                        kenvp_buf[envc][j] = uenv[j];
+                        ep->kenvp_buf[envc][j] = uenv[j];
                         j++;
                     }
-                    kenvp_buf[envc][j] = '\0';
-                    kenvp[envc] = kenvp_buf[envc];
+                    ep->kenvp_buf[envc][j] = '\0';
+                    kenvp[envc] = ep->kenvp_buf[envc];
                     envc++;
                 }
                 if (bad) {
                     vnode_unref(vn);
+                    kfree(ep);
                     regs->eax = (uint32_t) -EFAULT;
                     break;
                 }
@@ -534,6 +546,7 @@ static void syscall_handler(struct registers* regs) {
             uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
             if (!buf) {
                 vnode_unref(vn);
+                kfree(ep);
                 regs->eax = (uint32_t)-1;
                 break;
             }
@@ -542,6 +555,7 @@ static void syscall_handler(struct registers* regs) {
             if (n <= 0) {
                 vnode_unref(vn);
                 kfree(buf);
+                kfree(ep);
                 regs->eax = (uint32_t)-1;
                 break;
             }
@@ -550,6 +564,7 @@ static void syscall_handler(struct registers* regs) {
             if (!new_as.directory) {
                 vnode_unref(vn);
                 kfree(buf);
+                kfree(ep);
                 regs->eax = (uint32_t)-1;
                 break;
             }
@@ -560,6 +575,7 @@ static void syscall_handler(struct registers* regs) {
                 vnode_unref(vn);
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
+                kfree(ep);
                 regs->eax = (uint32_t)-1;
                 break;
             }
@@ -590,11 +606,12 @@ static void syscall_handler(struct registers* regs) {
             me->heap_end = HEAP_BASE;
             me->heap_mapped_up_to = HEAP_BASE;
 
-            const char* base = kname;
-            for (int k = 0; kname[k]; k++) {
-                if (kname[k] == '/') base = &kname[k + 1];
+            const char* base = ep->kname;
+            for (int k = 0; ep->kname[k]; k++) {
+                if (ep->kname[k] == '/') base = &ep->kname[k + 1];
             }
             int i = 0; for (; base[i] && i < 31; i++) me->name[i] = base[i]; me->name[i] = '\0';
+            kfree(ep);
 
             for (int sig = 1; sig < NSIG; sig++) {
                 if (me->sig_actions[sig].sa_handler != SIG_IGN) {
