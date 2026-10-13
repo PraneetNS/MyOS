@@ -290,8 +290,8 @@ static void syscall_handler(struct registers* regs) {
 
             open_file_type_t of_type = (vn->type == VNODE_CONSOLE) ? OPEN_FILE_CONSOLE : OPEN_FILE_VNODE;
             open_file_t* of = open_file_alloc(of_type, vn, flags);
+            vnode_unref(vn);
             if (!of) {
-                vnode_unref(vn);
                 regs->eax = (uint32_t) -ENFILE;
                 break;
             }
