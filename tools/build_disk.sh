@@ -40,14 +40,6 @@ for elf in userland/*.elf; do
             mcopy -i "$IMAGE" "$elf" "::/$base"
             mcopy -i "$IMAGE" "$elf" "::/bin/$base"
         fi
-        # If base name > 8 chars, also copy first 8 characters for direct FAT16 to_dos_name matching
-        if [ ${#base} -gt 8 ]; then
-            short8="${base:0:8}"
-            mcopy -o -i "$IMAGE" "$elf" "::/${short8}.elf"
-            mcopy -o -i "$IMAGE" "$elf" "::/bin/${short8}.elf"
-            mcopy -o -i "$IMAGE" "$elf" "::/${short8}"
-            mcopy -o -i "$IMAGE" "$elf" "::/bin/${short8}"
-        fi
     fi
 done
 

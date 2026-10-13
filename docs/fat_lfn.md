@@ -74,23 +74,33 @@ typedef struct {
 
 ## 4. Multi-Step Implementation Plan
 
-- **Step 1: Audit + Name Limits**:
-  - Update `src/vfs.h`, `libmyos/include/dirent.h`, `src/process.h`.
-  - Update path buffers in `src/vfs.c`, `src/syscall.c`, `userland/sh.c`, `userland/ls.c`.
-  - Add `-ENAMETOOLONG` checks for component and total path lengths.
-- **Step 2: LFN Read Support**:
-  - Parse VFAT entries in `fat16_readdir` and `fat16_lookup`.
-  - Convert UTF-16LE to UTF-8.
-  - Implement case-insensitive comparison against both long name and 8.3 alias.
-- **Step 3: LFN Write Support**:
-  - Name validation and short alias generation (`~1` through `~N`).
-  - Consecutive slot allocation in root directory and subdirectories.
-  - Write reverse sequence LFN entries with valid checksums and padding.
-- **Step 4: Rename, Unlink, Rmdir**:
-  - Mark entire LFN sets as `0xE5` deleted entries on deletion.
-  - Support case-only rename (`foo.txt` -> `Foo.txt`) and cross-directory moves.
-- **Step 5: Clean Up 8.3 Workarounds**:
-  - Remove short aliases from `tools/build_disk.sh`.
-  - Restore natural long filenames for executables and font assets.
-- **Step 6: Automated Test Suite**:
-  - `userland/lfntest.c` testing UTF-8, alias collisions, directory cluster growth, model-based stress, and host interop (`fsck.fat -n`, `mdir`, `mcopy`).
+- **Step 1: Audit + Name Limits [COMPLETED]**:
+  - Updated `src/vfs.h`, `libmyos/include/dirent.h`, `src/process.h`.
+  - Updated path buffers in `src/vfs.c`, `src/syscall.c`, `userland/sh.c`, `userland/ls.c`.
+  - Added `-ENAMETOOLONG` checks for component and total path lengths.
+- **Step 2: LFN Read Support [COMPLETED]**:
+  - Implemented VFAT LFN entry structures (`fat_lfn_entry_t`), checksum calculation, and UTF-16LE / UTF-8 conversion in `src/fat16.c`.
+  - Parsed reverse-ordered sequence entries in `fat16_readdir` and populated canonical long names.
+  - Case-insensitive lookup supporting both long filenames and 8.3 numeric tail aliases.
+- **Step 3: LFN Write Support [COMPLETED]**:
+  - Implemented `fat16_generate_83_alias` with lossy conversion, stripping forbidden chars, and collision resolution (`~1` to `~999999`).
+  - Implemented `fat16_alloc_dir_slots` to find contiguous spans of free or deleted (`0xE5`) directory entries in both fixed root and cluster-chained subdirectories.
+  - Implemented reverse-sequence LFN slot writer with valid checksums and `0xFFFF` padding.
+- **Step 4: Rename, Unlink, Rmdir [COMPLETED]**:
+  - Multi-slot erasure in `fat16_unlink` and `fat16_rmdir` writing `0xE5` to all LFN entries and the primary short entry.
+  - Implemented full and case-only renames in `fat16_rename` across directory trees.
+- **Step 5: Clean Up 8.3 Workarounds [COMPLETED]**:
+  - Removed truncated legacy aliases from `tools/build_disk.sh`.
+  - Restored natural long filenames (`crash_safety_test.elf`, `screenshot.elf`, etc.).
+- **Step 6: Automated Test Suite [COMPLETED]**:
+  - Added `userland/lfntest.c` testing read of host-created LFNs, direct open/stat/read, creation of long names (>11 chars with spaces), readdir exact matching, 8.3 alias access (`/MYLONG~1.TXT`), case-only rename, cross-name rename, nested long directories, multi-slot unlink/rmdir cleanup, and PMM frame leak assertions.
+  - Integrated `lfntest` into automated CI/boot validation (`tools/test_boot.sh`).
+
+---
+
+## 5. Verification & Test Results
+
+- All userland tests (`lfntest`, `fstest`, `concur_test`, `memtest`, `sigtest`, `jobtest`, `fbtest`, `ttytest`) pass cleanly.
+- Zero memory / PMM frame leaks detected across repeated LFN operations and directory modifications.
+- Host interoperability verified using standard Linux FAT utilities (`mkfs.fat`, `mdir`, `mcopy`, `fsck.fat`).
+
