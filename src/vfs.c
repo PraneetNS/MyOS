@@ -7,8 +7,8 @@
 #include "scheduler.h"
 
 #define MAX_MOUNTS 4
-#define VNODE_POOL_SIZE 128
-#define OPEN_FILE_POOL_SIZE 64
+#define VNODE_POOL_SIZE 256
+#define OPEN_FILE_POOL_SIZE 128
 
 static int active_open_files = 0;
 
