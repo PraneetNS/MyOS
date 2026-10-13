@@ -62,23 +62,24 @@ static uint32_t root_dir_start_lba;
 static uint32_t root_dir_sectors;
 static uint32_t data_start_lba;
 static uint32_t total_data_clusters;
-
-#define FAT_NODE_POOL_SIZE 128
-static fat_node_t node_pool[FAT_NODE_POOL_SIZE];
-static int node_pool_used[FAT_NODE_POOL_SIZE];
+static fat_node_t fat16_root_node;
 
 static fat_node_t* alloc_fat_node(void) {
-    for (int i = 0; i < FAT_NODE_POOL_SIZE; i++) {
-        if (!node_pool_used[i]) {
-            node_pool_used[i] = 1;
-            node_pool[i].first_cluster = 0;
-            node_pool[i].file_size = 0;
-            node_pool[i].is_dir = 0;
-            node_pool[i].is_root = 0;
-            node_pool[i].dir_sector = 0;
-            node_pool[i].dir_offset = 0;
-            return &node_pool[i];
-        }
+    fat_node_t* n = (fat_node_t*) kmalloc(sizeof(fat_node_t));
+    if (!n) return 0;
+    n->first_cluster = 0;
+    n->file_size = 0;
+    n->is_dir = 0;
+    n->is_root = 0;
+    n->dir_sector = 0;
+    n->dir_offset = 0;
+    return n;
+}
+
+static int fat16_cleanup(vnode_t* node) {
+    if (node && node->fs_data && node->fs_data != &fat16_root_node) {
+        kfree(node->fs_data);
+        node->fs_data = 0;
     }
     return 0;
 }
@@ -289,12 +290,30 @@ static int alloc_entry_in_dir(fat_node_t* dir, uint32_t* out_sec, uint32_t* out_
         uint16_t new_clus = fat_alloc_cluster();
         if (new_clus == 0) return -ENOSPC;
         fat_set_entry(last_clus, new_clus);
-        *out_sec = cluster_to_lba(new_clus);
+
+        uint32_t clba = cluster_to_lba(new_clus);
+        uint8_t zbuf[512];
+        for (int i = 0; i < 512; i++) zbuf[i] = 0;
+        for (uint32_t s = 0; s < bpb.sectors_per_cluster; s++) {
+            bcache_write(clba + s, zbuf);
+        }
+
+        *out_sec = clba;
         *out_off = 0;
         return 0;
     }
 
     return -ENOSPC; /* Root directory full */
+}
+
+static inline uint32_t fat_lock(void) {
+    uint32_t flags;
+    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    return flags;
+}
+
+static inline void fat_unlock(uint32_t flags) {
+    asm volatile ("push %0; popf" : : "r"(flags));
 }
 
 /* Forward declarations of fs_ops */
@@ -690,9 +709,11 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
     new_e.wrt_time = cur_time;
     write_dir_entry(new_sec, new_off, &new_e);
 
-    /* Remove old entry */
-    old_e.name[0] = (char)0xE5;
-    write_dir_entry(old_sec, old_off, &old_e);
+    /* Remove old entry if not overwritten */
+    if (old_sec != new_sec || old_off != new_off) {
+        old_e.name[0] = (char)0xE5;
+        write_dir_entry(old_sec, old_off, &old_e);
+    }
     return 0;
 }
 
@@ -777,23 +798,100 @@ static short fat16_poll(vnode_t* node, short events, void** chan_out) {
     return (POLLIN | POLLOUT) & events;
 }
 
+static int fat16_locked_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    uint32_t f = fat_lock();
+    int r = fat16_lookup(dir, name, out);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_read(vnode_t* node, uint32_t offset, uint8_t* buf, uint32_t count) {
+    uint32_t f = fat_lock();
+    int r = fat16_read(node, offset, buf, count);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint32_t count) {
+    uint32_t f = fat_lock();
+    int r = fat16_write(node, offset, buf, count);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_create(vnode_t* dir, const char* name, vnode_t** out) {
+    uint32_t f = fat_lock();
+    int r = fat16_create(dir, name, out);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
+    uint32_t f = fat_lock();
+    int r = fat16_mkdir(dir, name, out);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_unlink(vnode_t* dir, const char* name) {
+    uint32_t f = fat_lock();
+    int r = fat16_unlink(dir, name);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_rmdir(vnode_t* dir, const char* name) {
+    uint32_t f = fat_lock();
+    int r = fat16_rmdir(dir, name);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir, const char* new_name) {
+    uint32_t f = fat_lock();
+    int r = fat16_rename(old_dir, old_name, new_dir, new_name);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    uint32_t f = fat_lock();
+    int r = fat16_readdir(dir, index, entry);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_truncate(vnode_t* node, uint32_t length) {
+    uint32_t f = fat_lock();
+    int r = fat16_truncate(node, length);
+    fat_unlock(f);
+    return r;
+}
+
+static int fat16_locked_stat(vnode_t* node, struct stat* st) {
+    uint32_t f = fat_lock();
+    int r = fat16_stat(node, st);
+    fat_unlock(f);
+    return r;
+}
+
 static const struct fs_ops fat16_ops = {
-    .lookup   = fat16_lookup,
-    .read     = fat16_read,
-    .write    = fat16_write,
-    .create   = fat16_create,
-    .mkdir    = fat16_mkdir,
-    .unlink   = fat16_unlink,
-    .rmdir    = fat16_rmdir,
-    .rename   = fat16_rename,
-    .readdir  = fat16_readdir,
-    .truncate = fat16_truncate,
-    .stat     = fat16_stat,
-    .poll     = fat16_poll
+    .lookup   = fat16_locked_lookup,
+    .read     = fat16_locked_read,
+    .write    = fat16_locked_write,
+    .create   = fat16_locked_create,
+    .mkdir    = fat16_locked_mkdir,
+    .unlink   = fat16_locked_unlink,
+    .rmdir    = fat16_locked_rmdir,
+    .rename   = fat16_locked_rename,
+    .readdir  = fat16_locked_readdir,
+    .truncate = fat16_locked_truncate,
+    .stat     = fat16_locked_stat,
+    .poll     = fat16_poll,
+    .cleanup  = fat16_cleanup
 };
 
 static vnode_t fat16_root_vnode;
-static fat_node_t fat16_root_node;
 
 int fat16_init(void) {
     uint8_t boot_sector[512];
