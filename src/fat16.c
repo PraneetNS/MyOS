@@ -44,6 +44,92 @@ typedef struct {
     uint16_t fst_clus_lo;
     uint32_t file_size;
 } __attribute__((packed)) fat_dirent_t;
+_Static_assert(sizeof(fat_dirent_t) == 32, "fat_dirent_t must be 32 bytes");
+
+#define FAT_LFN_LAST          0x40
+#define FAT_LFN_SEQ_MASK      0x1F
+#define FAT_LFN_MAX_ENTRIES   20
+#define FAT_LFN_CHARS_PER_ENT 13
+
+typedef struct {
+    uint8_t  seq;          /* Sequence number: 1..31 | 0x40 (LAST_LFN) */
+    uint16_t name1[5];     /* Characters 1-5 (UTF-16LE) */
+    uint8_t  attr;         /* Always 0x0F (FAT_ATTR_LFN = READONLY|HIDDEN|SYSTEM|VOLUME_ID) */
+    uint8_t  type;         /* Reserved, always 0x00 */
+    uint8_t  checksum;     /* Checksum of the associated 8.3 alias */
+    uint16_t name2[6];     /* Characters 6-11 (UTF-16LE) */
+    uint16_t fst_clus_lo;  /* Reserved, always 0x0000 */
+    uint16_t name3[2];     /* Characters 12-13 (UTF-16LE) */
+} __attribute__((packed)) fat_lfn_entry_t;
+_Static_assert(sizeof(fat_lfn_entry_t) == 32, "fat_lfn_entry_t must be 32 bytes");
+
+static __attribute__((unused)) uint8_t fat_lfn_checksum(const char short_name[11]) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; i++) {
+        sum = (uint8_t)(((sum & 1) ? 0x80 : 0) + (sum >> 1) + (uint8_t)short_name[i]);
+    }
+    return sum;
+}
+
+static __attribute__((unused)) void fat_lfn_extract_chars(const fat_lfn_entry_t* lfn, uint16_t out[13]) {
+    for (int i = 0; i < 5; i++) out[i] = lfn->name1[i];
+    for (int i = 0; i < 6; i++) out[5 + i] = lfn->name2[i];
+    for (int i = 0; i < 2; i++) out[11 + i] = lfn->name3[i];
+}
+
+static __attribute__((unused)) void fat_lfn_set_chars(fat_lfn_entry_t* lfn, const uint16_t in[13]) {
+    for (int i = 0; i < 5; i++) lfn->name1[i] = in[i];
+    for (int i = 0; i < 6; i++) lfn->name2[i] = in[5 + i];
+    for (int i = 0; i < 2; i++) lfn->name3[i] = in[11 + i];
+}
+
+static __attribute__((unused)) int fat_lfn_ucs2_to_utf8(const uint16_t* u16, int u16_len, char* out, int max_out) {
+    int out_len = 0;
+    for (int i = 0; i < u16_len; i++) {
+        uint16_t ch = u16[i];
+        if (ch == 0x0000 || ch == 0xFFFF) break;
+        if (ch < 0x80) {
+            if (out_len + 1 >= max_out) break;
+            out[out_len++] = (char)ch;
+        } else if (ch < 0x800) {
+            if (out_len + 2 >= max_out) break;
+            out[out_len++] = (char)(0xC0 | (ch >> 6));
+            out[out_len++] = (char)(0x80 | (ch & 0x3F));
+        } else {
+            if (out_len + 3 >= max_out) break;
+            out[out_len++] = (char)(0xE0 | (ch >> 12));
+            out[out_len++] = (char)(0x80 | ((ch >> 6) & 0x3F));
+            out[out_len++] = (char)(0x80 | (ch & 0x3F));
+        }
+    }
+    out[out_len] = '\0';
+    return out_len;
+}
+
+static __attribute__((unused)) int fat_lfn_utf8_to_ucs2(const char* utf8, uint16_t* out, int max_out) {
+    int u16_len = 0;
+    const uint8_t* p = (const uint8_t*)utf8;
+    while (*p && u16_len < max_out) {
+        if (*p < 0x80) {
+            out[u16_len++] = *p++;
+        } else if ((*p & 0xE0) == 0xC0) {
+            uint16_t c = (*p++ & 0x1F) << 6;
+            if (*p) c |= (*p++ & 0x3F);
+            out[u16_len++] = c;
+        } else if ((*p & 0xF0) == 0xE0) {
+            uint16_t c = (*p++ & 0x0F) << 12;
+            if (*p) c |= (*p++ & 0x3F) << 6;
+            if (*p) c |= (*p++ & 0x3F);
+            out[u16_len++] = c;
+        } else {
+            /* 4-byte surrogate or invalid: replace with '?' */
+            p++;
+            out[u16_len++] = '?';
+        }
+    }
+    return u16_len;
+}
+
 
 typedef struct {
     uint16_t first_cluster;
