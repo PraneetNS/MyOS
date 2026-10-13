@@ -626,6 +626,118 @@ static int alloc_entry_in_dir(fat_node_t* dir, uint32_t* out_sec, uint32_t* out_
     return -ENOSPC; /* Root directory full */
 }
 
+static int write_dir_entry_at_idx(fat_node_t* dir, uint32_t idx, const void* in_32) {
+    fat_dirent_t dummy;
+    uint32_t sec, off;
+    if (!read_dir_entry(dir, idx, &dummy, &sec, &off)) {
+        return -EIO;
+    }
+    return write_dir_entry(sec, off, (const fat_dirent_t*)in_32);
+}
+
+static int alloc_contiguous_entries_in_dir(fat_node_t* dir, int count, uint32_t* out_start_idx) {
+    uint32_t idx = 0;
+    fat_dirent_t e;
+    uint32_t sec, off;
+    int run = 0;
+    uint32_t run_start = 0;
+
+    for (;;) {
+        if (!read_dir_entry(dir, idx, &e, &sec, &off)) {
+            if (dir->is_root) {
+                return -ENOSPC;
+            }
+            uint16_t last_clus = dir->first_cluster;
+            while (fat_get_entry(last_clus) >= 2 && fat_get_entry(last_clus) < 0xFFF8) {
+                last_clus = fat_get_entry(last_clus);
+            }
+            uint16_t new_clus = fat_alloc_cluster();
+            if (new_clus == 0) return -ENOSPC;
+            fat_set_entry(last_clus, new_clus);
+
+            uint32_t clba = cluster_to_lba(new_clus);
+            uint8_t zbuf[512];
+            for (int i = 0; i < 512; i++) zbuf[i] = 0;
+            for (uint32_t s = 0; s < bpb.sectors_per_cluster; s++) {
+                bcache_write(clba + s, zbuf);
+            }
+            continue;
+        }
+
+        if ((uint8_t)e.name[0] == 0x00 || (uint8_t)e.name[0] == 0xE5) {
+            if (run == 0) {
+                run_start = idx;
+            }
+            run++;
+            if (run == count) {
+                *out_start_idx = run_start;
+                return 0;
+            }
+        } else {
+            run = 0;
+        }
+        idx++;
+    }
+}
+
+static int write_lfn_set(fat_node_t* dir, const char* name, const char short_83[11],
+                          const fat_dirent_t* short_e, uint32_t* out_sec, uint32_t* out_off) {
+    int needs_lfn = fat16_needs_lfn(name);
+    int num_lfn = 0;
+    uint16_t u16_name[260];
+    int u16_len = 0;
+
+    if (needs_lfn) {
+        u16_len = fat_lfn_utf8_to_ucs2(name, u16_name, 256);
+        num_lfn = (u16_len + FAT_LFN_CHARS_PER_ENT - 1) / FAT_LFN_CHARS_PER_ENT;
+    }
+    int total_slots = num_lfn + 1;
+
+    uint32_t start_idx = 0;
+    int err = alloc_contiguous_entries_in_dir(dir, total_slots, &start_idx);
+    if (err != 0) return err;
+
+    uint8_t chk = fat_lfn_checksum(short_83);
+
+    for (int seq = num_lfn; seq >= 1; seq--) {
+        fat_lfn_entry_t lfn;
+        lfn.seq = (uint8_t)seq;
+        if (seq == num_lfn) lfn.seq |= FAT_LFN_LAST;
+        lfn.attr = FAT_ATTR_LFN;
+        lfn.type = 0;
+        lfn.checksum = chk;
+        lfn.fst_clus_lo = 0;
+
+        uint16_t chars[13];
+        int char_start = (seq - 1) * FAT_LFN_CHARS_PER_ENT;
+        int nul_placed = 0;
+        for (int i = 0; i < 13; i++) {
+            int char_pos = char_start + i;
+            if (char_pos < u16_len) {
+                chars[i] = u16_name[char_pos];
+            } else if (!nul_placed) {
+                chars[i] = 0x0000;
+                nul_placed = 1;
+            } else {
+                chars[i] = 0xFFFF;
+            }
+        }
+        fat_lfn_set_chars(&lfn, chars);
+        uint32_t slot_idx = start_idx + (num_lfn - seq);
+        write_dir_entry_at_idx(dir, slot_idx, &lfn);
+    }
+
+    uint32_t short_slot_idx = start_idx + num_lfn;
+    fat_dirent_t dummy;
+    uint32_t sec, off;
+    read_dir_entry(dir, short_slot_idx, &dummy, &sec, &off);
+    write_dir_entry(sec, off, short_e);
+
+    if (out_sec) *out_sec = sec;
+    if (out_off) *out_off = off;
+    return 0;
+}
+
 static inline uint32_t fat_lock(void) {
     uint32_t flags;
     asm volatile ("pushf; pop %0; cli" : "=r"(flags));
@@ -825,19 +937,17 @@ static int fat16_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint3
 
 static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
-    char name_83[11];
-    to_dos_name(name, name_83);
 
-    if (find_entry_in_dir(dnode, name_83, 0, 0, 0)) {
+    if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0, 0)) {
         return -EEXIST;
     }
 
-    uint32_t sec, off;
-    int err = alloc_entry_in_dir(dnode, &sec, &off);
+    char short_83[11];
+    int err = fat16_generate_short_alias(dnode, name, short_83);
     if (err != 0) return err;
 
     fat_dirent_t e;
-    for (int i = 0; i < 11; i++) e.name[i] = name_83[i];
+    for (int i = 0; i < 11; i++) e.name[i] = short_83[i];
     e.attr = FAT_ATTR_ARCHIVE;
     e.nt_res = 0;
     uint16_t cur_date, cur_time;
@@ -852,7 +962,9 @@ static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
     e.fst_clus_lo = 0;
     e.file_size = 0;
 
-    write_dir_entry(sec, off, &e);
+    uint32_t sec, off;
+    err = write_lfn_set(dnode, name, short_83, &e, &sec, &off);
+    if (err != 0) return err;
 
     fat_node_t* fnode = alloc_fat_node();
     if (!fnode) return -ENOMEM;
@@ -864,7 +976,10 @@ static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
     fnode->dir_offset = off;
 
     vnode_t* vn = vnode_alloc(VNODE_FILE, &fat16_ops, fnode);
-    if (!vn) return -ENOMEM;
+    if (!vn) {
+        kfree(fnode);
+        return -ENOMEM;
+    }
     vn->size = 0;
     *out = vn;
     return 0;
@@ -872,12 +987,14 @@ static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
 
 static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
-    char name_83[11];
-    to_dos_name(name, name_83);
 
-    if (find_entry_in_dir(dnode, name_83, 0, 0, 0)) {
+    if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0, 0)) {
         return -EEXIST;
     }
+
+    char short_83[11];
+    int err = fat16_generate_short_alias(dnode, name, short_83);
+    if (err != 0) return err;
 
     uint16_t new_clus = fat_alloc_cluster();
     if (new_clus == 0) return -ENOSPC;
@@ -903,12 +1020,8 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
         bcache_write(clus_lba + s, sbuf);
     }
 
-    uint32_t sec, off;
-    int err = alloc_entry_in_dir(dnode, &sec, &off);
-    if (err != 0) return err;
-
     fat_dirent_t e;
-    for (int i = 0; i < 11; i++) e.name[i] = name_83[i];
+    for (int i = 0; i < 11; i++) e.name[i] = short_83[i];
     e.attr = FAT_ATTR_DIRECTORY;
     e.nt_res = 0;
     uint16_t cur_date, cur_time;
@@ -923,7 +1036,12 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     e.fst_clus_lo = new_clus;
     e.file_size = 0;
 
-    write_dir_entry(sec, off, &e);
+    uint32_t sec, off;
+    err = write_lfn_set(dnode, name, short_83, &e, &sec, &off);
+    if (err != 0) {
+        fat_free_chain(new_clus);
+        return err;
+    }
 
     fat_node_t* fnode = alloc_fat_node();
     if (!fnode) return -ENOMEM;
@@ -935,7 +1053,10 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     fnode->dir_offset = off;
 
     vnode_t* vn = vnode_alloc(VNODE_DIR, &fat16_ops, fnode);
-    if (!vn) return -ENOMEM;
+    if (!vn) {
+        kfree(fnode);
+        return -ENOMEM;
+    }
     vn->size = 0;
     *out = vn;
     return 0;
