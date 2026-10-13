@@ -542,7 +542,7 @@ static __attribute__((unused)) int fat16_generate_short_alias(fat_node_t* dir, c
 
 static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t* out,
                                  uint32_t* out_sec, uint32_t* out_off,
-                                 uint32_t* out_lfn_sec, uint32_t* out_lfn_off, uint32_t* out_lfn_slots) {
+                                 uint32_t* out_short_idx, uint32_t* out_lfn_slots) {
     uint32_t idx = 0;
     fat_dirent_t e;
     uint32_t sec, off;
@@ -563,8 +563,6 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
 
         char lfn_name[NAME_MAX + 1];
         int has_lfn = lfn_accum_get_name(&acc, &e, lfn_name, sizeof(lfn_name));
-        uint32_t lfn_sec = acc.start_sec;
-        uint32_t lfn_off = acc.start_off;
         uint32_t lfn_slots = acc.slots;
 
         int match = 0;
@@ -578,8 +576,7 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
             if (out) *out = e;
             if (out_sec) *out_sec = sec;
             if (out_off) *out_off = off;
-            if (out_lfn_sec) *out_lfn_sec = has_lfn ? lfn_sec : 0;
-            if (out_lfn_off) *out_lfn_off = has_lfn ? lfn_off : 0;
+            if (out_short_idx) *out_short_idx = idx - 1;
             if (out_lfn_slots) *out_lfn_slots = has_lfn ? lfn_slots : 0;
             return 1;
         }
@@ -588,7 +585,20 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
     return 0;
 }
 
-static int alloc_entry_in_dir(fat_node_t* dir, uint32_t* out_sec, uint32_t* out_off) {
+static int delete_entry_and_lfn(fat_node_t* dir, uint32_t short_idx, int lfn_slots) {
+    for (int i = 0; i <= lfn_slots; i++) {
+        uint32_t target_idx = short_idx - (lfn_slots - i);
+        fat_dirent_t de;
+        uint32_t s, o;
+        if (read_dir_entry(dir, target_idx, &de, &s, &o)) {
+            de.name[0] = (char)0xE5;
+            write_dir_entry(s, o, &de);
+        }
+    }
+    return 0;
+}
+
+static __attribute__((unused)) int alloc_entry_in_dir(fat_node_t* dir, uint32_t* out_sec, uint32_t* out_off) {
     uint32_t idx = 0;
     fat_dirent_t e;
     uint32_t sec, off;
@@ -756,7 +766,7 @@ static int fat16_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     fat_dirent_t e;
     uint32_t sec, off;
 
-    if (!find_entry_in_dir_lfn(dnode, name, &e, &sec, &off, 0, 0, 0)) {
+    if (!find_entry_in_dir_lfn(dnode, name, &e, &sec, &off, 0, 0)) {
         char name_83[11];
         to_dos_name(name, name_83);
         int found = 0;
@@ -938,7 +948,7 @@ static int fat16_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint3
 static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
 
-    if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0, 0)) {
+    if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0)) {
         return -EEXIST;
     }
 
@@ -988,7 +998,7 @@ static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
 static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
 
-    if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0, 0)) {
+    if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0)) {
         return -EEXIST;
     }
 
@@ -1064,31 +1074,26 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
 
 static int fat16_unlink(vnode_t* dir, const char* name) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
-    char name_83[11];
-    to_dos_name(name, name_83);
 
     fat_dirent_t e;
-    uint32_t sec, off;
-    if (!find_entry_in_dir(dnode, name_83, &e, &sec, &off)) {
+    uint32_t sec, off, short_idx, lfn_slots;
+    if (!find_entry_in_dir_lfn(dnode, name, &e, &sec, &off, &short_idx, &lfn_slots)) {
         return -ENOENT;
     }
     if (e.attr & FAT_ATTR_DIRECTORY) return -EISDIR;
 
     if (e.fst_clus_lo) fat_free_chain(e.fst_clus_lo);
 
-    e.name[0] = (char)0xE5;
-    write_dir_entry(sec, off, &e);
+    delete_entry_and_lfn(dnode, short_idx, (int)lfn_slots);
     return 0;
 }
 
 static int fat16_rmdir(vnode_t* dir, const char* name) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
-    char name_83[11];
-    to_dos_name(name, name_83);
 
     fat_dirent_t e;
-    uint32_t sec, off;
-    if (!find_entry_in_dir(dnode, name_83, &e, &sec, &off)) {
+    uint32_t sec, off, short_idx, lfn_slots;
+    if (!find_entry_in_dir_lfn(dnode, name, &e, &sec, &off, &short_idx, &lfn_slots)) {
         return -ENOENT;
     }
     if (!(e.attr & FAT_ATTR_DIRECTORY)) return -ENOTDIR;
@@ -1112,8 +1117,8 @@ static int fat16_rmdir(vnode_t* dir, const char* name) {
     }
 
     if (e.fst_clus_lo) fat_free_chain(e.fst_clus_lo);
-    e.name[0] = (char)0xE5;
-    write_dir_entry(sec, off, &e);
+
+    delete_entry_and_lfn(dnode, short_idx, (int)lfn_slots);
     return 0;
 }
 
@@ -1121,28 +1126,31 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
     fat_node_t* odnode = (fat_node_t*) old_dir->fs_data;
     fat_node_t* ndnode = (fat_node_t*) new_dir->fs_data;
 
-    char old_83[11], new_83[11];
-    to_dos_name(old_name, old_83);
-    to_dos_name(new_name, new_83);
-
     fat_dirent_t old_e;
-    uint32_t old_sec, old_off;
-    if (!find_entry_in_dir(odnode, old_83, &old_e, &old_sec, &old_off)) {
+    uint32_t old_sec, old_off, old_idx, old_lfn_slots;
+    if (!find_entry_in_dir_lfn(odnode, old_name, &old_e, &old_sec, &old_off, &old_idx, &old_lfn_slots)) {
         return -ENOENT;
     }
 
-    /* If destination exists, remove it */
-    fat_dirent_t exist_e;
-    uint32_t exist_sec, exist_off;
-    if (find_entry_in_dir(ndnode, new_83, &exist_e, &exist_sec, &exist_off)) {
-        if (exist_e.attr & FAT_ATTR_DIRECTORY) return -EISDIR;
-        if (exist_e.fst_clus_lo) fat_free_chain(exist_e.fst_clus_lo);
-        exist_e.name[0] = (char)0xE5;
-        write_dir_entry(exist_sec, exist_off, &exist_e);
+    int is_same_file = 0;
+    if (odnode == ndnode && strcasecmp_ascii(old_name, new_name) == 0) {
+        is_same_file = 1;
     }
 
-    uint32_t new_sec, new_off;
-    int err = alloc_entry_in_dir(ndnode, &new_sec, &new_off);
+    if (!is_same_file) {
+        fat_dirent_t exist_e;
+        uint32_t exist_sec, exist_off, exist_idx, exist_lfn_slots;
+        if (find_entry_in_dir_lfn(ndnode, new_name, &exist_e, &exist_sec, &exist_off, &exist_idx, &exist_lfn_slots)) {
+            if (exist_e.attr & FAT_ATTR_DIRECTORY) return -EISDIR;
+            if (exist_e.fst_clus_lo) fat_free_chain(exist_e.fst_clus_lo);
+            delete_entry_and_lfn(ndnode, exist_idx, (int)exist_lfn_slots);
+        }
+    } else {
+        delete_entry_and_lfn(odnode, old_idx, (int)old_lfn_slots);
+    }
+
+    char new_83[11];
+    int err = fat16_generate_short_alias(ndnode, new_name, new_83);
     if (err != 0) return err;
 
     fat_dirent_t new_e = old_e;
@@ -1151,12 +1159,13 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
     epoch_to_fat_datetime(rtc_get_epoch(), &cur_date, &cur_time);
     new_e.wrt_date = cur_date;
     new_e.wrt_time = cur_time;
-    write_dir_entry(new_sec, new_off, &new_e);
 
-    /* Remove old entry if not overwritten */
-    if (old_sec != new_sec || old_off != new_off) {
-        old_e.name[0] = (char)0xE5;
-        write_dir_entry(old_sec, old_off, &old_e);
+    uint32_t new_sec, new_off;
+    err = write_lfn_set(ndnode, new_name, new_83, &new_e, &new_sec, &new_off);
+    if (err != 0) return err;
+
+    if (!is_same_file) {
+        delete_entry_and_lfn(odnode, old_idx, (int)old_lfn_slots);
     }
     return 0;
 }
