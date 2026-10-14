@@ -37,4 +37,7 @@ void scheduler_wait_poll(void);
 /* Yield CPU voluntarily to the next ready task */
 void scheduler_yield(void);
 
+/* Wait for ready state or idle (used by blocking primitives) */
+void scheduler_wait_or_idle(process_t* me);
+
 #endif
