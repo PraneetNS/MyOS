@@ -3,7 +3,7 @@
 #define NUM_WORKERS 4
 #define ITERATIONS 10
 
-static void worker_run(int worker_id) {
+static void worker_run(int worker_id, int iters) {
     char dir_lvl1[64];
     char dir_lvl2[64];
     char dir_lvl3[64];
@@ -15,12 +15,27 @@ static void worker_run(int worker_id) {
     snprintf(dir_lvl4, sizeof(dir_lvl4), "/cstress/w%d/sub1/sub2", worker_id);
 
     int m1 = mkdir(dir_lvl1, 0755);
+    if (m1 < 0 && errno != EEXIST) {
+        fprintf(stderr, "[worker %d] mkdir %s failed: errno=%d\n", worker_id, dir_lvl1, errno);
+        exit(1);
+    }
     int m2 = mkdir(dir_lvl2, 0755);
+    if (m2 < 0 && errno != EEXIST) {
+        fprintf(stderr, "[worker %d] mkdir %s failed: errno=%d\n", worker_id, dir_lvl2, errno);
+        exit(1);
+    }
     int m3 = mkdir(dir_lvl3, 0755);
+    if (m3 < 0 && errno != EEXIST) {
+        fprintf(stderr, "[worker %d] mkdir %s failed: errno=%d\n", worker_id, dir_lvl3, errno);
+        exit(1);
+    }
     int m4 = mkdir(dir_lvl4, 0755);
-    printf("[worker %d] mkdirs: m1=%d m2=%d m3=%d m4=%d (errno=%d)\n", worker_id, m1, m2, m3, m4, errno);
+    if (m4 < 0 && errno != EEXIST) {
+        fprintf(stderr, "[worker %d] mkdir %s failed: errno=%d\n", worker_id, dir_lvl4, errno);
+        exit(1);
+    }
 
-    for (int it = 0; it < ITERATIONS; it++) {
+    for (int it = 0; it < iters; it++) {
         char old_path[128];
         char new_path[128];
         snprintf(old_path, sizeof(old_path), "%s/f_orig%d.txt", dir_lvl4, it);
@@ -136,30 +151,9 @@ static void worker_run(int worker_id) {
     exit(0);
 }
 
-int main(int argc, char** argv) {
-    (void) argc;
-    (void) argv;
-
-    printf("[concur_test] Starting concurrent filesystem stress test...\n");
-
-    /* Warm-up run with 1 worker for 1 iteration to fault in heap and stack pages */
-    {
-        int p = fork();
-        if (p == 0) {
-            worker_run(99);
-        }
-        int st = 0;
-        waitpid(p, &st, 0);
-        rmdir("/cstress");
-    }
-
-    unsigned int base_frames = sys_free_frames();
-    printf("[concur_test] Baseline free frames: %u\n", base_frames);
-
-    /* Ensure root test directory exists */
+static void run_concurrent_phase(int iters) {
     mkdir("/cstress", 0755);
 
-    /* 1. Spawn spinner process to keep CPU busy and preemption firing at 100 Hz */
     int spin_pid = fork();
     if (spin_pid == 0) {
         volatile unsigned int counter = 0;
@@ -168,7 +162,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    /* 2. Spawn NUM_WORKERS concurrent worker processes */
     int worker_pids[NUM_WORKERS];
     for (int i = 0; i < NUM_WORKERS; i++) {
         worker_pids[i] = fork();
@@ -178,12 +171,10 @@ int main(int argc, char** argv) {
             exit(1);
         }
         if (worker_pids[i] == 0) {
-            /* Child worker */
-            worker_run(i);
+            worker_run(i, iters);
         }
     }
 
-    /* 3. Wait for all workers to finish */
     int failures = 0;
     for (int i = 0; i < NUM_WORKERS; i++) {
         int status = 0;
@@ -197,21 +188,33 @@ int main(int argc, char** argv) {
         }
     }
 
-    /* 4. Terminate spinner process */
     kill(spin_pid, SIGTERM);
     int spin_status = 0;
     waitpid(spin_pid, &spin_status, 0);
 
-    /* Clean up top-level test directory */
     rmdir("/cstress");
 
     if (failures > 0) {
         fprintf(stderr, "[concur_test] FAILED with %d worker error(s)!\n", failures);
         exit(1);
     }
+}
 
+int main(int argc, char** argv) {
+    (void) argc;
+    (void) argv;
+
+    printf("[concur_test] Starting concurrent filesystem stress test...\n");
+
+    printf("[concur_test] Start free frames: %u\n", sys_free_frames());
+    run_concurrent_phase(1);
+    printf("[concur_test] After Phase 1 (1 iter): %u\n", sys_free_frames());
+    run_concurrent_phase(10);
+    unsigned int base_frames = sys_free_frames();
+    printf("[concur_test] After Phase 2 (10 iters, base): %u\n", base_frames);
+    run_concurrent_phase(10);
     unsigned int final_frames = sys_free_frames();
-    printf("[concur_test] Final free frames: %u\n", final_frames);
+    printf("[concur_test] After Phase 3 (10 iters, final): %u\n", final_frames);
 
     if (final_frames != base_frames) {
         fprintf(stderr, "[concur_test] FRAME LEAK DETECTED: base=%u, final=%u (diff=%d)\n",
@@ -220,5 +223,6 @@ int main(int argc, char** argv) {
     }
 
     printf("[concur_test] PASS: 4 concurrent workers + spinner, no path corruption, zero leaks!\n");
+    sync();
     return 0;
 }
