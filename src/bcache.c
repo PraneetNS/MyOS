@@ -1,5 +1,6 @@
 #include "bcache.h"
 #include "ata.h"
+#include "kmutex.h"
 
 typedef struct {
     uint32_t lba;
@@ -11,8 +12,10 @@ typedef struct {
 
 static bcache_entry_t cache[BCACHE_NUM_BLOCKS];
 static uint32_t access_counter = 0;
+static kmutex_t bcache_mutex;
 
 void bcache_init(void) {
+    kmutex_init(&bcache_mutex, "bcache");
     for (int i = 0; i < BCACHE_NUM_BLOCKS; i++) {
         cache[i].valid = 0;
         cache[i].dirty = 0;
@@ -47,7 +50,7 @@ static int pick_victim(void) {
         }
     }
 
-    /* If dirty, flush to disk before evicting */
+    /* If dirty, flush to disk before evicting (ATA transfer with interrupts enabled) */
     if (cache[victim].dirty) {
         if (ata_write_sector(cache[victim].lba, cache[victim].data) != 0) {
             return -1;
@@ -59,18 +62,8 @@ static int pick_victim(void) {
     return victim;
 }
 
-static inline uint32_t bcache_lock(void) {
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
-    return flags;
-}
-
-static inline void bcache_unlock(uint32_t flags) {
-    asm volatile ("push %0; popf" : : "r"(flags));
-}
-
 int bcache_read(uint32_t lba, uint8_t* out) {
-    uint32_t flags = bcache_lock();
+    kmutex_lock(&bcache_mutex);
     access_counter++;
     int slot = find_slot(lba);
     if (slot >= 0) {
@@ -78,19 +71,19 @@ int bcache_read(uint32_t lba, uint8_t* out) {
         for (int i = 0; i < BCACHE_BLOCK_SIZE; i++) {
             out[i] = cache[slot].data[i];
         }
-        bcache_unlock(flags);
+        kmutex_unlock(&bcache_mutex);
         return 0;
     }
 
-    /* Miss: pick victim and read from ATA */
+    /* Miss: pick victim and read from ATA (interrupts enabled) */
     slot = pick_victim();
     if (slot < 0) {
-        bcache_unlock(flags);
+        kmutex_unlock(&bcache_mutex);
         return -1;
     }
 
     if (ata_read_sector(lba, cache[slot].data) != 0) {
-        bcache_unlock(flags);
+        kmutex_unlock(&bcache_mutex);
         return -1;
     }
 
@@ -102,18 +95,18 @@ int bcache_read(uint32_t lba, uint8_t* out) {
     for (int i = 0; i < BCACHE_BLOCK_SIZE; i++) {
         out[i] = cache[slot].data[i];
     }
-    bcache_unlock(flags);
+    kmutex_unlock(&bcache_mutex);
     return 0;
 }
 
 int bcache_write(uint32_t lba, const uint8_t* in) {
-    uint32_t flags = bcache_lock();
+    kmutex_lock(&bcache_mutex);
     access_counter++;
     int slot = find_slot(lba);
     if (slot < 0) {
         slot = pick_victim();
         if (slot < 0) {
-            bcache_unlock(flags);
+            kmutex_unlock(&bcache_mutex);
             return -1;
         }
         cache[slot].lba = lba;
@@ -125,12 +118,12 @@ int bcache_write(uint32_t lba, const uint8_t* in) {
     }
     cache[slot].dirty = 1;
     cache[slot].last_used = access_counter;
-    bcache_unlock(flags);
+    kmutex_unlock(&bcache_mutex);
     return 0;
 }
 
 int bcache_sync(void) {
-    uint32_t flags = bcache_lock();
+    kmutex_lock(&bcache_mutex);
     int err = 0;
     for (int i = 0; i < BCACHE_NUM_BLOCKS; i++) {
         if (cache[i].valid && cache[i].dirty) {
@@ -144,6 +137,6 @@ int bcache_sync(void) {
     if (ata_flush() != 0) {
         err = -1;
     }
-    bcache_unlock(flags);
+    kmutex_unlock(&bcache_mutex);
     return err;
 }
