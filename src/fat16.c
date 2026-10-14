@@ -4,6 +4,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "rtc.h"
+#include "kmutex.h"
 
 #define FAT_ATTR_READONLY   0x01
 #define FAT_ATTR_HIDDEN     0x02
@@ -748,15 +749,7 @@ static int write_lfn_set(fat_node_t* dir, const char* name, const char short_83[
     return 0;
 }
 
-static inline uint32_t fat_lock(void) {
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
-    return flags;
-}
-
-static inline void fat_unlock(uint32_t flags) {
-    asm volatile ("push %0; popf" : : "r"(flags));
-}
+static kmutex_t fat_mutex;
 
 /* Forward declarations of fs_ops */
 static const struct fs_ops fat16_ops;
@@ -1268,79 +1261,79 @@ static short fat16_poll(vnode_t* node, short events, void** chan_out) {
 }
 
 static int fat16_locked_lookup(vnode_t* dir, const char* name, vnode_t** out) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_lookup(dir, name, out);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_read(vnode_t* node, uint32_t offset, uint8_t* buf, uint32_t count) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_read(node, offset, buf, count);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint32_t count) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_write(node, offset, buf, count);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_create(vnode_t* dir, const char* name, vnode_t** out) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_create(dir, name, out);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_mkdir(dir, name, out);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_unlink(vnode_t* dir, const char* name) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_unlink(dir, name);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_rmdir(vnode_t* dir, const char* name) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_rmdir(dir, name);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir, const char* new_name) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_rename(old_dir, old_name, new_dir, new_name);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_readdir(dir, index, entry);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_truncate(vnode_t* node, uint32_t length) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_truncate(node, length);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
 static int fat16_locked_stat(vnode_t* node, struct stat* st) {
-    uint32_t f = fat_lock();
+    kmutex_lock(&fat_mutex);
     int r = fat16_stat(node, st);
-    fat_unlock(f);
+    kmutex_unlock(&fat_mutex);
     return r;
 }
 
@@ -1363,6 +1356,7 @@ static const struct fs_ops fat16_ops = {
 static vnode_t fat16_root_vnode;
 
 int fat16_init(void) {
+    kmutex_init(&fat_mutex, "fat16");
     uint8_t boot_sector[512];
     if (bcache_read(0, boot_sector) != 0) {
         return -1;
