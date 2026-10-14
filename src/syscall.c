@@ -24,6 +24,7 @@
 #include "signal.h"
 #include "rtc.h"
 #include "fpu.h"
+#include "kmutex.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -1754,6 +1755,16 @@ static void syscall_handler(struct registers* regs) {
             terminal_writestring("[warn] unknown syscall\n");
             regs->eax = (uint32_t) -ENOSYS;
             break;
+    }
+
+    /* Lock-sanity assertions: panic if a mutex is held at syscall return
+       or if interrupts are disabled on return to user mode */
+    kmutex_assert_none_held();
+    if ((regs->cs & 3) == 3 && (regs->eflags & 0x200) == 0) {
+        serial_printf("\n*** KERNEL PANIC: interrupts disabled in user mode return frame (eflags=0x%08x)! ***\n", regs->eflags);
+        terminal_writestring("\n*** KERNEL PANIC: interrupts disabled in user mode return frame! ***\n");
+        asm volatile ("cli");
+        for (;;) asm volatile ("hlt");
     }
 }
 
