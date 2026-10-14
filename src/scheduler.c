@@ -227,7 +227,7 @@ void scheduler_exit_current(int exit_status) {
     for (;;) asm volatile ("hlt"); /* unreachable */
 }
 
-static void wait_or_idle(process_t* me) {
+void scheduler_wait_or_idle(process_t* me) {
     process_t* next = pick_next_from(process_index(me));
     if (next) {
         process_t* prev = me;
@@ -251,7 +251,7 @@ void scheduler_wait_for(int child_pid) {
     process_t* me = current;
     me->state = PROC_WAITING;
     me->waiting_for_pid = child_pid;
-    wait_or_idle(me);
+    scheduler_wait_or_idle(me);
     me->waiting_for_pid = -999;
 }
 
@@ -259,7 +259,7 @@ void scheduler_wait_channel(void* channel) {
     process_t* me = current;
     me->state = PROC_WAITING;
     me->wait_channel = channel;
-    wait_or_idle(me);
+    scheduler_wait_or_idle(me);
     me->wait_channel = 0;
     me->num_poll_channels = 0;
 }
@@ -269,7 +269,7 @@ void scheduler_wait_poll(void) {
     if (!me) return;
     me->state = PROC_WAITING;
     me->wait_channel = 0;
-    wait_or_idle(me);
+    scheduler_wait_or_idle(me);
     me->wait_channel = 0;
     me->num_poll_channels = 0;
 }
