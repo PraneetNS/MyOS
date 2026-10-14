@@ -12,6 +12,7 @@
 #include "keyboard.h"
 #include "timer.h"
 #include "fpu.h"
+#include "kmutex.h"
 
 int respawn_shell_needed = 0;
 
@@ -265,6 +266,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 
 void process_destroy(process_t* p) {
     if (p->state == PROC_UNUSED) return;
+    kmutex_assert_none_held();
     timer_sleep_dequeue(p);
     p->sleep_deadline = 0;
     p->sleep_next = 0;
