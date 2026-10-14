@@ -793,6 +793,32 @@ fi
 
 rm -f "$LOGFILE10"
 
+echo "[TEST] Session 10B: 4 Concurrent Processes + Preemption Spinner Stress Test & fsck.fat..."
+
+LOGFILE10B=$(mktemp)
+(
+    sleep 2
+    printf "concur_t.elf\n"
+    sleep 20
+    printf "exit\n"
+) | timeout 45s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10B" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE10B" > "${LOGFILE10B}.tmp" && mv "${LOGFILE10B}.tmp" "$LOGFILE10B"
+cat "$LOGFILE10B"
+
+echo "[TEST] Asserting Session 10B results..."
+grep -q "\[concur_test\] PASS: 4 concurrent workers + spinner, no path corruption, zero leaks!" "$LOGFILE10B" || { echo "FAIL: concur_test.elf failed"; rm -f "$LOGFILE10B"; exit 1; }
+echo "[PASS] 4 concurrent processes + spinner filesystem stress test verified"
+
+~/.local/bin/fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions"; rm -f "$LOGFILE10B"; exit 1; }
+echo "[PASS] fsck.fat disk consistency verified"
+
+rm -f "$LOGFILE10B"
+
+echo "[TEST] Running Concurrency Responsiveness, Tick-Loss (20s) and Input Delivery Suite..."
+python3 tools/test_concur_suite.py || { echo "FAIL: test_concur_suite.py failed"; exit 1; }
+echo "[PASS] Concurrency & Responsiveness suite verified"
+
 echo "[TEST] Session 11: Stage 18A Demo Apps (paint, screenshot, view, gfxdemo) and Crash Safety..."
 
 LOGFILE11=$(mktemp)
