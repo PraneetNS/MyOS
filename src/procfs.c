@@ -10,6 +10,7 @@
 static vnode_t proc_root_vnode;
 static vnode_t proc_meminfo_vnode;
 static vnode_t proc_uptime_vnode;
+static vnode_t proc_version_vnode;
 static vnode_t proc_self_dir_vnode;
 static vnode_t proc_self_status_vnode;
 static vnode_t proc_self_cmdline_vnode;
@@ -144,6 +145,15 @@ static int proc_uptime_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t
     return procfs_read_helper(text, pos, offset, buf, count);
 }
 
+/* /proc/version */
+static int proc_version_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    const char* text = "MyOS version 1.0.0-i386 (gcc 11.4.0) #1 SMP PREEMPT Thu Oct 15 2026 i686 GNU/Linux\n";
+    int len = 0;
+    while (text[len]) len++;
+    return procfs_read_helper(text, len, offset, buf, count);
+}
+
 /* /proc/<pid>/status */
 static int proc_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     int slot = (int)(uintptr_t)vn->fs_data;
@@ -252,6 +262,11 @@ static const struct fs_ops uptime_ops = {
     .stat = procfs_file_stat
 };
 
+static const struct fs_ops version_ops = {
+    .read = proc_version_read,
+    .stat = procfs_file_stat
+};
+
 static const struct fs_ops status_ops = {
     .read = proc_status_read,
     .stat = procfs_file_stat
@@ -338,6 +353,11 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         vnode_ref(&proc_uptime_vnode);
         return 0;
     }
+    if (streq(name, "version")) {
+        *out = &proc_version_vnode;
+        vnode_ref(&proc_version_vnode);
+        return 0;
+    }
     if (streq(name, "self")) {
         *out = &proc_self_dir_vnode;
         vnode_ref(&proc_self_dir_vnode);
@@ -380,13 +400,18 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         return 1;
     }
     if (index == 4) {
+        entry->d_ino = 13; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "version");
+        return 1;
+    }
+    if (index == 5) {
         entry->d_ino = 12; entry->d_type = 2; entry->d_size = 0;
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "self");
         return 1;
     }
 
-    /* index >= 5 corresponds to active processes */
-    uint32_t target_idx = index - 5;
+    /* index >= 6 corresponds to active processes */
+    uint32_t target_idx = index - 6;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -433,6 +458,13 @@ void procfs_init(void) {
     proc_uptime_vnode.ops = &uptime_ops;
     proc_uptime_vnode.refcount = 1000;
     proc_uptime_vnode.parent = &proc_root_vnode;
+
+    proc_version_vnode.type = VNODE_FILE;
+    proc_version_vnode.size = 0;
+    proc_version_vnode.fs_data = 0;
+    proc_version_vnode.ops = &version_ops;
+    proc_version_vnode.refcount = 1000;
+    proc_version_vnode.parent = &proc_root_vnode;
 
     proc_self_dir_vnode.type = VNODE_DIR;
     proc_self_dir_vnode.size = 0;
