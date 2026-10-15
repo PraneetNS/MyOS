@@ -11,6 +11,7 @@ static vnode_t proc_root_vnode;
 static vnode_t proc_meminfo_vnode;
 static vnode_t proc_uptime_vnode;
 static vnode_t proc_version_vnode;
+static vnode_t proc_cpuinfo_vnode;
 static vnode_t proc_self_dir_vnode;
 static vnode_t proc_self_status_vnode;
 static vnode_t proc_self_cmdline_vnode;
@@ -154,6 +155,46 @@ static int proc_version_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_
     return procfs_read_helper(text, len, offset, buf, count);
 }
 
+static inline void proc_cpuid(uint32_t code, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {
+    __asm__ volatile (
+        "cpuid"
+        : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
+        : "a"(code)
+    );
+}
+
+/* /proc/cpuinfo */
+static int proc_cpuinfo_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[512];
+    int pos = 0;
+
+    uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+    char vendor[13] = {0};
+    proc_cpuid(0, &eax, &ebx, &ecx, &edx);
+    *(uint32_t*)&vendor[0] = ebx;
+    *(uint32_t*)&vendor[4] = edx;
+    *(uint32_t*)&vendor[8] = ecx;
+
+    proc_cpuid(1, &eax, &ebx, &ecx, &edx);
+    uint32_t stepping = eax & 0x0F;
+    uint32_t model = (eax >> 4) & 0x0F;
+    uint32_t family = (eax >> 8) & 0x0F;
+
+    append_str(text, &pos, sizeof(text), "processor\t: 0\n");
+    append_str(text, &pos, sizeof(text), "vendor_id\t: ");
+    append_str(text, &pos, sizeof(text), vendor);
+    append_str(text, &pos, sizeof(text), "\ncpu family\t: ");
+    append_uint(text, &pos, sizeof(text), family);
+    append_str(text, &pos, sizeof(text), "\nmodel\t\t: ");
+    append_uint(text, &pos, sizeof(text), model);
+    append_str(text, &pos, sizeof(text), "\nstepping\t: ");
+    append_uint(text, &pos, sizeof(text), stepping);
+    append_str(text, &pos, sizeof(text), "\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 mmx fxsr sse sse2\n");
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
 /* /proc/<pid>/status */
 static int proc_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     int slot = (int)(uintptr_t)vn->fs_data;
@@ -267,6 +308,11 @@ static const struct fs_ops version_ops = {
     .stat = procfs_file_stat
 };
 
+static const struct fs_ops cpuinfo_ops = {
+    .read = proc_cpuinfo_read,
+    .stat = procfs_file_stat
+};
+
 static const struct fs_ops status_ops = {
     .read = proc_status_read,
     .stat = procfs_file_stat
@@ -358,6 +404,11 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         vnode_ref(&proc_version_vnode);
         return 0;
     }
+    if (streq(name, "cpuinfo")) {
+        *out = &proc_cpuinfo_vnode;
+        vnode_ref(&proc_cpuinfo_vnode);
+        return 0;
+    }
     if (streq(name, "self")) {
         *out = &proc_self_dir_vnode;
         vnode_ref(&proc_self_dir_vnode);
@@ -405,13 +456,18 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         return 1;
     }
     if (index == 5) {
+        entry->d_ino = 14; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "cpuinfo");
+        return 1;
+    }
+    if (index == 6) {
         entry->d_ino = 12; entry->d_type = 2; entry->d_size = 0;
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "self");
         return 1;
     }
 
-    /* index >= 6 corresponds to active processes */
-    uint32_t target_idx = index - 6;
+    /* index >= 7 corresponds to active processes */
+    uint32_t target_idx = index - 7;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -465,6 +521,13 @@ void procfs_init(void) {
     proc_version_vnode.ops = &version_ops;
     proc_version_vnode.refcount = 1000;
     proc_version_vnode.parent = &proc_root_vnode;
+
+    proc_cpuinfo_vnode.type = VNODE_FILE;
+    proc_cpuinfo_vnode.size = 0;
+    proc_cpuinfo_vnode.fs_data = 0;
+    proc_cpuinfo_vnode.ops = &cpuinfo_ops;
+    proc_cpuinfo_vnode.refcount = 1000;
+    proc_cpuinfo_vnode.parent = &proc_root_vnode;
 
     proc_self_dir_vnode.type = VNODE_DIR;
     proc_self_dir_vnode.size = 0;
