@@ -45,13 +45,21 @@ typedef enum {
 
 /* File modes */
 #define S_IFMT      0xF000
+#define S_IFSOCK    0xC000
+#define S_IFLNK     0xA000
 #define S_IFREG     0x8000
+#define S_IFBLK     0x6000
 #define S_IFDIR     0x4000
 #define S_IFCHR     0x2000
+#define S_IFIFO     0x1000
 
+#define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
+#define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
 #define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+#define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
 #define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
 #define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
+#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
 
 struct stat {
     uint32_t st_dev;
@@ -155,12 +163,16 @@ int vfs_get_active_open_files(void);
 
 void vfs_init(void);
 int vfs_mount(const char* path, vnode_t* root_vnode);
+int vfs_mount_type(const char* dev, const char* path, const char* fstype, vnode_t* root_vnode);
+int vfs_get_mount_info(int idx, char* dev_out, char* path_out, char* fstype_out);
 vnode_t* vfs_get_root(void);
+int vfs_truncate(vnode_t* vn, uint32_t length);
 
 /* Vnode allocator and reference counting */
 vnode_t* vnode_alloc(vnode_type_t type, const struct fs_ops* ops, void* fs_data);
 void vnode_ref(vnode_t* vn);
 void vnode_unref(vnode_t* vn);
+void vfs_for_each_vnode(void (*cb)(vnode_t*, void*), void* arg);
 
 /* Open file management */
 open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags);

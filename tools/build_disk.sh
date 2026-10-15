@@ -18,6 +18,8 @@ mmd -i "$IMAGE" "::/dev"
 mmd -i "$IMAGE" "::/etc"
 mmd -i "$IMAGE" "::/proc"
 mmd -i "$IMAGE" "::/home"
+mmd -i "$IMAGE" "::/dev/shm" || true
+mmd -i "$IMAGE" "::/run" || true
 mmd -i "$IMAGE" "::/share" || true
 mmd -i "$IMAGE" "::/share/fonts" || true
 

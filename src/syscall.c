@@ -76,6 +76,8 @@
 #define SYS_CLOCK_GETTIME 74
 #define SYS_NANOSLEEP  75
 #define SYS_NICE       77
+#define SYS_TRUNCATE   92
+#define SYS_FTRUNCATE  93
 #define SYS_POLL       168
 
 #define PROT_NONE       0x0
@@ -834,11 +836,77 @@ static void syscall_handler(struct registers* regs) {
                 }
                 break;
             }
+            if (of->type == OPEN_FILE_PIPE) {
+                memset(st, 0, sizeof(struct stat));
+                st->st_mode = S_IFIFO | 0600;
+                st->st_nlink = 1;
+                st->st_blksize = 512;
+                regs->eax = 0;
+                break;
+            }
             if (of->type == OPEN_FILE_VNODE && of->vnode) {
                 regs->eax = (uint32_t) vfs_stat(of->vnode, st);
                 break;
             }
             regs->eax = (uint32_t) -EBADF;
+            break;
+        }
+
+        case SYS_TRUNCATE: {
+            const char* path = (const char*) regs->ebx;
+            int32_t length = (int32_t) regs->ecx;
+
+            if (length < 0) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            int err = validate_user_string(path);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            vnode_t* vn = 0;
+            int ret = vfs_resolve_path(path, me->cwd, &vn);
+            if (ret != 0 || !vn) {
+                regs->eax = (uint32_t) (ret ? ret : -ENOENT);
+                break;
+            }
+
+            ret = vfs_truncate(vn, (uint32_t) length);
+            vnode_unref(vn);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_FTRUNCATE: {
+            int fd = (int) regs->ebx;
+            int32_t length = (int32_t) regs->ecx;
+
+            if (length < 0) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_VNODE || !of->vnode) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            int acc = of->flags & (O_WRONLY | O_RDWR);
+            if (!acc) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            int ret = vfs_truncate(of->vnode, (uint32_t) length);
+            regs->eax = (uint32_t) ret;
             break;
         }
 

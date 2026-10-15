@@ -12,6 +12,7 @@ static vnode_t proc_meminfo_vnode;
 static vnode_t proc_uptime_vnode;
 static vnode_t proc_version_vnode;
 static vnode_t proc_cpuinfo_vnode;
+static vnode_t proc_mounts_vnode;
 static vnode_t proc_self_dir_vnode;
 static vnode_t proc_self_status_vnode;
 static vnode_t proc_self_cmdline_vnode;
@@ -308,8 +309,35 @@ static const struct fs_ops version_ops = {
     .stat = procfs_file_stat
 };
 
+static int proc_mounts_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[1024];
+    int pos = 0;
+
+    for (int i = 0; i < 16; i++) {
+        char dev[32];
+        char path[64];
+        char fstype[16];
+        if (vfs_get_mount_info(i, dev, path, fstype)) {
+            append_str(text, &pos, sizeof(text), dev);
+            append_char(text, &pos, sizeof(text), ' ');
+            append_str(text, &pos, sizeof(text), path);
+            append_char(text, &pos, sizeof(text), ' ');
+            append_str(text, &pos, sizeof(text), fstype);
+            append_str(text, &pos, sizeof(text), " rw,relatime 0 0\n");
+        }
+    }
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
 static const struct fs_ops cpuinfo_ops = {
     .read = proc_cpuinfo_read,
+    .stat = procfs_file_stat
+};
+
+static const struct fs_ops mounts_ops = {
+    .read = proc_mounts_read,
     .stat = procfs_file_stat
 };
 
@@ -409,6 +437,11 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         vnode_ref(&proc_cpuinfo_vnode);
         return 0;
     }
+    if (streq(name, "mounts")) {
+        *out = &proc_mounts_vnode;
+        vnode_ref(&proc_mounts_vnode);
+        return 0;
+    }
     if (streq(name, "self")) {
         *out = &proc_self_dir_vnode;
         vnode_ref(&proc_self_dir_vnode);
@@ -461,13 +494,18 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         return 1;
     }
     if (index == 6) {
+        entry->d_ino = 15; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "mounts");
+        return 1;
+    }
+    if (index == 7) {
         entry->d_ino = 12; entry->d_type = 2; entry->d_size = 0;
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "self");
         return 1;
     }
 
-    /* index >= 7 corresponds to active processes */
-    uint32_t target_idx = index - 7;
+    /* index >= 8 corresponds to active processes */
+    uint32_t target_idx = index - 8;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -528,6 +566,13 @@ void procfs_init(void) {
     proc_cpuinfo_vnode.ops = &cpuinfo_ops;
     proc_cpuinfo_vnode.refcount = 1000;
     proc_cpuinfo_vnode.parent = &proc_root_vnode;
+
+    proc_mounts_vnode.type = VNODE_FILE;
+    proc_mounts_vnode.size = 0;
+    proc_mounts_vnode.fs_data = 0;
+    proc_mounts_vnode.ops = &mounts_ops;
+    proc_mounts_vnode.refcount = 1000;
+    proc_mounts_vnode.parent = &proc_root_vnode;
 
     proc_self_dir_vnode.type = VNODE_DIR;
     proc_self_dir_vnode.size = 0;
