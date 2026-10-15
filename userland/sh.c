@@ -892,11 +892,67 @@ static int run_builtin(const command_t* cmd, int* last_status) {
             "  export [k=v]  set or list environment variables\n"
             "  env           print all environment variables\n"
             "  unset <var>   remove an environment variable\n"
+            "  clear         clear terminal screen\n"
+            "  version       display kernel and shell version\n"
+            "  which <cmd>   locate command or shell builtin\n"
             "  shinfo        print shell info (pid, ppid, pgid, frames)\n"
             "External binaries (loaded via fork + exec + waitpid from cwd or /bin):\n"
-            "  ls, cat, echo, mkdir, rmdir, rm, cp, mv, touch, pwd, etc.\n";
+            "  ls, cat, echo, mkdir, rmdir, rm, cp, mv, touch, pwd, uname, cal, seq, etc.\n";
         write(1, help_msg, strlen(help_msg));
         *last_status = 0;
+        return 1;
+    }
+
+    if (strcmp(cmd->argv[0], "clear") == 0) {
+        write(1, "\033[2J\033[H", 7);
+        *last_status = 0;
+        return 1;
+    }
+
+    if (strcmp(cmd->argv[0], "version") == 0) {
+        const char* vmsg = "MyOS 1.0.0 (i386-elf, gcc 11.4.0, newlib)\n";
+        write(1, vmsg, strlen(vmsg));
+        *last_status = 0;
+        return 1;
+    }
+
+    if (strcmp(cmd->argv[0], "which") == 0) {
+        if (cmd->argc < 2) {
+            write(2, "which: missing argument\n", 24);
+            *last_status = 1;
+            return 1;
+        }
+        const char* name = cmd->argv[1];
+        if (strcmp(name, "cd") == 0 || strcmp(name, "exit") == 0 || strcmp(name, "help") == 0 ||
+            strcmp(name, "status") == 0 || strcmp(name, "jobs") == 0 || strcmp(name, "fg") == 0 ||
+            strcmp(name, "bg") == 0 || strcmp(name, "kill") == 0 || strcmp(name, "export") == 0 ||
+            strcmp(name, "env") == 0 || strcmp(name, "unset") == 0 || strcmp(name, "shinfo") == 0 ||
+            strcmp(name, "frames") == 0 || strcmp(name, "clear") == 0 || strcmp(name, "version") == 0 ||
+            strcmp(name, "which") == 0) {
+            write(1, name, strlen(name));
+            write(1, ": shell built-in command\n", 25);
+            *last_status = 0;
+            return 1;
+        }
+        char pbuf[1024];
+        snprintf(pbuf, sizeof(pbuf), "/bin/%s", name);
+        struct stat st;
+        if (stat(pbuf, &st) == 0) {
+            write(1, pbuf, strlen(pbuf));
+            write(1, "\n", 1);
+            *last_status = 0;
+            return 1;
+        }
+        snprintf(pbuf, sizeof(pbuf), "/%s", name);
+        if (stat(pbuf, &st) == 0) {
+            write(1, pbuf, strlen(pbuf));
+            write(1, "\n", 1);
+            *last_status = 0;
+            return 1;
+        }
+        write(2, name, strlen(name));
+        write(2, ": not found\n", 12);
+        *last_status = 1;
         return 1;
     }
 
