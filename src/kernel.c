@@ -27,6 +27,7 @@
 #include "rtc.h"
 #include "fpu.h"
 #include "fb.h"
+#include "tmpfs.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -112,28 +113,32 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     kprintf("[ok] VFS initialized\n");
 
     if (fat16_init() == 0) {
-        vfs_mount("/", fat16_get_root());
+        vfs_mount_type("/dev/root", "/", "fat16", fat16_get_root());
         kprintf("[ok] Mounted FAT16 filesystem at /\n");
     } else {
         kprintf("[err] FAT16 init failed, falling back to MyFS\n");
         fs_init();
-        vfs_mount("/", myfs_get_root_vnode());
+        vfs_mount_type("/dev/root", "/", "myfs", myfs_get_root_vnode());
     }
 
     tty_init();
     kprintf("[ok] TTY layer initialized\n");
 
     devfs_init();
-    vfs_mount("/dev", devfs_get_root());
+    vfs_mount_type("devfs", "/dev", "devfs", devfs_get_root());
     devfs_get_root()->parent = vfs_get_root();
     vnode_ref(vfs_get_root());
     kprintf("[ok] Mounted devfs at /dev\n");
 
     procfs_init();
-    vfs_mount("/proc", procfs_get_root());
+    vfs_mount_type("procfs", "/proc", "procfs", procfs_get_root());
     procfs_get_root()->parent = vfs_get_root();
     vnode_ref(vfs_get_root());
     kprintf("[ok] Mounted procfs at /proc\n");
+
+    tmpfs_init();
+    tmpfs_mount("/dev/shm");
+    tmpfs_mount("/run");
 
     pipe_init();
     kprintf("[ok] Pipe (IPC) initialized\n");

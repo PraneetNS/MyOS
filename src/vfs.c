@@ -6,7 +6,7 @@
 #include "pipe.h"
 #include "scheduler.h"
 
-#define MAX_MOUNTS 4
+#define MAX_MOUNTS 16
 #define VNODE_POOL_SIZE 256
 #define OPEN_FILE_POOL_SIZE 128
 
@@ -24,6 +24,8 @@ int vfs_get_current_flags(void) {
 
 typedef struct {
     char path[64];
+    char fstype[16];
+    char dev[32];
     vnode_t* root;
     int in_use;
 } mount_point_t;
@@ -32,12 +34,12 @@ static mount_point_t mount_table[MAX_MOUNTS];
 static vnode_t vnode_pool[VNODE_POOL_SIZE];
 static open_file_t of_pool[OPEN_FILE_POOL_SIZE];
 
-
-
 void vfs_init(void) {
     for (int i = 0; i < MAX_MOUNTS; i++) {
         mount_table[i].in_use = 0;
         mount_table[i].path[0] = '\0';
+        mount_table[i].fstype[0] = '\0';
+        mount_table[i].dev[0] = '\0';
         mount_table[i].root = 0;
     }
     for (int i = 0; i < VNODE_POOL_SIZE; i++) {
@@ -49,7 +51,8 @@ void vfs_init(void) {
     }
 }
 
-int vfs_mount(const char* path, vnode_t* root_vnode) {
+int vfs_mount_type(const char* dev, const char* path, const char* fstype, vnode_t* root_vnode) {
+    if (!path || !root_vnode) return -EINVAL;
     for (int i = 0; i < MAX_MOUNTS; i++) {
         if (!mount_table[i].in_use) {
             int j = 0;
@@ -58,6 +61,23 @@ int vfs_mount(const char* path, vnode_t* root_vnode) {
                 j++;
             }
             mount_table[i].path[j] = '\0';
+
+            const char* d = dev ? dev : "none";
+            j = 0;
+            while (d[j] && j < 31) {
+                mount_table[i].dev[j] = d[j];
+                j++;
+            }
+            mount_table[i].dev[j] = '\0';
+
+            const char* f = fstype ? fstype : "vfs";
+            j = 0;
+            while (f[j] && j < 15) {
+                mount_table[i].fstype[j] = f[j];
+                j++;
+            }
+            mount_table[i].fstype[j] = '\0';
+
             mount_table[i].root = root_vnode;
             mount_table[i].in_use = 1;
             vnode_ref(root_vnode);
@@ -67,6 +87,32 @@ int vfs_mount(const char* path, vnode_t* root_vnode) {
     return -ENOMEM;
 }
 
+int vfs_mount(const char* path, vnode_t* root_vnode) {
+    return vfs_mount_type("none", path, "vfs", root_vnode);
+}
+
+int vfs_get_mount_info(int idx, char* dev_out, char* path_out, char* fstype_out) {
+    if (idx < 0 || idx >= MAX_MOUNTS) return 0;
+    if (!mount_table[idx].in_use) return 0;
+
+    if (dev_out) {
+        int i = 0;
+        while (mount_table[idx].dev[i]) { dev_out[i] = mount_table[idx].dev[i]; i++; }
+        dev_out[i] = '\0';
+    }
+    if (path_out) {
+        int i = 0;
+        while (mount_table[idx].path[i]) { path_out[i] = mount_table[idx].path[i]; i++; }
+        path_out[i] = '\0';
+    }
+    if (fstype_out) {
+        int i = 0;
+        while (mount_table[idx].fstype[i]) { fstype_out[i] = mount_table[idx].fstype[i]; i++; }
+        fstype_out[i] = '\0';
+    }
+    return 1;
+}
+
 vnode_t* vfs_get_root(void) {
     for (int i = 0; i < MAX_MOUNTS; i++) {
         if (mount_table[i].in_use && mount_table[i].path[0] == '/' && mount_table[i].path[1] == '\0') {
@@ -74,6 +120,12 @@ vnode_t* vfs_get_root(void) {
         }
     }
     return 0;
+}
+
+int vfs_truncate(vnode_t* vn, uint32_t length) {
+    if (!vn) return -EINVAL;
+    if (!vn->ops || !vn->ops->truncate) return -EINVAL;
+    return vn->ops->truncate(vn, length);
 }
 
 static inline uint32_t vfs_lock(void) {
@@ -129,6 +181,17 @@ void vnode_unref(vnode_t* vn) {
                 vnode_unref(p);
                 return;
             }
+        }
+    }
+    vfs_unlock(f);
+}
+
+void vfs_for_each_vnode(void (*cb)(vnode_t*, void*), void* arg) {
+    if (!cb) return;
+    uint32_t f = vfs_lock();
+    for (int i = 0; i < VNODE_POOL_SIZE; i++) {
+        if (vnode_pool[i].refcount > 0) {
+            cb(&vnode_pool[i], arg);
         }
     }
     vfs_unlock(f);

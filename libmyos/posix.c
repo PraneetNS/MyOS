@@ -719,9 +719,13 @@ ssize_t __getline(char **lineptr, size_t *n, FILE *stream) {
 }
 
 int ftruncate(int fd, off_t length) {
-    (void)fd;
-    (void)length;
-    return 0;
+    int ret = __syscall2(SYS_FTRUNCATE, fd, (long)length);
+    return __check_syscall_err(ret);
+}
+
+int truncate(const char *path, off_t length) {
+    int ret = __syscall2(SYS_TRUNCATE, (long)path, (long)length);
+    return __check_syscall_err(ret);
 }
 
 int access(const char *path, int mode) {

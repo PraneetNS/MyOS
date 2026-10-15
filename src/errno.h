@@ -23,6 +23,7 @@
 #define ENFILE      23   /* File table overflow */
 #define EMFILE      24   /* Too many open files */
 #define ENOTTY      25   /* Not a typewriter */
+#define EFBIG        27   /* File too large */
 #define ENOSPC      28   /* No space left on device */
 #define ESPIPE      29   /* Illegal seek */
 #define EROFS       30   /* Read-only file system */
@@ -31,5 +32,10 @@
 #define ENAMETOOLONG 36  /* File name too long */
 #define ENOSYS      38   /* Function not implemented */
 #define ENOTEMPTY   39   /* Directory not empty */
+#define EPROTONOSUPPORT 93 /* Protocol not supported */
+#define EOPNOTSUPP   95   /* Operation not supported on transport endpoint */
+#define EADDRINUSE   98   /* Address already in use */
+#define ECONNRESET  104   /* Connection reset by peer */
+#define ECONNREFUSED 111  /* Connection refused */
 
 #endif

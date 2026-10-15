@@ -137,11 +137,15 @@ typedef struct {
     uint32_t file_size;
     int is_dir;
     int is_root;
+    int unlinked;
 
     /* Directory entry location on disk */
     uint32_t dir_sector;
     uint32_t dir_offset;
 } fat_node_t;
+
+static kmutex_t fat_mutex;
+static void fat_free_chain(uint16_t cluster);
 
 static fat_bpb_t bpb;
 static uint32_t fat_start_lba;
@@ -158,6 +162,7 @@ static fat_node_t* alloc_fat_node(void) {
     n->file_size = 0;
     n->is_dir = 0;
     n->is_root = 0;
+    n->unlinked = 0;
     n->dir_sector = 0;
     n->dir_offset = 0;
     return n;
@@ -165,6 +170,13 @@ static fat_node_t* alloc_fat_node(void) {
 
 static int fat16_cleanup(vnode_t* node) {
     if (node && node->fs_data && node->fs_data != &fat16_root_node) {
+        fat_node_t* fnode = (fat_node_t*) node->fs_data;
+        if (fnode->unlinked && fnode->first_cluster) {
+            kmutex_lock(&fat_mutex);
+            fat_free_chain(fnode->first_cluster);
+            fnode->first_cluster = 0;
+            kmutex_unlock(&fat_mutex);
+        }
         kfree(node->fs_data);
         node->fs_data = 0;
     }
@@ -749,8 +761,6 @@ static int write_lfn_set(fat_node_t* dir, const char* name, const char short_83[
     return 0;
 }
 
-static kmutex_t fat_mutex;
-
 /* Forward declarations of fs_ops */
 static const struct fs_ops fat16_ops;
 
@@ -1065,6 +1075,23 @@ static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     return 0;
 }
 
+struct fat_unlink_match {
+    uint32_t sec;
+    uint32_t off;
+    int found_open;
+};
+
+static void fat_unlink_cb(vnode_t* vn, void* arg) {
+    struct fat_unlink_match* m = (struct fat_unlink_match*) arg;
+    if (vn->ops == &fat16_ops) {
+        fat_node_t* fn = (fat_node_t*) vn->fs_data;
+        if (fn && fn->dir_sector == m->sec && fn->dir_offset == m->off) {
+            fn->unlinked = 1;
+            m->found_open = 1;
+        }
+    }
+}
+
 static int fat16_unlink(vnode_t* dir, const char* name) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
 
@@ -1075,7 +1102,12 @@ static int fat16_unlink(vnode_t* dir, const char* name) {
     }
     if (e.attr & FAT_ATTR_DIRECTORY) return -EISDIR;
 
-    if (e.fst_clus_lo) fat_free_chain(e.fst_clus_lo);
+    struct fat_unlink_match m = { sec, off, 0 };
+    vfs_for_each_vnode(fat_unlink_cb, &m);
+
+    if (!m.found_open) {
+        if (e.fst_clus_lo) fat_free_chain(e.fst_clus_lo);
+    }
 
     delete_entry_and_lfn(dnode, short_idx, (int)lfn_slots);
     return 0;
