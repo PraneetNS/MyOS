@@ -200,13 +200,29 @@ void scheduler_exit_current(int exit_status) {
         sig_send(parent, SIGCHLD);
     }
 
+    /* Adopt orphaned children into PID 1 */
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* child = process_table_entry(i);
+        if (child && child != p && child->state != PROC_UNUSED && child->ppid == exiting_pid) {
+            child->ppid = 1;
+            if (child->state == PROC_ZOMBIE) {
+                process_t* init_p = process_find_by_pid(1);
+                if (init_p && init_p != p) {
+                    sig_send(init_p, SIGCHLD);
+                }
+            }
+        }
+    }
+
     wake_waiters_for(exiting_pid);
 
     vmm_switch_to_kernel();
 
-    extern int respawn_shell_needed;
-    if (exiting_pid == 1) {
-        respawn_shell_needed = 1;
+    extern int g_kernel_shutting_down;
+    if (exiting_pid == 1 && !g_kernel_shutting_down) {
+        kprintf("\n[PANIC] Attempted to kill init! System halted.\n");
+        bcache_sync();
+        for (;;) { asm volatile ("cli; hlt"); }
     }
 
     process_t* next = pick_next_from(idx);
