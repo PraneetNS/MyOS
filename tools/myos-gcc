@@ -39,9 +39,9 @@ if [ "$IS_LINKING" -eq 1 ]; then
         -Wl,-T,"$LDSCRIPT" -Wl,--strip-debug \
         "${START_OBJS[@]}" \
         "$@" \
-        -L"$SYSROOT/lib" \
-        -L"$ROOT_DIR/userland/libgfx" \
         -L"$ROOT_DIR/libmyos" \
+        -L"$ROOT_DIR/userland/libgfx" \
+        -L"$SYSROOT/lib" \
         -Wl,--start-group -lgfx -lmyos -lc -lm -Wl,--end-group -lgcc
 else
     exec "$CC" "${BASE_FLAGS[@]}" "$@"

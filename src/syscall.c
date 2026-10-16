@@ -25,6 +25,7 @@
 #include "rtc.h"
 #include "fpu.h"
 #include "kmutex.h"
+#include "tmpfs.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -78,6 +79,7 @@
 #define SYS_NICE       77
 #define SYS_TRUNCATE   92
 #define SYS_FTRUNCATE  93
+#define SYS_MSYNC      144
 #define SYS_POLL       168
 
 #define PROT_NONE       0x0
@@ -1250,6 +1252,13 @@ static void syscall_handler(struct registers* regs) {
             uint32_t file_size = 0;
             int is_device = 0;
 
+            int is_shared = (flags & MAP_SHARED) ? 1 : 0;
+            int is_private = (flags & MAP_PRIVATE) ? 1 : 0;
+            if ((is_shared && is_private) || (!is_shared && !is_private)) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
             if (!(flags & MAP_ANON)) {
                 if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
                     regs->eax = (uint32_t) -EBADF;
@@ -1267,23 +1276,24 @@ static void syscall_handler(struct registers* regs) {
                     regs->eax = (uint32_t) -EACCES;
                     break;
                 }
+
+                if (is_shared && !is_device) {
+                    if (!tmpfs_is_tmpfs_vnode(file)) {
+                        /* MAP_SHARED on a FAT file returns -ENODEV */
+                        regs->eax = (uint32_t) -ENODEV;
+                        break;
+                    }
+                    if ((prot & PROT_WRITE) && (of->flags & O_ACCMODE) == O_RDONLY) {
+                        regs->eax = (uint32_t) -EACCES;
+                        break;
+                    }
+                }
+
                 if (offset < file->size) {
                     uint32_t rem = file->size - offset;
                     file_size = (len < rem) ? len : rem;
                 } else {
                     file_size = 0;
-                }
-            }
-
-            if (!is_device) {
-                if (!(flags & MAP_PRIVATE)) {
-                    regs->eax = (uint32_t) -EINVAL;
-                    break;
-                }
-            } else {
-                if (!(flags & (MAP_SHARED | MAP_PRIVATE))) {
-                    regs->eax = (uint32_t) -EINVAL;
-                    break;
                 }
             }
 
@@ -1312,7 +1322,9 @@ static void syscall_handler(struct registers* regs) {
             uint32_t vma_flags = (flags & MAP_ANON) ? VMA_FLAG_ANON : VMA_FLAG_FILE;
             if (is_device) {
                 vma_flags |= VMA_FLAG_DEVICE;
-                if (flags & MAP_SHARED) vma_flags |= VMA_FLAG_SHARED;
+            }
+            if (is_shared) {
+                vma_flags |= VMA_FLAG_SHARED;
             }
             uint32_t vma_prot = 0;
             if (prot & PROT_READ)  vma_prot |= VMA_PROT_READ;
@@ -1338,6 +1350,31 @@ static void syscall_handler(struct registers* regs) {
                 if (mr != 0) {
                     vma_unmap_range(me, target_addr, len);
                     regs->eax = (uint32_t) mr;
+                    break;
+                }
+            }
+
+            /* Pre-allocate and map frames for MAP_SHARED | MAP_ANON */
+            if ((vma_flags & (VMA_FLAG_ANON | VMA_FLAG_SHARED)) == (VMA_FLAG_ANON | VMA_FLAG_SHARED)) {
+                uint32_t pte_flags = PAGE_PRESENT | PAGE_USER;
+                if (prot & PROT_WRITE) pte_flags |= PAGE_WRITE;
+                int alloc_fail = 0;
+                for (uint32_t va = target_addr; va < target_addr + len; va += 4096) {
+                    uint32_t fp = pmm_alloc_frame();
+                    if (!fp) {
+                        alloc_fail = 1;
+                        break;
+                    }
+                    memset(P2V(fp), 0, FRAME_SIZE);
+                    if (vmm_map_page(&me->as, va, fp, pte_flags) != 0) {
+                        pmm_unref(fp);
+                        alloc_fail = 1;
+                        break;
+                    }
+                }
+                if (alloc_fail) {
+                    vma_unmap_range(me, target_addr, len);
+                    regs->eax = (uint32_t) -ENOMEM;
                     break;
                 }
             }
@@ -1816,6 +1853,11 @@ static void syscall_handler(struct registers* regs) {
             }
 
             regs->eax = (uint32_t) ret_val;
+            break;
+        }
+
+        case SYS_MSYNC: {
+            regs->eax = 0;
             break;
         }
 

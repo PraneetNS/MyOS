@@ -68,10 +68,12 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 3
     printf "jobtest\n"
     sleep 2
+    printf "shmtest.elf\n"
+    sleep 3
     printf "memtest\n"
     sleep 16
     printf "exit\n"
-) | timeout 95s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 105s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -169,6 +171,9 @@ echo "[PASS] sigtest (signals, masks, alarm, pause, broken pipe, waitpid status)
 grep -q "=== ALL JOBTESTS PASSED ===" "$LOGFILE1" || { echo "FAIL: jobtest failed"; exit 1; }
 echo "[PASS] jobtest (pgid, sid, ppid, tcgetpgrp, SIGTTIN on background read) verified"
 
+grep -q "ALL STAGE 18B STEP 2 TESTS PASSED" "$LOGFILE1" || { echo "FAIL: shmtest failed"; exit 1; }
+echo "[PASS] Stage 18B Step 2 (MAP_SHARED, shm, atomic builtins, SIGBUS) verified"
+
 # Stage 15 RAM log assertion (-m 256)
 grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }
 echo "[PASS] -m 256 Total RAM (255 MB) verified"
@@ -261,7 +266,7 @@ echo "[TEST] Session 3: Stage 14 IPC, pipes, redirections, pipelines, filters, a
     printf 'stress\n'
     sleep 2
     printf 'exit\n'
-) | timeout 35s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
+) | timeout 45s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE3" 2>&1 || true
 
 cat "$LOGFILE3"
 

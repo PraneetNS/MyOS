@@ -59,5 +59,6 @@ void tmpfs_node_ref(tmpfs_node_t* node);
 void tmpfs_node_unref(tmpfs_node_t* node);
 
 extern const struct fs_ops tmpfs_ops;
+int tmpfs_is_tmpfs_vnode(vnode_t* vn);
 
 #endif /* TMPFS_H */

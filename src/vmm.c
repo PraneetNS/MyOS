@@ -2,6 +2,7 @@
 #include "pmm.h"
 #include "paging.h"
 #include "vga.h"
+#include "vma.h"
 
 address_space_t vmm_create_address_space(void) {
     address_space_t as = {0, 0};
@@ -122,7 +123,7 @@ void vmm_destroy_address_space(address_space_t* as) {
     as->directory_phys = 0;
 }
 
-int vmm_clone_user_pages(address_space_t* dst, address_space_t* src) {
+int vmm_clone_user_pages(address_space_t* dst, address_space_t* src, vma_t* vma_list) {
     for (uint32_t dir_index = 0; dir_index < 768; dir_index++) {
         uint32_t dir_entry = src->directory[dir_index];
         if (!(dir_entry & PAGE_PRESENT)) continue;
@@ -139,20 +140,35 @@ int vmm_clone_user_pages(address_space_t* dst, address_space_t* src) {
             uint32_t vaddr = (dir_index << 22) | (table_index << 12);
 
             if (pmm_is_ram(frame_phys)) {
-                /* If the page was writable, clear write bit and set COW bit in both */
-                if (flags & PAGE_WRITE) {
-                    flags &= ~PAGE_WRITE;
-                    flags |= PTE_COW;
-                    table[table_index] = frame_phys | flags;
+                vma_t* v = vma_list;
+                while (v) {
+                    if (v->start <= vaddr && vaddr < v->end) break;
+                    v = v->next;
                 }
+                int is_shared = (v && (v->flags & VMA_FLAG_SHARED));
 
-                /* Map into destination with identical flags (read-only + COW) */
-                if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
-                    return -1;
+                if (is_shared) {
+                    /* Shared mapping: keep PAGE_WRITE, do NOT set PTE_COW */
+                    if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
+                        return -1;
+                    }
+                    pmm_ref(frame_phys);
+                } else {
+                    /* If the page was writable, clear write bit and set COW bit in both */
+                    if (flags & PAGE_WRITE) {
+                        flags &= ~PAGE_WRITE;
+                        flags |= PTE_COW;
+                        table[table_index] = frame_phys | flags;
+                    }
+
+                    /* Map into destination with identical flags (read-only + COW) */
+                    if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
+                        return -1;
+                    }
+
+                    /* Increment reference count for shared frame */
+                    pmm_ref(frame_phys);
                 }
-
-                /* Increment reference count for shared frame */
-                pmm_ref(frame_phys);
             } else {
                 /* Device page: never COW, shared directly between processes, no refcounting */
                 if (vmm_map_page(dst, vaddr, frame_phys, flags) != 0) {
@@ -162,7 +178,7 @@ int vmm_clone_user_pages(address_space_t* dst, address_space_t* src) {
         }
     }
 
-    /* Flush TLB in source address space since writable pages were made read-only */
+    /* Flush TLB in source address space since writable pages may have been made read-only */
     paging_flush(src->directory_phys);
     return 0;
 }

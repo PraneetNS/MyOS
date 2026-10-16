@@ -432,6 +432,41 @@ int mprotect(void *addr, size_t length, int prot) {
     return __check_syscall_err(ret);
 }
 
+int msync(void *addr, size_t length, int flags) {
+    int ret = __syscall3(SYS_MSYNC, (long)addr, (long)length, (long)flags);
+    return __check_syscall_err(ret);
+}
+
+int shm_open(const char *name, int oflag, mode_t mode) {
+    if (!name) {
+        errno = EINVAL;
+        return -1;
+    }
+    while (*name == '/') name++;
+    if (*name == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    char path[256];
+    snprintf(path, sizeof(path), "/dev/shm/%s", name);
+    return open(path, oflag, mode);
+}
+
+int shm_unlink(const char *name) {
+    if (!name) {
+        errno = EINVAL;
+        return -1;
+    }
+    while (*name == '/') name++;
+    if (*name == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    char path[256];
+    snprintf(path, sizeof(path), "/dev/shm/%s", name);
+    return unlink(path);
+}
+
 /* Sleeping & Clock */
 struct kernel_timespec {
     uint32_t tv_sec;

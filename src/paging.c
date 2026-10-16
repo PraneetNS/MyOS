@@ -10,6 +10,7 @@
 #include "vmm.h"
 #include "vfs.h"
 #include "signal.h"
+#include "tmpfs.h"
 
 extern void paging_flush(uint32_t page_directory_phys);
 
@@ -86,6 +87,47 @@ static void page_fault_handler(struct registers* regs) {
             } else if (!is_write && !(vma->prot & (VMA_PROT_READ | VMA_PROT_EXEC))) {
                 /* Read from unreadable VMA -> protection violation */
             } else {
+                uint32_t page_va = faulting_addr & ~0xFFFu;
+                uint32_t off_in_vma = page_va - vma->start;
+                uint32_t file_offset = vma->offset + off_in_vma;
+
+                /* Special handling for tmpfs files */
+                if ((vma->flags & VMA_FLAG_FILE) && vma->file && tmpfs_is_tmpfs_vnode(vma->file)) {
+                    /* Access beyond the current EOF of a mapped tmpfs file raises SIGBUS */
+                    if (file_offset >= vma->file->size) {
+                        serial_printf("[pf] SIGBUS: access beyond EOF (off %u >= size %u) PID %d\n",
+                                      file_offset, vma->file->size, proc->pid);
+                        sig_send(proc, SIGBUS);
+                        signal_handle_pending(regs);
+                        return;
+                    }
+
+                    if (vma->flags & VMA_FLAG_SHARED) {
+                        tmpfs_node_t* tnode = (tmpfs_node_t*) vma->file->fs_data;
+                        uint32_t page_idx = file_offset / FRAME_SIZE;
+                        int alloc_err = 0;
+                        uint32_t frame_phys = tmpfs_get_or_alloc_frame(tnode, page_idx, 1, &alloc_err);
+                        if (!frame_phys || alloc_err != 0) {
+                            sig_send(proc, SIGBUS);
+                            signal_handle_pending(regs);
+                            return;
+                        }
+
+                        pmm_ref(frame_phys);
+                        uint32_t pte_flags = PAGE_PRESENT | PAGE_USER;
+                        if (vma->prot & VMA_PROT_WRITE) pte_flags |= PAGE_WRITE;
+
+                        if (vmm_map_page(&proc->as, page_va, frame_phys, pte_flags) != 0) {
+                            pmm_unref(frame_phys);
+                            scheduler_exit_current(139);
+                            return;
+                        }
+
+                        asm volatile ("invlpg (%0)" :: "r"(page_va) : "memory");
+                        return; /* Successfully mapped tmpfs shared frame */
+                    }
+                }
+
                 /* Valid demand-page fault! Allocate physical frame */
                 uint32_t frame_phys = pmm_alloc_frame();
                 if (!frame_phys) {
@@ -93,15 +135,12 @@ static void page_fault_handler(struct registers* regs) {
                     scheduler_exit_current(139);
                 }
 
-                uint32_t page_va = faulting_addr & ~0xFFFu;
                 uint8_t* page_ptr = (uint8_t*) P2V(frame_phys);
                 for (int i = 0; i < 4096; i++) page_ptr[i] = 0;
 
                 /* If file-backed, load data from file */
                 if ((vma->flags & VMA_FLAG_FILE) && vma->file) {
                     if (page_va < vma->start + vma->file_size) {
-                        uint32_t off_in_vma = page_va - vma->start;
-                        uint32_t file_offset = vma->offset + off_in_vma;
                         uint32_t to_read = 4096;
                         if (off_in_vma + to_read > vma->file_size) {
                             to_read = vma->file_size - off_in_vma;
