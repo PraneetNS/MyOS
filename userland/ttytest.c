@@ -4,11 +4,17 @@ static void print_str(const char* s) {
     write(1, s, strlen(s));
 }
 
+static struct termios g_orig_t;
+static int g_has_orig_t = 0;
+
 static void assert_true(int condition, const char* msg) {
     if (!condition) {
         print_str("FAIL: ");
         print_str(msg);
         print_str("\n");
+        if (g_has_orig_t) {
+            tcsetattr(0, TCSANOW, &g_orig_t);
+        }
         exit(1);
     }
     print_str("PASS: ");
@@ -68,6 +74,8 @@ int main(int argc, char** argv) {
     struct termios orig_t;
     int ret_ga = tcgetattr(0, &orig_t);
     assert_true(ret_ga == 0, "tcgetattr(0) succeeds");
+    g_orig_t = orig_t;
+    g_has_orig_t = 1;
     assert_true((orig_t.c_lflag & ICANON) != 0, "default termios has ICANON");
     assert_true((orig_t.c_lflag & ECHO) != 0, "default termios has ECHO");
     assert_true((orig_t.c_lflag & ISIG) != 0, "default termios has ISIG");
@@ -85,7 +93,7 @@ int main(int argc, char** argv) {
     raw_t.c_lflag &= ~(ICANON | ECHO);
     raw_t.c_cc[VMIN] = 0;
     raw_t.c_cc[VTIME] = 0;
-    int ret_sa = tcsetattr(0, TCSANOW, &raw_t);
+    int ret_sa = tcsetattr(0, TCSAFLUSH, &raw_t);
     assert_true(ret_sa == 0, "tcsetattr(raw mode, VMIN=0) succeeds");
 
     struct termios check_t;
