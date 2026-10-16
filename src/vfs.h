@@ -15,7 +15,8 @@ typedef enum {
     OPEN_FILE_NONE = 0,
     OPEN_FILE_VNODE,
     OPEN_FILE_CONSOLE,
-    OPEN_FILE_PIPE
+    OPEN_FILE_PIPE,
+    OPEN_FILE_SOCKET
 } open_file_type_t;
 
 /* Open flags */
@@ -155,6 +156,7 @@ typedef struct open_file {
     open_file_type_t type;
     vnode_t* vnode;
     void* pipe;               /* pipe_t* when type == OPEN_FILE_PIPE */
+    void* sock;               /* socket_t* when type == OPEN_FILE_SOCKET */
     uint32_t offset;
     int flags;
     int refcount;

@@ -13,6 +13,8 @@
 #include <time.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -875,4 +877,84 @@ int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
     }
 
     return ret;
+}
+
+/* Sockets API */
+int socket(int domain, int type, int protocol) {
+    int ret = __syscall3(SYS_SOCKET, domain, type, protocol);
+    return __check_syscall_err(ret);
+}
+
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    int ret = __syscall3(SYS_BIND, sockfd, (long)addr, (long)addrlen);
+    return __check_syscall_err(ret);
+}
+
+int listen(int sockfd, int backlog) {
+    int ret = __syscall2(SYS_LISTEN, sockfd, backlog);
+    return __check_syscall_err(ret);
+}
+
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    int ret = __syscall4(SYS_ACCEPT, sockfd, (long)addr, (long)addrlen, 0);
+    return __check_syscall_err(ret);
+}
+
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    int ret = __syscall3(SYS_CONNECT, sockfd, (long)addr, (long)addrlen);
+    return __check_syscall_err(ret);
+}
+
+int shutdown(int sockfd, int how) {
+    int ret = __syscall2(SYS_SHUTDOWN, sockfd, how);
+    return __check_syscall_err(ret);
+}
+
+int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    int ret = __syscall3(SYS_GETSOCKNAME, sockfd, (long)addr, (long)addrlen);
+    return __check_syscall_err(ret);
+}
+
+int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    int ret = __syscall3(SYS_GETPEERNAME, sockfd, (long)addr, (long)addrlen);
+    return __check_syscall_err(ret);
+}
+
+int socketpair(int domain, int type, int protocol, int sv[2]) {
+    int ret = __syscall4(SYS_SOCKETPAIR, domain, type, protocol, (long)sv);
+    return __check_syscall_err(ret);
+}
+
+ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
+    int ret = __syscall4(SYS_SEND, sockfd, (long)buf, (long)len, flags);
+    return (ssize_t) __check_syscall_err(ret);
+}
+
+ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
+    int ret = __syscall4(SYS_RECV, sockfd, (long)buf, (long)len, flags);
+    return (ssize_t) __check_syscall_err(ret);
+}
+
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen) {
+    (void) dest_addr;
+    (void) addrlen;
+    return send(sockfd, buf, len, flags);
+}
+
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen) {
+    (void) src_addr;
+    (void) addrlen;
+    return recv(sockfd, buf, len, flags);
+}
+
+int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
+    int ret = __syscall5(SYS_GETSOCKOPT, sockfd, level, optname, (long)optval, (long)optlen);
+    return __check_syscall_err(ret);
+}
+
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    int ret = __syscall5(SYS_SETSOCKOPT, sockfd, level, optname, (long)optval, (long)optlen);
+    return __check_syscall_err(ret);
 }

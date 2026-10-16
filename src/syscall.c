@@ -26,6 +26,7 @@
 #include "fpu.h"
 #include "kmutex.h"
 #include "tmpfs.h"
+#include "socket.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -79,6 +80,21 @@
 #define SYS_NICE       77
 #define SYS_TRUNCATE   92
 #define SYS_FTRUNCATE  93
+#define SYS_SOCKET     102
+#define SYS_BIND       103
+#define SYS_LISTEN     104
+#define SYS_ACCEPT     105
+#define SYS_CONNECT    106
+#define SYS_SHUTDOWN   107
+#define SYS_GETSOCKNAME 108
+#define SYS_GETPEERNAME 109
+#define SYS_SOCKETPAIR 110
+#define SYS_SEND       111
+#define SYS_RECV       112
+#define SYS_SETSOCKOPT 113
+#define SYS_GETSOCKOPT 114
+#define SYS_SENDTO     115
+#define SYS_RECVFROM   116
 #define SYS_MSYNC      144
 #define SYS_POLL       168
 
@@ -848,6 +864,10 @@ static void syscall_handler(struct registers* regs) {
             }
             if (of->type == OPEN_FILE_VNODE && of->vnode) {
                 regs->eax = (uint32_t) vfs_stat(of->vnode, st);
+                break;
+            }
+            if (of->type == OPEN_FILE_SOCKET && of->sock) {
+                regs->eax = (uint32_t) socket_stat((socket_t*) of->sock, st);
                 break;
             }
             regs->eax = (uint32_t) -EBADF;
@@ -1857,6 +1877,452 @@ static void syscall_handler(struct registers* regs) {
         }
 
         case SYS_MSYNC: {
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_SOCKET: {
+            int domain = (int) regs->ebx;
+            int type = (int) regs->ecx;
+            int protocol = (int) regs->edx;
+
+            int flags = type & ~0xF;
+            type = type & 0xF;
+
+            if (domain != AF_UNIX) {
+                regs->eax = (uint32_t) -EAFNOSUPPORT;
+                break;
+            }
+            if (type != SOCK_STREAM) {
+                regs->eax = (uint32_t) -EPROTONOSUPPORT;
+                break;
+            }
+
+            process_t* me = scheduler_current();
+            int slot = -1;
+            for (int i = 0; i < MAX_FDS; i++) {
+                if (!me->fds[i]) { slot = i; break; }
+            }
+            if (slot < 0) {
+                regs->eax = (uint32_t) -EMFILE;
+                break;
+            }
+
+            socket_t* s = socket_alloc(domain, type, protocol);
+            if (!s) {
+                regs->eax = (uint32_t) -ENOMEM;
+                break;
+            }
+
+            int of_flags = O_RDWR;
+            if (flags & SOCK_NONBLOCK) of_flags |= O_NONBLOCK;
+            open_file_t* of = open_file_alloc(OPEN_FILE_SOCKET, NULL, of_flags);
+            if (!of) {
+                socket_unref(s);
+                regs->eax = (uint32_t) -ENFILE;
+                break;
+            }
+            of->sock = s;
+
+            me->fds[slot] = of;
+            me->fd_flags[slot] = (flags & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
+            regs->eax = (uint32_t) slot;
+            break;
+        }
+
+        case SYS_BIND: {
+            int fd = (int) regs->ebx;
+            const struct sockaddr* uaddr = (const struct sockaddr*) regs->ecx;
+            uint32_t addrlen = (uint32_t) regs->edx;
+
+            if (addrlen > sizeof(struct sockaddr_un) + 128) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            int err = validate_user_buffer(uaddr, addrlen, 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_bind((socket_t*) of->sock, uaddr, addrlen);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_LISTEN: {
+            int fd = (int) regs->ebx;
+            int backlog = (int) regs->ecx;
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_listen((socket_t*) of->sock, backlog);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_ACCEPT: {
+            int fd = (int) regs->ebx;
+            struct sockaddr* uaddr = (struct sockaddr*) regs->ecx;
+            uint32_t* uaddrlen = (uint32_t*) regs->edx;
+            int flags = (int) regs->esi;
+
+            if (uaddrlen) {
+                int err = validate_user_buffer(uaddrlen, sizeof(uint32_t), 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+                if (*uaddrlen > 0 && uaddr) {
+                    err = validate_user_buffer(uaddr, *uaddrlen, 1);
+                    if (err != 0) { regs->eax = (uint32_t) err; break; }
+                }
+            }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+            if (me) me->current_op_flags = of->flags;
+            if (of->flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) {
+                flags |= SOCK_NONBLOCK;
+            }
+
+            int slot = -1;
+            for (int i = 0; i < MAX_FDS; i++) {
+                if (!me->fds[i]) { slot = i; break; }
+            }
+            if (slot < 0) {
+                regs->eax = (uint32_t) -EMFILE;
+                break;
+            }
+
+            socket_t* new_sock = NULL;
+            int ret = socket_accept((socket_t*) of->sock, uaddr, uaddrlen, flags, &new_sock);
+            if (ret != 0 || !new_sock) {
+                regs->eax = (uint32_t) ret;
+                break;
+            }
+
+            int of_flags = O_RDWR;
+            if (flags & SOCK_NONBLOCK) of_flags |= O_NONBLOCK;
+            open_file_t* new_of = open_file_alloc(OPEN_FILE_SOCKET, NULL, of_flags);
+            if (!new_of) {
+                socket_unref(new_sock);
+                regs->eax = (uint32_t) -ENFILE;
+                break;
+            }
+            new_of->sock = new_sock;
+
+            me->fds[slot] = new_of;
+            me->fd_flags[slot] = (flags & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
+            regs->eax = (uint32_t) slot;
+            break;
+        }
+
+        case SYS_CONNECT: {
+            int fd = (int) regs->ebx;
+            const struct sockaddr* uaddr = (const struct sockaddr*) regs->ecx;
+            uint32_t addrlen = (uint32_t) regs->edx;
+
+            if (addrlen > sizeof(struct sockaddr_un) + 128) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+            int err = validate_user_buffer(uaddr, addrlen, 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+            if (me) me->current_op_flags = of->flags;
+
+            int ret = socket_connect((socket_t*) of->sock, uaddr, addrlen);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_SHUTDOWN: {
+            int fd = (int) regs->ebx;
+            int how = (int) regs->ecx;
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_shutdown((socket_t*) of->sock, how);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_GETSOCKNAME: {
+            int fd = (int) regs->ebx;
+            struct sockaddr* uaddr = (struct sockaddr*) regs->ecx;
+            uint32_t* uaddrlen = (uint32_t*) regs->edx;
+
+            if (!uaddr || !uaddrlen) {
+                regs->eax = (uint32_t) -EFAULT;
+                break;
+            }
+            int err = validate_user_buffer(uaddrlen, sizeof(uint32_t), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            err = validate_user_buffer(uaddr, *uaddrlen, 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_getsockname((socket_t*) of->sock, uaddr, uaddrlen);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_GETPEERNAME: {
+            int fd = (int) regs->ebx;
+            struct sockaddr* uaddr = (struct sockaddr*) regs->ecx;
+            uint32_t* uaddrlen = (uint32_t*) regs->edx;
+
+            if (!uaddr || !uaddrlen) {
+                regs->eax = (uint32_t) -EFAULT;
+                break;
+            }
+            int err = validate_user_buffer(uaddrlen, sizeof(uint32_t), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            err = validate_user_buffer(uaddr, *uaddrlen, 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_getpeername((socket_t*) of->sock, uaddr, uaddrlen);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_SOCKETPAIR: {
+            int domain = (int) regs->ebx;
+            int type = (int) regs->ecx;
+            int protocol = (int) regs->edx;
+            int* usv = (int*) regs->esi;
+
+            int err = validate_user_buffer(usv, 2 * sizeof(int), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            int flags = type & ~0xF;
+            type = type & 0xF;
+
+            if (domain != AF_UNIX) {
+                regs->eax = (uint32_t) -EAFNOSUPPORT;
+                break;
+            }
+            if (type != SOCK_STREAM) {
+                regs->eax = (uint32_t) -EPROTONOSUPPORT;
+                break;
+            }
+
+            process_t* me = scheduler_current();
+            int fd0 = -1, fd1 = -1;
+            for (int i = 0; i < MAX_FDS; i++) {
+                if (!me->fds[i]) {
+                    if (fd0 < 0) fd0 = i;
+                    else if (fd1 < 0) { fd1 = i; break; }
+                }
+            }
+            if (fd0 < 0 || fd1 < 0) {
+                regs->eax = (uint32_t) -EMFILE;
+                break;
+            }
+
+            socket_t* s0 = NULL;
+            socket_t* s1 = NULL;
+            err = socket_pair(domain, type, protocol, &s0, &s1);
+            if (err != 0 || !s0 || !s1) {
+                regs->eax = (uint32_t) err;
+                break;
+            }
+
+            int of_flags = O_RDWR;
+            if (flags & SOCK_NONBLOCK) of_flags |= O_NONBLOCK;
+            open_file_t* of0 = open_file_alloc(OPEN_FILE_SOCKET, NULL, of_flags);
+            open_file_t* of1 = open_file_alloc(OPEN_FILE_SOCKET, NULL, of_flags);
+            if (!of0 || !of1) {
+                if (of0) open_file_unref(of0);
+                if (of1) open_file_unref(of1);
+                socket_unref(s0);
+                socket_unref(s1);
+                regs->eax = (uint32_t) -ENFILE;
+                break;
+            }
+            of0->sock = s0;
+            of1->sock = s1;
+
+            me->fds[fd0] = of0;
+            me->fd_flags[fd0] = (flags & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
+            me->fds[fd1] = of1;
+            me->fd_flags[fd1] = (flags & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
+
+            usv[0] = fd0;
+            usv[1] = fd1;
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_SEND: {
+            int fd = (int) regs->ebx;
+            const void* buf = (const void*) regs->ecx;
+            uint32_t len = regs->edx;
+            int flags = (int) regs->esi;
+
+            int err = validate_user_buffer(buf, len, 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+            if (me) me->current_op_flags = of->flags;
+
+            int n = socket_send((socket_t*) of->sock, buf, len, flags);
+            regs->eax = (uint32_t) n;
+            break;
+        }
+
+        case SYS_RECV: {
+            int fd = (int) regs->ebx;
+            void* buf = (void*) regs->ecx;
+            uint32_t len = regs->edx;
+            int flags = (int) regs->esi;
+
+            int err = validate_user_buffer(buf, len, 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+            if (me) me->current_op_flags = of->flags;
+
+            int n = socket_recv((socket_t*) of->sock, buf, len, flags);
+            regs->eax = (uint32_t) n;
+            break;
+        }
+
+        case SYS_SENDTO: {
+            int fd = (int) regs->ebx;
+            const void* buf = (const void*) regs->ecx;
+            uint32_t len = regs->edx;
+            int flags = (int) regs->esi;
+
+            int err = validate_user_buffer(buf, len, 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+            if (me) me->current_op_flags = of->flags;
+
+            int n = socket_send((socket_t*) of->sock, buf, len, flags);
+            regs->eax = (uint32_t) n;
+            break;
+        }
+
+        case SYS_RECVFROM: {
+            int fd = (int) regs->ebx;
+            void* buf = (void*) regs->ecx;
+            uint32_t len = regs->edx;
+            int flags = (int) regs->esi;
+
+            int err = validate_user_buffer(buf, len, 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+            if (me) me->current_op_flags = of->flags;
+
+            int n = socket_recv((socket_t*) of->sock, buf, len, flags);
+            regs->eax = (uint32_t) n;
+            break;
+        }
+
+        case SYS_SETSOCKOPT:
+        case SYS_GETSOCKOPT: {
             regs->eax = 0;
             break;
         }

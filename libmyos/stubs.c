@@ -26,11 +26,28 @@ static void translate_kernel_stat(const struct kernel_stat* kst, struct stat* st
     st->st_dev = (dev_t) kst->k_dev;
     st->st_ino = (ino_t) kst->k_ino;
 
+#ifndef S_IFSOCK
+#define S_IFSOCK 0xC000
+#endif
+#ifndef S_IFIFO
+#define S_IFIFO  0x1000
+#endif
+#ifndef S_IFLNK
+#define S_IFLNK  0xA000
+#endif
+#ifndef S_IFBLK
+#define S_IFBLK  0x6000
+#endif
+
     mode_t m = 0;
     unsigned int km = kst->k_mode;
     if ((km & 0xF000) == 0x8000) m |= S_IFREG;
     else if ((km & 0xF000) == 0x4000) m |= S_IFDIR;
     else if ((km & 0xF000) == 0x2000) m |= S_IFCHR;
+    else if ((km & 0xF000) == 0xC000) m |= S_IFSOCK;
+    else if ((km & 0xF000) == 0x1000) m |= S_IFIFO;
+    else if ((km & 0xF000) == 0xA000) m |= S_IFLNK;
+    else if ((km & 0xF000) == 0x6000) m |= S_IFBLK;
 
     m |= (km & 0777);
     if ((m & S_IFMT) == 0) m |= S_IFREG;
