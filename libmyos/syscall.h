@@ -56,6 +56,21 @@
 #define SYS_NICE         77
 #define SYS_TRUNCATE     92
 #define SYS_FTRUNCATE    93
+#define SYS_SOCKET       102
+#define SYS_BIND         103
+#define SYS_LISTEN       104
+#define SYS_ACCEPT       105
+#define SYS_CONNECT      106
+#define SYS_SHUTDOWN     107
+#define SYS_GETSOCKNAME  108
+#define SYS_GETPEERNAME  109
+#define SYS_SOCKETPAIR   110
+#define SYS_SEND         111
+#define SYS_RECV         112
+#define SYS_SETSOCKOPT   113
+#define SYS_GETSOCKOPT   114
+#define SYS_SENDTO       115
+#define SYS_RECVFROM     116
 #define SYS_MSYNC        144
 #define SYS_POLL         168
 

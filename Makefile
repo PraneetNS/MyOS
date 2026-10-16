@@ -14,7 +14,7 @@ OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o boot/paging_asm.
        src/ata.o src/fs.o src/elf.o src/shell.o src/vmm.o src/vma.o \
        src/process.o src/scheduler.o src/kmutex.o src/pipe.o src/serial.o src/bcache.o src/vfs.o src/fat16.o \
        src/tty.o src/devfs.o src/signal.o src/rtc.o src/procfs.o src/fpu.o \
-       src/ioremap.o src/fb.o src/mouse.o src/input.o src/tmpfs.o
+       src/ioremap.o src/fb.o src/mouse.o src/input.o src/tmpfs.o src/socket.o
 
 DEPS = $(OBJS:.o=.d)
 

@@ -70,6 +70,8 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 2
     printf "shmtest.elf\n"
     sleep 3
+    printf "sockettest.elf\n"
+    sleep 4
     printf "memtest\n"
     sleep 16
     printf "exit\n"
@@ -173,6 +175,9 @@ echo "[PASS] jobtest (pgid, sid, ppid, tcgetpgrp, SIGTTIN on background read) ve
 
 grep -q "ALL STAGE 18B STEP 2 TESTS PASSED" "$LOGFILE1" || { echo "FAIL: shmtest failed"; exit 1; }
 echo "[PASS] Stage 18B Step 2 (MAP_SHARED, shm, atomic builtins, SIGBUS) verified"
+
+grep -q "ALL STAGE 18B STEP 3 SOCKET TESTS PASSED SUCCESSFULLY" "$LOGFILE1" || { echo "FAIL: sockettest failed"; exit 1; }
+echo "[PASS] Stage 18B Step 3 (AF_UNIX sockets, 64KB ring, /proc/net/unix) verified"
 
 # Stage 15 RAM log assertion (-m 256)
 grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }

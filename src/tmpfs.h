@@ -60,5 +60,6 @@ void tmpfs_node_unref(tmpfs_node_t* node);
 
 extern const struct fs_ops tmpfs_ops;
 int tmpfs_is_tmpfs_vnode(vnode_t* vn);
+int tmpfs_create_socket_node(vnode_t* dir, const char* name, void* sock_ptr, vnode_t** out_vn);
 
 #endif /* TMPFS_H */

@@ -28,6 +28,7 @@
 #include "fpu.h"
 #include "fb.h"
 #include "tmpfs.h"
+#include "socket.h"
 
 static int check_boot_flag_kshell(uint32_t mb_info_addr) {
     if (!mb_info_addr) return 0;
@@ -142,6 +143,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     pipe_init();
     kprintf("[ok] Pipe (IPC) initialized\n");
+
+    socket_init();
+    kprintf("[ok] Socket (IPC) initialized\n");
 
     int use_kshell = check_boot_flag_kshell(mb_info_addr);
     process_init_table(use_kshell);

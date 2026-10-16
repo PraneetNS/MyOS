@@ -7,19 +7,25 @@
 #include "vma.h"
 #include "errno.h"
 
+#include "socket.h"
+
 static vnode_t proc_root_vnode;
 static vnode_t proc_meminfo_vnode;
 static vnode_t proc_uptime_vnode;
 static vnode_t proc_version_vnode;
 static vnode_t proc_cpuinfo_vnode;
 static vnode_t proc_mounts_vnode;
+static vnode_t proc_net_dir_vnode;
+static vnode_t proc_net_unix_vnode;
 static vnode_t proc_self_dir_vnode;
 static vnode_t proc_self_status_vnode;
 static vnode_t proc_self_cmdline_vnode;
+static vnode_t proc_self_fd_dir_vnode;
 
 static vnode_t proc_dir_vnodes[MAX_PROCESSES];
 static vnode_t proc_status_vnodes[MAX_PROCESSES];
 static vnode_t proc_cmdline_vnodes[MAX_PROCESSES];
+static vnode_t proc_fd_dir_vnodes[MAX_PROCESSES];
 
 /* String formatting utilities */
 static void append_char(char* buf, int* pos, int max, char c) {
@@ -66,6 +72,18 @@ static void append_uint_pad2(char* buf, int* pos, int max, uint32_t val) {
         append_char(buf, pos, max, '0');
     }
     append_uint(buf, pos, max, val);
+}
+
+static void append_hex(char* buf, int* pos, int max, uint32_t val, int width) {
+    char tmp[16];
+    const char hex_chars[] = "0123456789ABCDEF";
+    for (int i = width - 1; i >= 0; i--) {
+        tmp[i] = hex_chars[val & 0xF];
+        val >>= 4;
+    }
+    for (int i = 0; i < width; i++) {
+        append_char(buf, pos, max, tmp[i]);
+    }
 }
 
 static int streq(const char* a, const char* b) {
@@ -351,6 +369,220 @@ static const struct fs_ops cmdline_ops = {
     .stat = procfs_file_stat
 };
 
+/* /proc/net and /proc/net/unix operations */
+static int net_unix_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[2048];
+    int pos = 0;
+
+    append_str(text, &pos, sizeof(text), "Num       RefCount Protocol Flags    Type St Inode Path\n");
+    socket_t* s = socket_get_list_head();
+    while (s && pos < (int)sizeof(text) - 128) {
+        append_hex(text, &pos, sizeof(text), (uint32_t)(uintptr_t)s, 8);
+        append_str(text, &pos, sizeof(text), ": ");
+        append_hex(text, &pos, sizeof(text), (uint32_t)s->refcount, 8);
+        append_char(text, &pos, sizeof(text), ' ');
+        append_hex(text, &pos, sizeof(text), (uint32_t)s->protocol, 8);
+        append_char(text, &pos, sizeof(text), ' ');
+        append_hex(text, &pos, sizeof(text), (uint32_t)s->flags, 8);
+        append_char(text, &pos, sizeof(text), ' ');
+        append_hex(text, &pos, sizeof(text), (uint32_t)s->type, 4);
+        append_char(text, &pos, sizeof(text), ' ');
+        append_hex(text, &pos, sizeof(text), (uint32_t)s->state, 2);
+        append_char(text, &pos, sizeof(text), ' ');
+        append_uint(text, &pos, sizeof(text), s->inode);
+        append_char(text, &pos, sizeof(text), ' ');
+        if (s->sun_path[0]) {
+            append_str(text, &pos, sizeof(text), s->sun_path);
+        } else if (s->peer_path[0]) {
+            append_str(text, &pos, sizeof(text), s->peer_path);
+        }
+        append_char(text, &pos, sizeof(text), '\n');
+        s = s->next_all;
+    }
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops net_unix_ops = {
+    .read = net_unix_read,
+    .stat = procfs_file_stat
+};
+
+static int proc_net_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    (void) dir;
+    if (streq(name, ".")) {
+        *out = &proc_net_dir_vnode;
+        vnode_ref(&proc_net_dir_vnode);
+        return 0;
+    }
+    if (streq(name, "..")) {
+        *out = &proc_root_vnode;
+        vnode_ref(&proc_root_vnode);
+        return 0;
+    }
+    if (streq(name, "unix")) {
+        *out = &proc_net_unix_vnode;
+        vnode_ref(&proc_net_unix_vnode);
+        return 0;
+    }
+    return -ENOENT;
+}
+
+static int proc_net_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+    if (index == 2) {
+        entry->d_ino = 300; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "unix");
+        return 1;
+    }
+    return 0;
+}
+
+static const struct fs_ops proc_net_dir_ops = {
+    .lookup = proc_net_dir_lookup,
+    .readdir = proc_net_dir_readdir,
+    .stat = procfs_dir_stat
+};
+
+/* /proc/<pid>/fd operations */
+static int proc_fd_entry_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    uint32_t val = (uint32_t)(uintptr_t) vn->fs_data;
+    int slot = (int)(int16_t)(val >> 16);
+    int fd = (int)(int16_t)(val & 0xFFFF);
+
+    process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+    if (!p || fd < 0 || fd >= MAX_FDS || !p->fds[fd]) return -EBADF;
+
+    open_file_t* of = p->fds[fd];
+    char text[128];
+    int pos = 0;
+
+    if (of->type == OPEN_FILE_SOCKET && of->sock) {
+        socket_t* s = (socket_t*) of->sock;
+        append_str(text, &pos, sizeof(text), "socket:[");
+        append_uint(text, &pos, sizeof(text), s->inode);
+        append_str(text, &pos, sizeof(text), "]\n");
+    } else if (of->type == OPEN_FILE_PIPE && of->pipe) {
+        append_str(text, &pos, sizeof(text), "pipe:[");
+        append_uint(text, &pos, sizeof(text), (uint32_t)(uintptr_t)of->pipe);
+        append_str(text, &pos, sizeof(text), "]\n");
+    } else if (of->type == OPEN_FILE_CONSOLE) {
+        append_str(text, &pos, sizeof(text), "/dev/console\n");
+    } else if (of->type == OPEN_FILE_VNODE && of->vnode) {
+        append_str(text, &pos, sizeof(text), "vnode\n");
+    } else {
+        append_str(text, &pos, sizeof(text), "unknown\n");
+    }
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static int proc_fd_entry_stat(vnode_t* vn, struct stat* st) {
+    uint32_t val = (uint32_t)(uintptr_t) vn->fs_data;
+    int slot = (int)(int16_t)(val >> 16);
+    int fd = (int)(int16_t)(val & 0xFFFF);
+
+    process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+    if (!p || fd < 0 || fd >= MAX_FDS || !p->fds[fd]) return -EBADF;
+
+    st->st_dev = 0;
+    st->st_ino = 3000 + fd;
+    st->st_mode = S_IFLNK | 0777;
+    st->st_nlink = 1;
+    st->st_size = 64;
+    st->st_blksize = 512;
+    st->st_blocks = 1;
+    st->st_atime = 0;
+    st->st_mtime = 0;
+    st->st_ctime = 0;
+    return 0;
+}
+
+static const struct fs_ops proc_fd_entry_ops = {
+    .read = proc_fd_entry_read,
+    .stat = proc_fd_entry_stat
+};
+
+static int proc_fd_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    int slot = (int)(uintptr_t)dir->fs_data;
+    if (streq(name, ".")) {
+        *out = dir;
+        vnode_ref(dir);
+        return 0;
+    }
+    if (streq(name, "..")) {
+        vnode_t* parent = (slot < 0) ? &proc_self_dir_vnode : &proc_dir_vnodes[slot];
+        *out = parent;
+        vnode_ref(parent);
+        return 0;
+    }
+    if (is_all_digits(name)) {
+        int fd = parse_int(name);
+        process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+        if (p && fd >= 0 && fd < MAX_FDS && p->fds[fd]) {
+            uint32_t data = ((uint32_t)(int16_t)slot << 16) | (uint32_t)(uint16_t)fd;
+            vnode_t* vn = vnode_alloc(VNODE_FILE, &proc_fd_entry_ops, (void*)(uintptr_t)data);
+            if (!vn) return -ENOMEM;
+            vn->parent = dir;
+            vnode_ref(dir);
+            *out = vn;
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+static int proc_fd_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    int slot = (int)(uintptr_t)dir->fs_data;
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+
+    process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+    if (!p) return 0;
+
+    uint32_t target_idx = index - 2;
+    uint32_t active_count = 0;
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (p->fds[i]) {
+            if (active_count == target_idx) {
+                entry->d_ino = 2000 + i;
+                entry->d_type = 1;
+                entry->d_size = 0;
+                int pos = 0;
+                append_uint(entry->d_name, &pos, sizeof(entry->d_name), (uint32_t)i);
+                return 1;
+            }
+            active_count++;
+        }
+    }
+    return 0;
+}
+
+static const struct fs_ops proc_fd_dir_ops = {
+    .lookup = proc_fd_dir_lookup,
+    .readdir = proc_fd_dir_readdir,
+    .stat = procfs_dir_stat
+};
+
 /* /proc/<pid> operations */
 static int proc_pid_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     int slot = (int)(uintptr_t)dir->fs_data;
@@ -372,6 +604,12 @@ static int proc_pid_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     }
     if (streq(name, "cmdline")) {
         vnode_t* target = (slot < 0) ? &proc_self_cmdline_vnode : &proc_cmdline_vnodes[slot];
+        *out = target;
+        vnode_ref(target);
+        return 0;
+    }
+    if (streq(name, "fd")) {
+        vnode_t* target = (slot < 0) ? &proc_self_fd_dir_vnode : &proc_fd_dir_vnodes[slot];
         *out = target;
         vnode_ref(target);
         return 0;
@@ -399,6 +637,11 @@ static int proc_pid_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* ent
     if (index == 3) {
         entry->d_ino = 4; entry->d_type = 1; entry->d_size = 0;
         append_str(entry->d_name, &(int){0}, sizeof(entry->d_name), "cmdline");
+        return 1;
+    }
+    if (index == 4) {
+        entry->d_ino = 5; entry->d_type = 2; entry->d_size = 0;
+        append_str(entry->d_name, &(int){0}, sizeof(entry->d_name), "fd");
         return 1;
     }
     return 0;
@@ -440,6 +683,11 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (streq(name, "mounts")) {
         *out = &proc_mounts_vnode;
         vnode_ref(&proc_mounts_vnode);
+        return 0;
+    }
+    if (streq(name, "net")) {
+        *out = &proc_net_dir_vnode;
+        vnode_ref(&proc_net_dir_vnode);
         return 0;
     }
     if (streq(name, "self")) {
@@ -499,13 +747,18 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         return 1;
     }
     if (index == 7) {
+        entry->d_ino = 16; entry->d_type = 2; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "net");
+        return 1;
+    }
+    if (index == 8) {
         entry->d_ino = 12; entry->d_type = 2; entry->d_size = 0;
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "self");
         return 1;
     }
 
-    /* index >= 8 corresponds to active processes */
-    uint32_t target_idx = index - 8;
+    /* index >= 9 corresponds to active processes */
+    uint32_t target_idx = index - 9;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -574,6 +827,20 @@ void procfs_init(void) {
     proc_mounts_vnode.refcount = 1000;
     proc_mounts_vnode.parent = &proc_root_vnode;
 
+    proc_net_dir_vnode.type = VNODE_DIR;
+    proc_net_dir_vnode.size = 0;
+    proc_net_dir_vnode.fs_data = 0;
+    proc_net_dir_vnode.ops = &proc_net_dir_ops;
+    proc_net_dir_vnode.refcount = 1000;
+    proc_net_dir_vnode.parent = &proc_root_vnode;
+
+    proc_net_unix_vnode.type = VNODE_FILE;
+    proc_net_unix_vnode.size = 0;
+    proc_net_unix_vnode.fs_data = 0;
+    proc_net_unix_vnode.ops = &net_unix_ops;
+    proc_net_unix_vnode.refcount = 1000;
+    proc_net_unix_vnode.parent = &proc_net_dir_vnode;
+
     proc_self_dir_vnode.type = VNODE_DIR;
     proc_self_dir_vnode.size = 0;
     proc_self_dir_vnode.fs_data = (void*)(uintptr_t)-1;
@@ -594,6 +861,13 @@ void procfs_init(void) {
     proc_self_cmdline_vnode.ops = &cmdline_ops;
     proc_self_cmdline_vnode.refcount = 1000;
     proc_self_cmdline_vnode.parent = &proc_self_dir_vnode;
+
+    proc_self_fd_dir_vnode.type = VNODE_DIR;
+    proc_self_fd_dir_vnode.size = 0;
+    proc_self_fd_dir_vnode.fs_data = (void*)(uintptr_t)-1;
+    proc_self_fd_dir_vnode.ops = &proc_fd_dir_ops;
+    proc_self_fd_dir_vnode.refcount = 1000;
+    proc_self_fd_dir_vnode.parent = &proc_self_dir_vnode;
 
     for (int i = 0; i < MAX_PROCESSES; i++) {
         proc_dir_vnodes[i].type = VNODE_DIR;
@@ -616,6 +890,13 @@ void procfs_init(void) {
         proc_cmdline_vnodes[i].ops = &cmdline_ops;
         proc_cmdline_vnodes[i].refcount = 1000;
         proc_cmdline_vnodes[i].parent = &proc_dir_vnodes[i];
+
+        proc_fd_dir_vnodes[i].type = VNODE_DIR;
+        proc_fd_dir_vnodes[i].size = 0;
+        proc_fd_dir_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_fd_dir_vnodes[i].ops = &proc_fd_dir_ops;
+        proc_fd_dir_vnodes[i].refcount = 1000;
+        proc_fd_dir_vnodes[i].parent = &proc_dir_vnodes[i];
     }
 }
 

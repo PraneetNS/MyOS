@@ -382,6 +382,56 @@ static int tmpfs_op_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     return 0;
 }
 
+int tmpfs_create_socket_node(vnode_t* dir, const char* name, void* sock_ptr, vnode_t** out_vn) {
+    if (!dir || !dir->fs_data || !name || !out_vn) return -EINVAL;
+    tmpfs_node_t* dir_node = (tmpfs_node_t*) dir->fs_data;
+    if (dir_node->type != TMPFS_NODE_DIR) return -ENOTDIR;
+    tmpfs_fs_t* fs = dir_node->fs;
+
+    kmutex_lock(&fs->lock);
+
+    tmpfs_dirent_t* curr = dir_node->children;
+    while (curr) {
+        if (strcmp(curr->name, name) == 0) {
+            kmutex_unlock(&fs->lock);
+            return -EADDRINUSE;
+        }
+        curr = curr->next;
+    }
+
+    tmpfs_node_t* new_node = tmpfs_alloc_node(fs, TMPFS_NODE_SOCK, S_IFSOCK | 0777);
+    if (!new_node) {
+        kmutex_unlock(&fs->lock);
+        return -ENOMEM;
+    }
+    new_node->sock_data = sock_ptr;
+
+    tmpfs_dirent_t* ent = (tmpfs_dirent_t*) kmalloc(sizeof(tmpfs_dirent_t));
+    if (!ent) {
+        tmpfs_node_unref(new_node);
+        kmutex_unlock(&fs->lock);
+        return -ENOMEM;
+    }
+    strncpy(ent->name, name, NAME_MAX);
+    ent->name[NAME_MAX] = '\0';
+    ent->node = new_node;
+    ent->next = dir_node->children;
+    dir_node->children = ent;
+
+    vnode_t* vn = vnode_alloc(VNODE_FILE, &tmpfs_ops, new_node);
+    if (!vn) {
+        kmutex_unlock(&fs->lock);
+        return -ENOMEM;
+    }
+    tmpfs_node_ref(new_node);
+    vn->parent = dir;
+    vnode_ref(dir);
+    *out_vn = vn;
+
+    kmutex_unlock(&fs->lock);
+    return 0;
+}
+
 static int tmpfs_op_unlink(vnode_t* dir, const char* name) {
     if (!dir || !dir->fs_data || !name) return -EINVAL;
     tmpfs_node_t* dir_node = (tmpfs_node_t*) dir->fs_data;

@@ -4,6 +4,7 @@
 #include "keyboard.h"
 #include "kheap.h"
 #include "pipe.h"
+#include "socket.h"
 #include "scheduler.h"
 
 #define MAX_MOUNTS 16
@@ -204,6 +205,7 @@ open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
             of_pool[i].type = type;
             of_pool[i].vnode = vn;
             of_pool[i].pipe = 0;
+            of_pool[i].sock = 0;
             of_pool[i].flags = flags;
             of_pool[i].offset = 0;
             of_pool[i].refcount = 1;
@@ -242,6 +244,7 @@ void open_file_unref(open_file_t* of) {
         }
         vnode_t* vto_unref = 0;
         pipe_t* pto_close = 0;
+        socket_t* sto_close = 0;
         int pflags = of->flags;
         if ((of->type == OPEN_FILE_VNODE || of->type == OPEN_FILE_CONSOLE) && of->vnode) {
             vto_unref = of->vnode;
@@ -249,6 +252,9 @@ void open_file_unref(open_file_t* of) {
         } else if (of->type == OPEN_FILE_PIPE && of->pipe) {
             pto_close = (pipe_t*) of->pipe;
             of->pipe = 0;
+        } else if (of->type == OPEN_FILE_SOCKET && of->sock) {
+            sto_close = (socket_t*) of->sock;
+            of->sock = 0;
         }
         of->type = OPEN_FILE_NONE;
         active_open_files--;
@@ -258,6 +264,10 @@ void open_file_unref(open_file_t* of) {
         vfs_unlock(f);
         if (vto_unref) vnode_unref(vto_unref);
         if (pto_close) pipe_close_end(pto_close, pflags);
+        if (sto_close) {
+            socket_close(sto_close);
+            socket_unref(sto_close);
+        }
         return;
     }
     vfs_unlock(f);
@@ -487,6 +497,10 @@ int vfs_read(open_file_t* of, void* buf, uint32_t count) {
         if ((of->flags & 3) == O_WRONLY) return -EBADF;
         return pipe_read((pipe_t*) of->pipe, buf, count, nonblock);
     }
+    if (of->type == OPEN_FILE_SOCKET) {
+        if ((of->flags & 3) == O_WRONLY) return -EBADF;
+        return socket_recv((socket_t*) of->sock, buf, count, 0);
+    }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
         if ((of->flags & 3) == O_WRONLY) return -EBADF;
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
@@ -514,6 +528,10 @@ int vfs_write(open_file_t* of, const void* buf, uint32_t count) {
         if ((of->flags & 3) == O_RDONLY) return -EBADF;
         return pipe_write((pipe_t*) of->pipe, buf, count, nonblock);
     }
+    if (of->type == OPEN_FILE_SOCKET) {
+        if ((of->flags & 3) == O_RDONLY) return -EBADF;
+        return socket_send((socket_t*) of->sock, buf, count, 0);
+    }
     if (of->type == OPEN_FILE_VNODE && of->vnode) {
         if ((of->flags & 3) == O_RDONLY) return -EBADF;
         if (of->vnode->type == VNODE_DIR) return -EISDIR;
@@ -534,7 +552,7 @@ int vfs_close(open_file_t* of) {
 
 int vfs_lseek(open_file_t* of, int offset, int whence) {
     if (!of) return -EBADF;
-    if (of->type == OPEN_FILE_CONSOLE || of->type == OPEN_FILE_PIPE) return -ESPIPE;
+    if (of->type == OPEN_FILE_CONSOLE || of->type == OPEN_FILE_PIPE || of->type == OPEN_FILE_SOCKET) return -ESPIPE;
     if (of->type != OPEN_FILE_VNODE || !of->vnode) return -EBADF;
 
     int new_offset;
@@ -675,6 +693,10 @@ short vfs_poll(open_file_t* of, short events, void** chan_out) {
             }
         }
         return revents;
+    }
+
+    if (of->type == OPEN_FILE_SOCKET) {
+        return socket_poll((socket_t*) of->sock, events, chan_out);
     }
 
     if (of->type == OPEN_FILE_CONSOLE) {
