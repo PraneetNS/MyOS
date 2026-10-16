@@ -161,7 +161,16 @@ process_t* process_spawn_by_name(const char* name, int parent_pid) {
             }
             bin_path[5 + l] = '\0';
             if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
-                return 0;
+                bin_path[0] = '/'; bin_path[1] = 's'; bin_path[2] = 'b'; bin_path[3] = 'i'; bin_path[4] = 'n'; bin_path[5] = '/';
+                l = 0;
+                while (name[l] && l < 50) {
+                    bin_path[6 + l] = name[l];
+                    l++;
+                }
+                bin_path[6 + l] = '\0';
+                if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
+                    return 0;
+                }
             }
         }
     }
