@@ -18,6 +18,7 @@ mmd -i "$IMAGE" "::/dev"
 mmd -i "$IMAGE" "::/etc"
 mmd -i "$IMAGE" "::/proc"
 mmd -i "$IMAGE" "::/home"
+mmd -i "$IMAGE" "::/sbin" || true
 mmd -i "$IMAGE" "::/dev/shm" || true
 mmd -i "$IMAGE" "::/run" || true
 mmd -i "$IMAGE" "::/share" || true
@@ -28,6 +29,14 @@ printf "330\n" > /tmp/myos_timezone
 mcopy -i "$IMAGE" /tmp/myos_timezone "::/etc/timezone"
 rm -f /tmp/myos_timezone
 
+echo "Setting up /etc/init.conf..."
+cat << 'EOF' > /tmp/myos_init_conf
+# /etc/init.conf - MyOS init configuration
+respawn /dev/console /bin/sh.elf
+EOF
+mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
+rm -f /tmp/myos_init_conf
+
 echo "Building userland..."
 bash userland/build.sh
 
@@ -36,14 +45,19 @@ for elf in userland/*.elf; do
     if [ -f "$elf" ]; then
         name=$(basename "$elf")
         base="${name%.elf}"
-        mcopy -i "$IMAGE" "$elf" "::/$name"
-        mcopy -i "$IMAGE" "$elf" "::/bin/$name"
+        mcopy -o -i "$IMAGE" "$elf" "::/$name"
+        mcopy -o -i "$IMAGE" "$elf" "::/bin/$name"
         if [ "$base" != "$name" ]; then
-            mcopy -i "$IMAGE" "$elf" "::/$base"
-            mcopy -i "$IMAGE" "$elf" "::/bin/$base"
+            mcopy -o -i "$IMAGE" "$elf" "::/$base"
+            mcopy -o -i "$IMAGE" "$elf" "::/bin/$base"
         fi
     fi
 done
+
+if [ -f "userland/init.elf" ]; then
+    mcopy -o -i "$IMAGE" userland/init.elf "::/sbin/init"
+    mcopy -o -i "$IMAGE" userland/init.elf "::/bin/init"
+fi
 
 echo "Copying data files..."
 if [ -f "tools/hello.txt" ]; then
