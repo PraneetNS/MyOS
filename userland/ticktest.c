@@ -85,5 +85,6 @@ int main(int argc, char** argv) {
     }
 
     printf("[ticktest] PASS: %u ticks/sec (within [98, 102] window, zero systematic tick loss)\n", tps);
+    sync();
     return 0;
 }
