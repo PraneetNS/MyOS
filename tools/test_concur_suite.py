@@ -96,7 +96,7 @@ try:
     # -------------------------------------------------------------
     print("\n=== Running Test 3b: Serial / Ctrl+C Responsiveness Under Heavy Disk Load ===")
     # Start background disk stress
-    send_cmd("concur_t.elf &\n")
+    send_cmd("yes.elf > /tmp/bgload.txt &\n")
     time.sleep(0.5)
 
     # Launch foreground spin.elf
@@ -131,8 +131,14 @@ try:
     assert "Events received: REL_X=1 REL_Y=1 BTN_LEFT=1" in out_mouse, "mousetest did not receive all injected mouse events"
     print("[PASS] Test 3c Verified: mousetest received all injected mouse events during disk load")
 
-    # Clean shutdown
-    read_until("sh:/$", timeout=5)
+    # Clean up background disk stress job and sync
+    read_until("sh:/$", timeout=5.0)
+    send_cmd("kill %1\n")
+    time.sleep(0.5)
+    send_cmd("rm /tmp/bgload.txt\n")
+    time.sleep(0.5)
+    send_cmd("sync\n")
+    time.sleep(0.5)
     send_cmd("exit\n")
     time.sleep(1)
 
