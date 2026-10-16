@@ -79,6 +79,7 @@
 #define SYS_CLOCK_GETTIME 74
 #define SYS_NANOSLEEP  75
 #define SYS_NICE       77
+#define SYS_REBOOT     88
 #define SYS_TRUNCATE   92
 #define SYS_FTRUNCATE  93
 #define SYS_SOCKET     102
@@ -1506,8 +1507,8 @@ static void syscall_handler(struct registers* regs) {
             }
 
             open_file_t* of = me->fds[fd];
+            unsigned long req = (opt == 0 ? TCSETS : (opt == 1 ? TCSETSW : TCSETSF));
             if (of->vnode && of->vnode->ops && of->vnode->ops->ioctl) {
-                unsigned long req = (opt == 0 ? TCSETS : (opt == 1 ? TCSETSW : TCSETSF));
                 regs->eax = (uint32_t) of->vnode->ops->ioctl(of->vnode, req, argp);
                 break;
             }
@@ -1516,7 +1517,7 @@ static void syscall_handler(struct registers* regs) {
                 break;
             }
 
-            regs->eax = (uint32_t) tty_ioctl(global_tty, TCSETS, argp);
+            regs->eax = (uint32_t) tty_ioctl(global_tty, req, argp);
             break;
         }
 
@@ -1745,6 +1746,24 @@ static void syscall_handler(struct registers* regs) {
             if (me->nice < -20) me->nice = -20;
             if (me->nice > 19) me->nice = 19;
             regs->eax = (uint32_t) me->nice;
+            break;
+        }
+
+        case SYS_REBOOT: {
+            uint32_t magic1 = regs->ebx;
+            uint32_t magic2 = regs->ecx;
+            uint32_t cmd = regs->edx;
+
+            if (magic1 != 0xfee1dead ||
+                (magic2 != 672274793 && magic2 != 0x28121969 && magic2 != 0x05121996 &&
+                 magic2 != 0x16041998 && magic2 != 0x20112000)) {
+                regs->eax = (uint32_t) -EINVAL;
+                break;
+            }
+
+            extern void kernel_reboot(uint32_t cmd);
+            kernel_reboot(cmd);
+            regs->eax = 0;
             break;
         }
 
