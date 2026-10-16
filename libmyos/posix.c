@@ -958,3 +958,102 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
     int ret = __syscall5(SYS_SETSOCKOPT, sockfd, level, optname, (long)optval, (long)optlen);
     return __check_syscall_err(ret);
 }
+
+/* PTY Support */
+int posix_openpt(int flags) {
+    return open("/dev/ptmx", flags);
+}
+
+int grantpt(int fd) {
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    return 0;
+}
+
+int unlockpt(int fd) {
+    int unlock = 0;
+    return ioctl(fd, TIOCSPTLCK, &unlock);
+}
+
+int ptsname_r(int fd, char *buf, size_t buflen) {
+    if (!buf || buflen == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int pty_num = 0;
+    if (ioctl(fd, TIOCGPTN, &pty_num) < 0) {
+        return -1;
+    }
+    snprintf(buf, buflen, "/dev/pts/%d", pty_num);
+    return 0;
+}
+
+char *ptsname(int fd) {
+    static char s_ptsname[32];
+    if (ptsname_r(fd, s_ptsname, sizeof(s_ptsname)) != 0) {
+        return NULL;
+    }
+    return s_ptsname;
+}
+
+int openpty(int *amaster, int *aslave, char *name, const struct termios *termp, const struct winsize *winp) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0) return -1;
+
+    if (grantpt(master) < 0 || unlockpt(master) < 0) {
+        close(master);
+        return -1;
+    }
+
+    char sname[64];
+    if (ptsname_r(master, sname, sizeof(sname)) != 0) {
+        close(master);
+        return -1;
+    }
+
+    int slave = open(sname, O_RDWR | O_NOCTTY);
+    if (slave < 0) {
+        close(master);
+        return -1;
+    }
+
+    if (name) strcpy(name, sname);
+    if (termp) tcsetattr(slave, TCSANOW, termp);
+    if (winp) ioctl(slave, TIOCSWINSZ, winp);
+
+    *amaster = master;
+    *aslave = slave;
+    return 0;
+}
+
+pid_t forkpty(int *amaster, char *name, const struct termios *termp, const struct winsize *winp) {
+    int master, slave;
+    if (openpty(&master, &slave, name, termp, winp) < 0) return -1;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(master);
+        close(slave);
+        return -1;
+    }
+
+    if (pid == 0) {
+        /* Child */
+        close(master);
+        setsid();
+        ioctl(slave, TIOCSCTTY, 0);
+        dup2(slave, 0);
+        dup2(slave, 1);
+        dup2(slave, 2);
+        if (slave > 2) close(slave);
+        return 0;
+    }
+
+    /* Parent */
+    close(slave);
+    *amaster = master;
+    return pid;
+}
+

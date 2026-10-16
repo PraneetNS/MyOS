@@ -29,9 +29,12 @@
 #include "fb.h"
 #include "tmpfs.h"
 #include "socket.h"
+#include "pty.h"
 
-static int check_boot_flag_kshell(uint32_t mb_info_addr) {
-    if (!mb_info_addr) return 0;
+int kernel_has_serial_shell = 0;
+
+static int check_boot_flag(uint32_t mb_info_addr, const char* needle) {
+    if (!mb_info_addr || !needle) return 0;
     uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
     uint32_t total_size = *(uint32_t*) ptr;
     uint8_t* end = ptr + total_size;
@@ -44,7 +47,6 @@ static int check_boot_flag_kshell(uint32_t mb_info_addr) {
         if (tag->type == MB2_TAG_TYPE_CMDLINE) {
             struct mb2_tag_string* cmd = (struct mb2_tag_string*) tag;
             const char* s = cmd->string;
-            const char* needle = "kshell";
             for (int i = 0; s[i]; i++) {
                 int j = 0;
                 while (needle[j] && s[i + j] == needle[j]) j++;
@@ -147,7 +149,15 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     socket_init();
     kprintf("[ok] Socket (IPC) initialized\n");
 
-    int use_kshell = check_boot_flag_kshell(mb_info_addr);
+    pty_init();
+    kprintf("[ok] PTY layer initialized\n");
+
+    int use_kshell = check_boot_flag(mb_info_addr, "kshell");
+    if (check_boot_flag(mb_info_addr, "serial_shell=1")) {
+        kernel_has_serial_shell = 1;
+        kprintf("[ok] serial_shell=1 enabled\n");
+    }
+
     process_init_table(use_kshell);
     if (use_kshell) {
         kprintf("[ok] Process table initialized (kshell = process 0)\n");
@@ -158,6 +168,26 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
             kprintf("[ok] Spawned sh.elf (PID %d)\n", sh->pid);
         } else {
             kprintf("[err] Failed to spawn sh.elf\n");
+        }
+
+        if (kernel_has_serial_shell) {
+            vnode_t* ser_vn = NULL;
+            if (vfs_resolve_path("/dev/serial0", "/", &ser_vn) == 0 && ser_vn) {
+                open_file_t* ser_of = open_file_alloc(OPEN_FILE_CONSOLE, ser_vn, O_RDWR);
+                vnode_unref(ser_vn);
+                if (ser_of) {
+                    process_t* ser_sh = process_spawn_by_name("sh.elf", 0);
+                    if (ser_sh) {
+                        for (int fd = 0; fd < 3; fd++) {
+                            if (ser_sh->fds[fd]) vfs_close(ser_sh->fds[fd]);
+                            ser_sh->fds[fd] = ser_of;
+                            open_file_ref(ser_of);
+                        }
+                        vfs_close(ser_of);
+                        kprintf("[ok] Spawned serial shell on /dev/serial0 (PID %d)\n", ser_sh->pid);
+                    }
+                }
+            }
         }
     }
 

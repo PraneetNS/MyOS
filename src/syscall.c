@@ -27,6 +27,7 @@
 #include "kmutex.h"
 #include "tmpfs.h"
 #include "socket.h"
+#include "pty.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -307,6 +308,17 @@ static void syscall_handler(struct registers* regs) {
                     regs->eax = (uint32_t) ret;
                     break;
                 }
+            }
+
+            if (devfs_is_ptmx_vnode(vn)) {
+                vnode_t* master_vn = NULL;
+                int pty_err = pty_create(&master_vn);
+                vnode_unref(vn);
+                if (pty_err != 0 || !master_vn) {
+                    regs->eax = (uint32_t) (pty_err ? pty_err : -ENOMEM);
+                    break;
+                }
+                vn = master_vn;
             }
 
             open_file_type_t of_type = (vn->type == VNODE_CONSOLE) ? OPEN_FILE_CONSOLE : OPEN_FILE_VNODE;
@@ -1469,6 +1481,10 @@ static void syscall_handler(struct registers* regs) {
             }
 
             open_file_t* of = me->fds[fd];
+            if (of->vnode && of->vnode->ops && of->vnode->ops->ioctl) {
+                regs->eax = (uint32_t) of->vnode->ops->ioctl(of->vnode, TCGETS, argp);
+                break;
+            }
             if (of->type != OPEN_FILE_CONSOLE || !of->vnode || !devfs_is_tty_vnode(of->vnode)) {
                 regs->eax = (uint32_t) -ENOTTY;
                 break;
@@ -1482,7 +1498,6 @@ static void syscall_handler(struct registers* regs) {
             int fd = (int) regs->ebx;
             int opt = (int) regs->ecx;
             void* argp = (void*) regs->edx;
-            (void) opt;
 
             process_t* me = scheduler_current();
             if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
@@ -1491,6 +1506,11 @@ static void syscall_handler(struct registers* regs) {
             }
 
             open_file_t* of = me->fds[fd];
+            if (of->vnode && of->vnode->ops && of->vnode->ops->ioctl) {
+                unsigned long req = (opt == 0 ? TCSETS : (opt == 1 ? TCSETSW : TCSETSF));
+                regs->eax = (uint32_t) of->vnode->ops->ioctl(of->vnode, req, argp);
+                break;
+            }
             if (of->type != OPEN_FILE_CONSOLE || !of->vnode || !devfs_is_tty_vnode(of->vnode)) {
                 regs->eax = (uint32_t) -ENOTTY;
                 break;

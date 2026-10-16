@@ -96,10 +96,14 @@ struct winsize {
 #define TCSETS      0x5402
 #define TCSETSW     0x5403
 #define TCSETSF     0x5404
+#define TIOCSCTTY   0x540E
 #define TIOCGPGRP   0x540F
 #define TIOCSPGRP   0x5410
 #define TIOCGWINSZ  0x5413
 #define TIOCSWINSZ  0x5414
+#define TIOCNOTTY   0x5422
+#define TIOCGPTN    0x80045430
+#define TIOCSPTLCK  0x40045431
 
 #define KDGETMODE   0x4B3B
 #define KDSETMODE   0x4B3C
@@ -122,10 +126,15 @@ struct winsize {
 #define TTY_CANON_BUF_SIZE 1024
 #define TTY_QUEUE_SIZE     2048
 
+struct tty;
+
 typedef struct tty {
     struct termios termios;
     struct winsize winsize;
     int fg_pgid;
+    int is_pty;
+    void* driver_data;
+    void (*output_char)(struct tty* tty, char c);
 
     /* Canonical mode line editing buffer */
     char canon_buf[TTY_CANON_BUF_SIZE];
@@ -150,6 +159,7 @@ typedef struct tty {
 extern tty_t* global_tty;
 
 void tty_init(void);
+void tty_init_struct(tty_t* tty);
 tty_t* tty_get_global(void);
 int tty_is_canonical(tty_t* tty);
 void tty_input_char(tty_t* tty, char c);
