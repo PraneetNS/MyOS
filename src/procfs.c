@@ -15,6 +15,7 @@ static vnode_t proc_uptime_vnode;
 static vnode_t proc_version_vnode;
 static vnode_t proc_cpuinfo_vnode;
 static vnode_t proc_mounts_vnode;
+static vnode_t proc_global_cmdline_vnode;
 static vnode_t proc_net_dir_vnode;
 static vnode_t proc_net_unix_vnode;
 static vnode_t proc_self_dir_vnode;
@@ -282,6 +283,17 @@ static int proc_cmdline_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_
     return procfs_read_helper(text, pos, offset, buf, count);
 }
 
+/* /proc/cmdline */
+static int proc_global_cmdline_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    extern const char* kernel_get_cmdline(void);
+    const char* s = kernel_get_cmdline();
+    if (!s) s = "mode=text\n";
+    int len = 0;
+    while (s[len]) len++;
+    return procfs_read_helper(s, len, offset, buf, count);
+}
+
 /* Common stat for regular files in procfs */
 static int procfs_file_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
@@ -296,6 +308,11 @@ static int procfs_file_stat(vnode_t* vn, struct stat* st) {
     st->st_atime = st->st_mtime;
     return 0;
 }
+
+static const struct fs_ops global_cmdline_ops = {
+    .read = proc_global_cmdline_read,
+    .stat = procfs_file_stat
+};
 
 /* Common stat for directories in procfs */
 static int procfs_dir_stat(vnode_t* vn, struct stat* st) {
@@ -695,6 +712,11 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         vnode_ref(&proc_self_dir_vnode);
         return 0;
     }
+    if (streq(name, "cmdline")) {
+        *out = &proc_global_cmdline_vnode;
+        vnode_ref(&proc_global_cmdline_vnode);
+        return 0;
+    }
     if (is_all_digits(name)) {
         int pid = parse_int(name);
         for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -756,9 +778,14 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "self");
         return 1;
     }
+    if (index == 9) {
+        entry->d_ino = 17; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "cmdline");
+        return 1;
+    }
 
-    /* index >= 9 corresponds to active processes */
-    uint32_t target_idx = index - 9;
+    /* index >= 10 corresponds to active processes */
+    uint32_t target_idx = index - 10;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -826,6 +853,13 @@ void procfs_init(void) {
     proc_mounts_vnode.ops = &mounts_ops;
     proc_mounts_vnode.refcount = 1000;
     proc_mounts_vnode.parent = &proc_root_vnode;
+
+    proc_global_cmdline_vnode.type = VNODE_FILE;
+    proc_global_cmdline_vnode.size = 0;
+    proc_global_cmdline_vnode.fs_data = 0;
+    proc_global_cmdline_vnode.ops = &global_cmdline_ops;
+    proc_global_cmdline_vnode.refcount = 1000;
+    proc_global_cmdline_vnode.parent = &proc_root_vnode;
 
     proc_net_dir_vnode.type = VNODE_DIR;
     proc_net_dir_vnode.size = 0;
