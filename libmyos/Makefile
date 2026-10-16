@@ -34,6 +34,8 @@ libmyos.a: $(OBJS)
 install-headers:
 	mkdir -p $(PREFIX)/$(TARGET)/include/sys
 	cp -r include/* $(PREFIX)/$(TARGET)/include/
+	mkdir -p $(PREFIX)/$(TARGET)/lib
+	cp -f libmyos.a $(PREFIX)/$(TARGET)/lib/
 
 clean:
 	rm -f crt0.o $(OBJS) libmyos.a

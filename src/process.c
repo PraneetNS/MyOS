@@ -304,7 +304,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->as = vmm_create_address_space();
     if (!p->as.directory) return 0;
 
-    if (vmm_clone_user_pages(&p->as, &parent->as) != 0) {
+    if (vmm_clone_user_pages(&p->as, &parent->as, parent->vma_list) != 0) {
         terminal_writestring("[proc] fork: failed to clone address space (out of memory?)\n");
         vmm_destroy_address_space(&p->as);
         return 0;

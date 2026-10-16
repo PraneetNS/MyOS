@@ -26,9 +26,10 @@ void vmm_unmap_user_page(address_space_t* as, uint32_t vaddr);
 /* Frees every frame this address space owns back to the pmm. */
 void vmm_destroy_address_space(address_space_t* as);
 
-/* Duplicates every user page currently mapped in `src` into `dst`,
-   each backed by a FRESH physical frame with the same content. */
-int vmm_clone_user_pages(address_space_t* dst, address_space_t* src);
+struct vma;
+/* Duplicates every user page currently mapped in `src` into `dst`.
+   Shared VMAs share frames directly without COW; private pages use COW. */
+int vmm_clone_user_pages(address_space_t* dst, address_space_t* src, struct vma* vma_list);
 
 void vmm_switch(address_space_t* as); /* loads CR3 with as->directory_phys */
 void vmm_switch_to_kernel(void);      /* restores the kernel's own page directory */

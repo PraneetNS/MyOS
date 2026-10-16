@@ -346,6 +346,7 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
     while (*p == '/') p++;
     if (!*p) {
         *out = curr;
+        vnode_ref(curr);
         return 0;
     }
 

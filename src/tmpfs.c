@@ -5,6 +5,10 @@
 #include "rtc.h"
 #include "serial.h"
 #include "vfs.h"
+#include "process.h"
+#include "vmm.h"
+#include "vma.h"
+#include "scheduler.h"
 
 static int tmpfs_strcmp(const char* s1, const char* s2) {
     while (*s1 && (*s1 == *s2)) {
@@ -191,6 +195,7 @@ static int tmpfs_op_lookup(vnode_t* dir, const char* name, vnode_t** out) {
             }
             tmpfs_node_ref(curr->node);
             vn->parent = dir;
+            vnode_ref(dir);
             *out = vn;
             kmutex_unlock(&fs->lock);
             return 0;
@@ -322,6 +327,7 @@ static int tmpfs_op_create(vnode_t* dir, const char* name, vnode_t** out) {
     }
     tmpfs_node_ref(new_node);
     vn->parent = dir;
+    vnode_ref(dir);
     *out = vn;
 
     kmutex_unlock(&fs->lock);
@@ -369,6 +375,7 @@ static int tmpfs_op_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     }
     tmpfs_node_ref(new_node);
     vn->parent = dir;
+    vnode_ref(dir);
     *out = vn;
 
     kmutex_unlock(&fs->lock);
@@ -559,6 +566,28 @@ static int tmpfs_op_truncate(vnode_t* node, uint32_t length) {
     kmutex_lock(&fs->lock);
 
     if (length < tnode->size) {
+        /* Unmap any pages at or beyond length in live processes mapping this vnode */
+        for (int i = 0; i < MAX_PROCESSES; i++) {
+            process_t* proc = process_table_entry(i);
+            if (!proc || proc->state == PROC_UNUSED || proc->state == PROC_ZOMBIE) continue;
+            vma_t* v = proc->vma_list;
+            while (v) {
+                if (v->file == node) {
+                    for (uint32_t va = v->start; va < v->end; va += FRAME_SIZE) {
+                        uint32_t off_in_vma = va - v->start;
+                        uint32_t file_offset = v->offset + off_in_vma;
+                        if (file_offset >= length) {
+                            vmm_unmap_user_page(&proc->as, va);
+                            if (proc == scheduler_current()) {
+                                asm volatile ("invlpg (%0)" :: "r"(va) : "memory");
+                            }
+                        }
+                    }
+                }
+                v = v->next;
+            }
+        }
+
         /* Free pages beyond length */
         uint32_t first_dead_page = (length + FRAME_SIZE - 1) / FRAME_SIZE;
         uint32_t total_pages = (tnode->size + FRAME_SIZE - 1) / FRAME_SIZE;
@@ -634,6 +663,11 @@ const struct fs_ops tmpfs_ops = {
     .cleanup  = tmpfs_op_cleanup
 };
 
+int tmpfs_is_tmpfs_vnode(vnode_t* vn) {
+    if (!vn) return 0;
+    return vn->ops == &tmpfs_ops;
+}
+
 int tmpfs_mount(const char* mount_path) {
     tmpfs_fs_t* fs = (tmpfs_fs_t*) kmalloc(sizeof(tmpfs_fs_t));
     if (!fs) return -ENOMEM;
@@ -658,6 +692,7 @@ int tmpfs_mount(const char* mount_path) {
         kfree(fs);
         return -ENOMEM;
     }
+    vn->refcount = 1000;
     tmpfs_node_ref(root);
 
     int ret = vfs_mount(mount_path, vn);
