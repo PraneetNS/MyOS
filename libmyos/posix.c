@@ -1057,3 +1057,8 @@ pid_t forkpty(int *amaster, char *name, const struct termios *termp, const struc
     return pid;
 }
 
+int reboot(int cmd) {
+    int ret = __syscall4(SYS_REBOOT, 0xfee1dead, 672274793, cmd, 0);
+    return __check_syscall_err(ret);
+}
+
