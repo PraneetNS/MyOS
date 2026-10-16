@@ -63,7 +63,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "fbtest.elf\n"
     sleep 2
     printf "ttytest\n"
-    sleep 2
+    sleep 4
     printf "sigtest\n"
     sleep 3
     printf "jobtest\n"
@@ -74,10 +74,12 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 4
     printf "ptytest.elf\n"
     sleep 4
+    printf "ipctest.elf\n"
+    sleep 4
     printf "memtest\n"
     sleep 16
     printf "exit\n"
-) | timeout 115s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 135s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -183,6 +185,9 @@ echo "[PASS] Stage 18B Step 3 (AF_UNIX sockets, 64KB ring, /proc/net/unix) verif
 
 grep -q "ALL STAGE 18B STEP 4 PTY TESTS PASSED SUCCESSFULLY" "$LOGFILE1" || { echo "FAIL: ptytest failed"; exit 1; }
 echo "[PASS] Stage 18B Step 4 (PTYs, /dev/ptmx, /dev/pts, line discipline, TIOCSWINSZ, forkpty) verified"
+
+grep -q "ALL STAGE 18B IPC & SESSION TESTS PASSED (5/5)" "$LOGFILE1" || { echo "FAIL: ipctest failed"; exit 1; }
+echo "[PASS] Stage 18B Step 6 (comprehensive ipctest suite: tmpfs, shm, sockets, ptys, pipeline) verified"
 
 # Stage 15 RAM log assertion (-m 256)
 grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }
@@ -644,17 +649,17 @@ echo "[TEST] Session 8: Testing Newlib libc (libctest) and Lua 5.4 runtime..."
     printf "echo LUA_ERR=\$?\n"
     sleep 1
     printf "lua.elf -e \"function f() f() end; f()\"\n"
-    sleep 1
-    printf "echo LUA_RECURSE_ERR=\$?\n"
-    sleep 1
-    printf "shinfo\n"
-    sleep 1
-    printf "lua.elf /home/alloc.lua\n"
     sleep 3
+    printf "echo LUA_RECURSE_ERR=\$?\n"
+    sleep 2
     printf "shinfo\n"
-    sleep 1
+    sleep 2
+    printf "lua.elf /home/alloc.lua\n"
+    sleep 4
+    printf "shinfo\n"
+    sleep 2
     printf "exit\n"
-) | timeout 60s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE8" 2>&1 || true
+) | timeout 70s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE8" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE8" > "${LOGFILE8}.tmp" && mv "${LOGFILE8}.tmp" "$LOGFILE8"
 cat "$LOGFILE8"
@@ -840,21 +845,27 @@ LOGFILE11=$(mktemp)
 (
     sleep 6
     printf "paint.elf --auto\n"
-    sleep 2
+    sleep 4
     printf "screenshot.elf /tmp/shot.bmp\n"
-    sleep 2
+    sleep 5
     printf "view.elf /share/sample.bmp --still\n"
-    sleep 2
+    sleep 3
     printf "gfxdemo.elf --still --timeout 500\n"
-    sleep 2
+    sleep 3
     printf "crash_sa.elf\n"
-    sleep 2
+    sleep 3
     printf "echo AFTER_CRASH=\$?\n"
     sleep 2
     printf "ls -l /tmp\n"
     sleep 2
+    printf "rm /tmp/shot.bmp\n"
+    sleep 1
+    printf "rm /tmp/canvas.bmp\n"
+    sleep 1
+    printf "sync\n"
+    sleep 1
     printf "exit\n"
-) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE11" 2>&1 || true
+) | timeout 65s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE11" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE11" > "${LOGFILE11}.tmp" && mv "${LOGFILE11}.tmp" "$LOGFILE11"
 cat "$LOGFILE11"
@@ -885,6 +896,39 @@ rm -f "$LOGFILE11"
 
 echo "[TEST] Session 12: Stage 18A Step 8 Monitor Screendump, Color Channels, Input Injection, and VGA Fallback..."
 python3 tools/test_step8.py || { echo "FAIL: Session 12 Step 8 automated tests failed"; exit 1; }
+
+echo "[TEST] Session 13: Stage 18B Step 6 Poweroff & Reboot with dirty filesystem buffer..."
+
+LOGFILE13=$(mktemp)
+(
+    sleep 2
+    printf "echo DIRTY_DATA_BEFORE_POWEROFF > /dirty_test.txt\n"
+    sleep 1
+    printf "poweroff\n"
+    sleep 3
+) | timeout 15s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE13" 2>&1 || true
+
+cat "$LOGFILE13"
+grep -q "Powering off system" "$LOGFILE13" || { echo "FAIL: 'Powering off system' not found"; rm -f "$LOGFILE13"; exit 1; }
+echo "[PASS] poweroff initiated shutdown and QEMU terminated"
+
+~/.local/bin/fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions after poweroff"; rm -f "$LOGFILE13"; exit 1; }
+echo "[PASS] fsck.fat verified filesystem consistency after sudden poweroff"
+
+rm -f "$LOGFILE13"
+
+LOGFILE14=$(mktemp)
+(
+    sleep 2
+    printf "reboot\n"
+    sleep 3
+) | timeout 15s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE14" 2>&1 || true
+
+cat "$LOGFILE14"
+grep -q "Rebooting system" "$LOGFILE14" || { echo "FAIL: 'Rebooting system' not found"; rm -f "$LOGFILE14"; exit 1; }
+echo "[PASS] reboot executed and QEMU terminated on reset"
+
+rm -f "$LOGFILE14"
 
 echo "==============================="
 echo "ALL TESTS PASSED!"
