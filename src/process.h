@@ -76,6 +76,7 @@ typedef struct process {
     void* poll_channels[MAX_POLL_CHANNELS];
     int   num_poll_channels;
     int   current_op_flags;     /* Per-process active VFS operation flags (prevents global static race) */
+    void* ctty;                 /* Controlling terminal (tty_t*) */
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as either the resident

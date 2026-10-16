@@ -13,6 +13,7 @@
 #include "timer.h"
 #include "fpu.h"
 #include "kmutex.h"
+#include "tty.h"
 
 int respawn_shell_needed = 0;
 
@@ -233,13 +234,16 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
         if (parent) {
             p->pgid = parent->pgid;
             p->sid = parent->sid;
+            p->ctty = parent->ctty;
         } else {
             p->pgid = p->pid;
             p->sid = p->pid;
+            p->ctty = NULL;
         }
     } else {
         p->pgid = p->pid;
         p->sid = p->pid;
+        p->ctty = tty_get_global();
     }
     p->waiting_for_pid = -999;
     p->wait_channel = 0;
@@ -340,6 +344,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;
     p->current_op_flags = 0;
+    p->ctty = parent->ctty;
 
     fpu_save(parent);
     fpu_copy(p, parent);

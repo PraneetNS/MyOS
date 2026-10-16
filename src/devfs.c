@@ -1,5 +1,6 @@
 #include "devfs.h"
 #include "tty.h"
+#include "pty.h"
 #include "serial.h"
 #include "errno.h"
 #include "scheduler.h"
@@ -15,6 +16,8 @@
 /* Flat device count (console, tty, null, zero, serial0, fb0, input_dir, mice, mouse0, kbd0) */
 #define NUM_DEVICES 10
 
+vnode_t dev_nodes[NUM_DEVICES];
+
 static const char* dev_names[NUM_DEVICES] = {
     "console",
     "tty",
@@ -28,23 +31,36 @@ static const char* dev_names[NUM_DEVICES] = {
     "kbd0"     /* index 9: /dev/input/kbd0 */
 };
 
+static tty_t* get_effective_tty(vnode_t* vn) {
+    if (vn == &dev_nodes[1]) { /* /dev/tty */
+        process_t* me = scheduler_current();
+        if (me && me->ctty) return (tty_t*) me->ctty;
+    }
+    return global_tty;
+}
+
 static int console_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
-    (void) vn;
     (void) offset;
     int flags = vfs_get_current_flags();
     int nonblock = (flags & (O_NONBLOCK | O_NONBLOCK_LINUX)) ? 1 : 0;
-    return tty_read(global_tty, (char*) buf, count, nonblock);
+    tty_t* tty = get_effective_tty(vn);
+    return tty_read(tty, (char*) buf, count, nonblock);
 }
 
 static int console_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
-    (void) vn;
     (void) offset;
-    return tty_write(global_tty, (const char*) buf, count);
+    tty_t* tty = get_effective_tty(vn);
+    return tty_write(tty, (const char*) buf, count);
 }
 
 static short console_poll(vnode_t* vn, short events, void** chan_out) {
-    (void) vn;
-    return tty_poll(global_tty, events, chan_out);
+    tty_t* tty = get_effective_tty(vn);
+    return tty_poll(tty, events, chan_out);
+}
+
+static int console_ioctl(vnode_t* vn, unsigned long req, void* argp) {
+    tty_t* tty = get_effective_tty(vn);
+    return tty_ioctl(tty, req, argp);
 }
 
 static int null_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
@@ -147,7 +163,8 @@ static const struct fs_ops console_ops = {
     .read = console_read,
     .write = console_write,
     .stat = dev_chr_stat,
-    .poll = console_poll
+    .poll = console_poll,
+    .ioctl = console_ioctl
 };
 
 static const struct fs_ops null_ops = {
@@ -347,7 +364,6 @@ static const struct fs_ops fb0_ops = {
 /* Global device node arrays (declared early so all fs_ops can see them) */
 /* ------------------------------------------------------------------ */
 
-vnode_t dev_nodes[NUM_DEVICES];
 vnode_t dev_root_node;
 static vnode_t input_dir_node;
 
@@ -571,10 +587,149 @@ static const struct fs_ops input_dir_ops = {
     .stat    = input_dir_stat
 };
 
+static vnode_t ptmx_node;
+static vnode_t pts_dir_node;
+
+static int ptmx_stat(vnode_t* vn, struct stat* st) {
+    (void) vn;
+    if (!st) return -EINVAL;
+    st->st_dev = 0;
+    st->st_ino = (uint32_t) vn;
+    st->st_mode = S_IFCHR | 0666;
+    st->st_nlink = 1;
+    st->st_size = 0;
+    st->st_blksize = 512;
+    st->st_blocks = 0;
+    return 0;
+}
+
+static const struct fs_ops ptmx_ops = {
+    .stat = ptmx_stat
+};
+
+int devfs_is_ptmx_vnode(vnode_t* vn) {
+    return (vn == &ptmx_node);
+}
+
+static int pts_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    (void) dir;
+    if (!name || !out) return -EINVAL;
+    if (name[0] == '.' && name[1] == '\0') {
+        *out = dir;
+        vnode_ref(dir);
+        return 0;
+    }
+    if (name[0] == '.' && name[1] == '.' && name[2] == '\0') {
+        *out = dir->parent ? dir->parent : dir;
+        vnode_ref(*out);
+        return 0;
+    }
+
+    int idx = 0;
+    int digits = 0;
+    for (int i = 0; name[i]; i++) {
+        if (name[i] < '0' || name[i] > '9') return -ENOENT;
+        idx = idx * 10 + (name[i] - '0');
+        digits++;
+        if (idx >= MAX_PTYS) return -ENOENT;
+    }
+    if (digits == 0) return -ENOENT;
+
+    vnode_t* slave_vn = pty_get_slave_vnode(idx);
+    if (!slave_vn) return -ENOENT;
+
+    slave_vn->parent = dir;
+    vnode_ref(dir);
+    *out = slave_vn;
+    return 0;
+}
+
+static int pts_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (!entry) return -EINVAL;
+
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+
+    int active_idx = pty_get_active_index((int) index - 2);
+    if (active_idx < 0) return 0;
+
+    entry->d_ino = 100 + active_idx;
+    entry->d_type = 1;
+    entry->d_size = 0;
+
+    char buf[16];
+    int pos = 0;
+    int temp = active_idx;
+    if (temp == 0) {
+        buf[pos++] = '0';
+    } else {
+        char rev[16];
+        int rpos = 0;
+        while (temp > 0) {
+            rev[rpos++] = '0' + (temp % 10);
+            temp /= 10;
+        }
+        while (rpos > 0) buf[pos++] = rev[--rpos];
+    }
+    buf[pos] = '\0';
+    for (int k = 0; k <= pos; k++) {
+        entry->d_name[k] = buf[k];
+    }
+    return 1;
+}
+
+static int pts_dir_stat(vnode_t* vn, struct stat* st) {
+    if (!st) return -EINVAL;
+    st->st_dev = 0;
+    st->st_ino = (uint32_t) vn;
+    st->st_mode = S_IFDIR | 0755;
+    st->st_nlink = 2;
+    st->st_size = 0;
+    st->st_blksize = 512;
+    st->st_blocks = 0;
+    return 0;
+}
+
+static const struct fs_ops pts_dir_ops = {
+    .lookup  = pts_dir_lookup,
+    .readdir = pts_dir_readdir,
+    .stat    = pts_dir_stat
+};
+
 int devfs_is_tty_vnode(vnode_t* vn) {
     if (!vn) return 0;
-    return (vn == &dev_nodes[0] || vn == &dev_nodes[1]);
+    return (vn == &dev_nodes[0] || vn == &dev_nodes[1] || pty_is_ptmx_vnode(vn) || pty_is_slave_vnode(vn, NULL));
 }
+
+static const struct {
+    const char* name;
+    uint32_t type;
+} root_dev_entries[] = {
+    { "console", 1 },
+    { "tty", 1 },
+    { "null", 1 },
+    { "zero", 1 },
+    { "serial0", 1 },
+    { "fb0", 1 },
+    { "input", 2 },
+    { "ptmx", 1 },
+    { "pts", 2 },
+    { "tty0", 1 },
+    { "tty1", 1 },
+    { "tty2", 1 },
+    { "tty3", 1 }
+};
+
+#define NUM_ROOT_DEV_ENTRIES (sizeof(root_dev_entries) / sizeof(root_dev_entries[0]))
 
 static int devfs_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (!name || !out) return -EINVAL;
@@ -594,15 +749,27 @@ static int devfs_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         return 0;
     }
 
-    /* "input" resolves to the /dev/input directory node, not to dev_nodes[6] */
     if (streq(name, "input")) {
         *out = &input_dir_node;
         vnode_ref(&input_dir_node);
         return 0;
     }
+    if (streq(name, "ptmx")) {
+        *out = &ptmx_node;
+        vnode_ref(&ptmx_node);
+        return 0;
+    }
+    if (streq(name, "pts")) {
+        *out = &pts_dir_node;
+        vnode_ref(&pts_dir_node);
+        return 0;
+    }
+    if (streq(name, "tty0") || streq(name, "tty1") || streq(name, "tty2") || streq(name, "tty3")) {
+        *out = &dev_nodes[1];
+        vnode_ref(&dev_nodes[1]);
+        return 0;
+    }
 
-    /* Skip index 6 ("input" dir) and index 7 ("mice") from the flat /dev listing;
-       mice is only accessible via /dev/input/mice */
     for (int i = 0; i < 6; i++) {
         if (streq(name, dev_names[i])) {
             *out = &dev_nodes[i];
@@ -632,16 +799,14 @@ static int devfs_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
         return 1;
     }
 
-    /* Expose: console, tty, null, zero, serial0, fb0, input (dir) */
-    /* We show dev_names[0..5] as char devices, dev_names[6] as a directory */
     int dev_idx = (int) index - 2;
-    if (dev_idx >= 0 && dev_idx < 7) {   /* 0..5 = char devs, 6 = input dir */
+    if (dev_idx >= 0 && dev_idx < (int) NUM_ROOT_DEV_ENTRIES) {
         entry->d_ino  = 10 + dev_idx;
-        entry->d_type = (dev_idx == 6) ? 2 : 1;
+        entry->d_type = root_dev_entries[dev_idx].type;
         entry->d_size = 0;
         int k = 0;
-        while (dev_names[dev_idx][k]) {
-            entry->d_name[k] = dev_names[dev_idx][k];
+        while (root_dev_entries[dev_idx].name[k]) {
+            entry->d_name[k] = root_dev_entries[dev_idx].name[k];
             k++;
         }
         entry->d_name[k] = '\0';
@@ -763,6 +928,22 @@ void devfs_init(void) {
     input_dir_node.ops      = &input_dir_ops;
     input_dir_node.refcount = 1000;
     input_dir_node.parent   = &dev_root_node;
+
+    /* /dev/ptmx node */
+    ptmx_node.type     = VNODE_CONSOLE;
+    ptmx_node.size     = 0;
+    ptmx_node.fs_data  = 0;
+    ptmx_node.ops      = &ptmx_ops;
+    ptmx_node.refcount = 1000;
+    ptmx_node.parent   = &dev_root_node;
+
+    /* /dev/pts directory node */
+    pts_dir_node.type     = VNODE_DIR;
+    pts_dir_node.size     = 0;
+    pts_dir_node.fs_data  = 0;
+    pts_dir_node.ops      = &pts_dir_ops;
+    pts_dir_node.refcount = 1000;
+    pts_dir_node.parent   = &dev_root_node;
 }
 
 vnode_t* devfs_get_root(void) {

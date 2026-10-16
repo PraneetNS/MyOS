@@ -11,8 +11,8 @@
 static tty_t main_tty;
 tty_t* global_tty = &main_tty;
 
-void tty_init(void) {
-    tty_t* tty = &main_tty;
+void tty_init_struct(tty_t* tty) {
+    if (!tty) return;
     for (size_t i = 0; i < sizeof(tty_t); i++) {
         ((uint8_t*)tty)[i] = 0;
     }
@@ -37,7 +37,7 @@ void tty_init(void) {
     tty->winsize.ws_xpixel = 0;
     tty->winsize.ws_ypixel = 0;
 
-    tty->fg_pgid = 1;
+    tty->fg_pgid = 0;
     tty->canon_len = 0;
     tty->line_head = 0;
     tty->line_tail = 0;
@@ -49,6 +49,11 @@ void tty_init(void) {
     tty->read_wait = 0;
 }
 
+void tty_init(void) {
+    tty_init_struct(&main_tty);
+    main_tty.fg_pgid = 1;
+}
+
 tty_t* tty_get_global(void) {
     return global_tty;
 }
@@ -58,19 +63,28 @@ int tty_is_canonical(tty_t* tty) {
     return (tty->termios.c_lflag & ICANON) != 0;
 }
 
+static void tty_emit_char(tty_t* tty, char c) {
+    if (tty && tty->output_char) {
+        tty->output_char(tty, c);
+        return;
+    }
+    terminal_putchar(c);
+    serial_putc(c);
+}
+
 static void tty_echo_char(tty_t* tty, char c) {
     if (!(tty->termios.c_lflag & ECHO)) return;
-    if (c == '\n') {
-        terminal_putchar('\n');
-        serial_putc('\n');
-    } else {
-        terminal_putchar(c);
-        serial_putc(c);
-    }
+    tty_emit_char(tty, c);
 }
 
 static void tty_echo_erase(tty_t* tty) {
     if (!(tty->termios.c_lflag & ECHO)) return;
+    if (tty && tty->output_char) {
+        tty->output_char(tty, '\b');
+        tty->output_char(tty, ' ');
+        tty->output_char(tty, '\b');
+        return;
+    }
     terminal_putchar('\b');
     serial_putc('\b');
     serial_putc(' ');
@@ -210,7 +224,7 @@ int tty_read(tty_t* tty, char* buf, uint32_t count, int nonblock) {
     if (!tty || !buf || count == 0) return 0;
 
     process_t* cur = scheduler_current();
-    if (cur && !cur->is_kernel_task && tty->fg_pgid > 0 && cur->pgid != tty->fg_pgid) {
+    if (cur && !cur->is_kernel_task && cur->ctty == (void*)tty && tty->fg_pgid > 0 && cur->pgid != tty->fg_pgid) {
         if (cur->sig_actions[SIGTTIN].sa_handler == SIG_IGN ||
             (cur->sig_blocked & sigmask(SIGTTIN))) {
             return -EIO;
@@ -281,12 +295,17 @@ int tty_read(tty_t* tty, char* buf, uint32_t count, int nonblock) {
 }
 
 int tty_write(tty_t* tty, const char* buf, uint32_t count) {
-    (void) tty;
     if (!buf || count == 0) return 0;
     for (uint32_t i = 0; i < count; i++) {
         char c = buf[i];
-        terminal_putchar(c);
-        serial_putc(c);
+        if (tty && (tty->termios.c_oflag & OPOST)) {
+            if (c == '\n' && (tty->termios.c_oflag & ONLCR)) {
+                tty_emit_char(tty, '\r');
+                tty_emit_char(tty, '\n');
+                continue;
+            }
+        }
+        tty_emit_char(tty, c);
     }
     return (int) count;
 }
@@ -327,7 +346,11 @@ int tty_ioctl(tty_t* tty, unsigned long req, void* argp) {
             struct winsize new_ws;
             if (copy_from_user(&new_ws, argp, sizeof(struct winsize)) != 0)
                 return -EFAULT;
+            int changed = (tty->winsize.ws_row != new_ws.ws_row || tty->winsize.ws_col != new_ws.ws_col);
             tty->winsize = new_ws;
+            if (changed && tty->fg_pgid > 0) {
+                sys_kill(-tty->fg_pgid, SIGWINCH);
+            }
             return 0;
         }
         case TIOCGPGRP: {
@@ -343,6 +366,24 @@ int tty_ioctl(tty_t* tty, unsigned long req, void* argp) {
             if (copy_from_user(&pgid, argp, sizeof(int)) != 0)
                 return -EFAULT;
             tty->fg_pgid = pgid;
+            return 0;
+        }
+        case TIOCSCTTY: {
+            process_t* me = scheduler_current();
+            if (me) {
+                me->ctty = tty;
+                tty->fg_pgid = me->pgid;
+            }
+            return 0;
+        }
+        case TIOCNOTTY: {
+            process_t* me = scheduler_current();
+            if (me && me->ctty == tty) {
+                me->ctty = NULL;
+                if (tty->fg_pgid == me->pgid) {
+                    tty->fg_pgid = 0;
+                }
+            }
             return 0;
         }
         case KDSETMODE: {

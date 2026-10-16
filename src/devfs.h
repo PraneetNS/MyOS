@@ -6,5 +6,6 @@
 void devfs_init(void);
 vnode_t* devfs_get_root(void);
 int devfs_is_tty_vnode(vnode_t* vn);
+int devfs_is_ptmx_vnode(vnode_t* vn);
 
 #endif

@@ -72,10 +72,12 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     sleep 3
     printf "sockettest.elf\n"
     sleep 4
+    printf "ptytest.elf\n"
+    sleep 4
     printf "memtest\n"
     sleep 16
     printf "exit\n"
-) | timeout 105s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 115s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -178,6 +180,9 @@ echo "[PASS] Stage 18B Step 2 (MAP_SHARED, shm, atomic builtins, SIGBUS) verifie
 
 grep -q "ALL STAGE 18B STEP 3 SOCKET TESTS PASSED SUCCESSFULLY" "$LOGFILE1" || { echo "FAIL: sockettest failed"; exit 1; }
 echo "[PASS] Stage 18B Step 3 (AF_UNIX sockets, 64KB ring, /proc/net/unix) verified"
+
+grep -q "ALL STAGE 18B STEP 4 PTY TESTS PASSED SUCCESSFULLY" "$LOGFILE1" || { echo "FAIL: ptytest failed"; exit 1; }
+echo "[PASS] Stage 18B Step 4 (PTYs, /dev/ptmx, /dev/pts, line discipline, TIOCSWINSZ, forkpty) verified"
 
 # Stage 15 RAM log assertion (-m 256)
 grep -q "Total RAM: 255 MB" "$LOGFILE1" || { echo "FAIL: 256MB Total RAM not logged correctly"; exit 1; }
