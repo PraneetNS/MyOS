@@ -30,8 +30,127 @@
 #include "tmpfs.h"
 #include "socket.h"
 #include "pty.h"
+#include "io.h"
+#include "signal.h"
 
 int kernel_has_serial_shell = 0;
+int g_kernel_shutting_down = 0;
+static char kernel_cmdline[256] = "mode=text\n";
+
+const char* kernel_get_cmdline(void) {
+    return kernel_cmdline;
+}
+
+static void save_cmdline(uint32_t mb_info_addr) {
+    if (!mb_info_addr) return;
+    uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
+    uint32_t total_size = *(uint32_t*) ptr;
+    uint8_t* end = ptr + total_size;
+    uint8_t* tag_ptr = ptr + 8;
+
+    while (tag_ptr < end) {
+        struct mb2_tag* tag = (struct mb2_tag*) tag_ptr;
+        if (tag->type == MB2_TAG_TYPE_END) break;
+
+        if (tag->type == MB2_TAG_TYPE_CMDLINE) {
+            struct mb2_tag_string* cmd = (struct mb2_tag_string*) tag;
+            const char* s = cmd->string;
+            /* If string starts with the binary path, skip to arguments */
+            const char* p = s;
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (*p) {
+                s = p;
+            } else {
+                /* No additional arguments given; default to mode=text */
+                kernel_cmdline[0] = 'm'; kernel_cmdline[1] = 'o'; kernel_cmdline[2] = 'd'; kernel_cmdline[3] = 'e';
+                kernel_cmdline[4] = '='; kernel_cmdline[5] = 't'; kernel_cmdline[6] = 'e'; kernel_cmdline[7] = 'x';
+                kernel_cmdline[8] = 't'; kernel_cmdline[9] = '\n'; kernel_cmdline[10] = '\0';
+                return;
+            }
+
+            int k = 0;
+            while (s[k] && k < 254) {
+                kernel_cmdline[k] = s[k];
+                k++;
+            }
+            kernel_cmdline[k++] = '\n';
+            kernel_cmdline[k] = '\0';
+            return;
+        }
+        tag_ptr += (tag->size + 7) & ~7u;
+    }
+}
+
+#define LINUX_REBOOT_CMD_RESTART   0x01234567
+#define LINUX_REBOOT_CMD_HALT      0xcdef0123
+#define LINUX_REBOOT_CMD_POWER_OFF 0x4321fedc
+#define LINUX_REBOOT_CMD_RESTART2  0xa1b2c3d4
+
+void kernel_reboot(uint32_t cmd) {
+    process_t* me = scheduler_current();
+    g_kernel_shutting_down = 1;
+
+    /* Enable interrupts so timer and preemptive scheduling can tick during shutdown */
+    asm volatile ("sti");
+
+    /* 1. Send SIGTERM to all user processes */
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table_entry(i);
+        if (p && p != me && p->pid > 0 && p->state != PROC_UNUSED && p->state != PROC_EXITED && p->state != PROC_ZOMBIE) {
+            sig_send(p, SIGTERM);
+        }
+    }
+
+    /* 2. Wait up to 2 seconds (200 ticks) or until all user processes exit */
+    uint32_t start_tick = timer_get_ticks();
+    while (timer_get_ticks() - start_tick < 200) {
+        int any_alive = 0;
+        for (int i = 0; i < MAX_PROCESSES; i++) {
+            process_t* p = process_table_entry(i);
+            if (p && p != me && p->pid > 0 && p->state != PROC_UNUSED && p->state != PROC_EXITED && p->state != PROC_ZOMBIE) {
+                any_alive = 1;
+                break;
+            }
+        }
+        if (!any_alive) break;
+        scheduler_yield();
+    }
+
+    /* 3. Send SIGKILL to any remaining processes */
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table_entry(i);
+        if (p && p != me && p->pid > 0 && p->state != PROC_UNUSED && p->state != PROC_EXITED && p->state != PROC_ZOMBIE) {
+            sig_send(p, SIGKILL);
+        }
+    }
+
+    /* 4. Sync buffer cache */
+    bcache_sync();
+
+    /* 5. Perform requested power action */
+    if (cmd == LINUX_REBOOT_CMD_POWER_OFF) {
+        kprintf("[power] Powering off system...\n");
+        outw(0x604, 0x2000);
+        outw(0xB004, 0x2000);
+        outw(0x4004, 0x3400);
+        outw(0x600, 0x34);
+        for (;;) { asm volatile ("cli; hlt"); }
+    } else if (cmd == LINUX_REBOOT_CMD_RESTART || cmd == LINUX_REBOOT_CMD_RESTART2) {
+        kprintf("[power] Rebooting system...\n");
+        uint8_t good = 0x02;
+        while (good & 0x02) {
+            good = inb(0x64);
+        }
+        outb(0x64, 0xFE);
+        struct { uint16_t limit; uint32_t base; } __attribute__((packed)) null_idt = { 0, 0 };
+        asm volatile ("lidt %0; int $3" : : "m"(null_idt));
+        for (;;) { asm volatile ("cli; hlt"); }
+    } else {
+        kprintf("[power] System halted.\n");
+        for (;;) { asm volatile ("cli; hlt"); }
+    }
+}
 
 static int check_boot_flag(uint32_t mb_info_addr, const char* needle) {
     if (!mb_info_addr || !needle) return 0;
@@ -63,6 +182,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     serial_init();
     terminal_initialize();
+    save_cmdline(mb_info_addr);
     kprintf("MyOS kernel booted successfully.\n");
 
     gdt_install();
@@ -163,11 +283,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
         kprintf("[ok] Process table initialized (kshell = process 0)\n");
     } else {
         kprintf("[ok] Process table initialized (idle = process 0)\n");
-        process_t* sh = process_spawn_by_name("sh.elf", 0);
-        if (sh) {
-            kprintf("[ok] Spawned sh.elf (PID %d)\n", sh->pid);
+        process_t* init_p = process_spawn_by_name("/sbin/init", 0);
+        if (!init_p) init_p = process_spawn_by_name("init.elf", 0);
+        if (!init_p) init_p = process_spawn_by_name("sh.elf", 0);
+        if (init_p) {
+            kprintf("[ok] Spawned init (PID %d)\n", init_p->pid);
         } else {
-            kprintf("[err] Failed to spawn sh.elf\n");
+            kprintf("[err] Failed to spawn init\n");
         }
 
         if (kernel_has_serial_shell) {
