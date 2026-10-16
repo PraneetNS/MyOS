@@ -54,6 +54,7 @@
 #define SYS_CLOCK_GETTIME 74
 #define SYS_NANOSLEEP    75
 #define SYS_NICE         77
+#define SYS_REBOOT       88
 #define SYS_TRUNCATE     92
 #define SYS_FTRUNCATE    93
 #define SYS_SOCKET       102
