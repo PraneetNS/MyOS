@@ -448,6 +448,7 @@ static __attribute__((unused)) int fat16_needs_lfn(const char* name) {
 
     for (int i = 0; name[i]; i++) {
         char c = name[i];
+        if ((uint8_t)c >= 0x80) return 1; /* non-ASCII UTF-8 requires LFN */
         if (c == '.') {
             dot_count++;
             after_dot = 1;
@@ -476,6 +477,58 @@ static int fat_strlen(const char* s) {
     return n;
 }
 
+static int fat_strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+static int is_valid_83_char(char c) {
+    if (c >= 'A' && c <= 'Z') return 1;
+    if (c >= 'a' && c <= 'z') return 1;
+    if (c >= '0' && c <= '9') return 1;
+    if (c == '_' || c == '-' || c == '$' || c == '%' || c == '\'' || c == '@' ||
+        c == '^' || c == '`' || c == '!' || c == '#' || c == '(' || c == ')' ||
+        c == '{' || c == '}' || c == '~') return 1;
+    return 0;
+}
+
+static int is_valid_83_name(const char* name) {
+    if (!name || !*name) return 0;
+    if (fat_strcmp(name, ".") == 0 || fat_strcmp(name, "..") == 0) return 1;
+    int dot_count = 0;
+    int base_len = 0;
+    int ext_len = 0;
+    int after_dot = 0;
+    for (int i = 0; name[i]; i++) {
+        char c = name[i];
+        if ((uint8_t)c >= 0x80) return 0;
+        if (c == '.') {
+            dot_count++;
+            after_dot = 1;
+            continue;
+        }
+        if (!is_valid_83_char(c)) return 0;
+        if (!after_dot) base_len++;
+        else ext_len++;
+    }
+    if (dot_count > 1 || base_len == 0 || base_len > 8 || ext_len > 3) return 0;
+    return 1;
+}
+
+static int fat16_validate_name(const char* name) {
+    if (!name || !*name) return -EINVAL;
+    int len = fat_strlen(name);
+    if (len > NAME_MAX) return -ENAMETOOLONG;
+    if (fat_strcmp(name, ".") == 0 || fat_strcmp(name, "..") == 0) return 0;
+    if (name[len - 1] == ' ' || name[len - 1] == '.') {
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static __attribute__((unused)) int fat16_generate_short_alias(fat_node_t* dir, const char* name, char out_83[11]) {
     /* If it doesn't need LFN, standard to_dos_name is sufficient */
     if (!fat16_needs_lfn(name)) {
@@ -498,11 +551,10 @@ static __attribute__((unused)) int fat16_generate_short_alias(fat_node_t* dir, c
     int end_base = (last_dot >= 0) ? last_dot : fat_strlen(name);
     for (int i = 0; i < end_base && cb_len < 8; i++) {
         char c = name[i];
-        if (c == '.' || c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') {
-            continue;
-        }
         if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-        clean_base[cb_len++] = c;
+        if (is_valid_83_char(c) && c != '.') {
+            clean_base[cb_len++] = c;
+        }
     }
     if (cb_len == 0) clean_base[cb_len++] = '_';
 
@@ -510,11 +562,10 @@ static __attribute__((unused)) int fat16_generate_short_alias(fat_node_t* dir, c
     if (last_dot >= 0) {
         for (int i = last_dot + 1; name[i] && ce_len < 3; i++) {
             char c = name[i];
-            if (c == '.' || c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') {
-                continue;
-            }
             if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-            clean_ext[ce_len++] = c;
+            if (is_valid_83_char(c) && c != '.') {
+                clean_ext[ce_len++] = c;
+            }
         }
     }
 
@@ -562,8 +613,9 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
     fat_lfn_accum_t acc;
     lfn_accum_reset(&acc);
 
+    int can_be_83 = is_valid_83_name(name);
     char name_83[11];
-    to_dos_name(name, name_83);
+    if (can_be_83) to_dos_name(name, name_83);
 
     while (read_dir_entry(dir, idx++, &e, &sec, &off)) {
         if ((uint8_t)e.name[0] == 0x00) break;
@@ -581,7 +633,7 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
         int match = 0;
         if (has_lfn && strcasecmp_ascii(name, lfn_name) == 0) {
             match = 1;
-        } else if (dos_name_eq(e.name, name_83)) {
+        } else if (can_be_83 && dos_name_eq(e.name, name_83)) {
             match = 1;
         }
 
@@ -769,6 +821,9 @@ static int fat16_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     fat_dirent_t e;
     uint32_t sec, off;
 
+    int v = fat16_validate_name(name);
+    if (v != 0) return (v == -EINVAL) ? -ENOENT : v;
+
     if (!find_entry_in_dir_lfn(dnode, name, &e, &sec, &off, 0, 0)) {
         return -ENOENT;
     }
@@ -934,6 +989,9 @@ static int fat16_write(vnode_t* node, uint32_t offset, const uint8_t* buf, uint3
 static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
 
+    int v = fat16_validate_name(name);
+    if (v != 0) return v;
+
     if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0)) {
         return -EEXIST;
     }
@@ -983,6 +1041,9 @@ static int fat16_create(vnode_t* dir, const char* name, vnode_t** out) {
 
 static int fat16_mkdir(vnode_t* dir, const char* name, vnode_t** out) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
+
+    int v = fat16_validate_name(name);
+    if (v != 0) return v;
 
     if (find_entry_in_dir_lfn(dnode, name, 0, 0, 0, 0, 0)) {
         return -EEXIST;
@@ -1075,6 +1136,24 @@ static void fat_unlink_cb(vnode_t* vn, void* arg) {
     }
 }
 
+struct fat_rename_match {
+    uint32_t old_sec;
+    uint32_t old_off;
+    uint32_t new_sec;
+    uint32_t new_off;
+};
+
+static void fat_rename_cb(vnode_t* vn, void* arg) {
+    struct fat_rename_match* m = (struct fat_rename_match*) arg;
+    if (vn->ops == &fat16_ops) {
+        fat_node_t* fn = (fat_node_t*) vn->fs_data;
+        if (fn && fn->dir_sector == m->old_sec && fn->dir_offset == m->old_off) {
+            fn->dir_sector = m->new_sec;
+            fn->dir_offset = m->new_off;
+        }
+    }
+}
+
 static int fat16_unlink(vnode_t* dir, const char* name) {
     fat_node_t* dnode = (fat_node_t*) dir->fs_data;
 
@@ -1134,6 +1213,11 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
     fat_node_t* odnode = (fat_node_t*) old_dir->fs_data;
     fat_node_t* ndnode = (fat_node_t*) new_dir->fs_data;
 
+    int v = fat16_validate_name(old_name);
+    if (v != 0) return (v == -EINVAL) ? -ENOENT : v;
+    v = fat16_validate_name(new_name);
+    if (v != 0) return v;
+
     fat_dirent_t old_e;
     uint32_t old_sec, old_off, old_idx, old_lfn_slots;
     if (!find_entry_in_dir_lfn(odnode, old_name, &old_e, &old_sec, &old_off, &old_idx, &old_lfn_slots)) {
@@ -1149,9 +1233,37 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
         fat_dirent_t exist_e;
         uint32_t exist_sec, exist_off, exist_idx, exist_lfn_slots;
         if (find_entry_in_dir_lfn(ndnode, new_name, &exist_e, &exist_sec, &exist_off, &exist_idx, &exist_lfn_slots)) {
-            if (exist_e.attr & FAT_ATTR_DIRECTORY) return -EISDIR;
-            if (exist_e.fst_clus_lo) fat_free_chain(exist_e.fst_clus_lo);
-            delete_entry_and_lfn(ndnode, exist_idx, (int)exist_lfn_slots);
+            if (old_e.attr & FAT_ATTR_DIRECTORY) {
+                if (!(exist_e.attr & FAT_ATTR_DIRECTORY)) return -ENOTDIR;
+                /* Check if existing directory is empty (only . and ..) */
+                fat_node_t exist_node;
+                exist_node.first_cluster = exist_e.fst_clus_lo;
+                exist_node.is_dir = 1;
+                exist_node.is_root = 0;
+                uint32_t s_idx = 0;
+                fat_dirent_t sub_e;
+                uint32_t s_sec, s_off;
+                int entry_count = 0;
+                while (read_dir_entry(&exist_node, s_idx++, &sub_e, &s_sec, &s_off)) {
+                    if ((uint8_t)sub_e.name[0] == 0x00) break;
+                    if ((uint8_t)sub_e.name[0] == 0xE5) continue;
+                    if ((sub_e.attr & FAT_ATTR_LFN) == FAT_ATTR_LFN) continue;
+                    if (dos_name_eq(sub_e.name, ".          ") || dos_name_eq(sub_e.name, "..         ")) continue;
+                    entry_count++;
+                    break;
+                }
+                if (entry_count > 0) return -ENOTEMPTY;
+                struct fat_unlink_match m = { exist_sec, exist_off, 0 };
+                vfs_for_each_vnode(fat_unlink_cb, &m);
+                if (!m.found_open && exist_e.fst_clus_lo) fat_free_chain(exist_e.fst_clus_lo);
+                delete_entry_and_lfn(ndnode, exist_idx, (int)exist_lfn_slots);
+            } else {
+                if (exist_e.attr & FAT_ATTR_DIRECTORY) return -EISDIR;
+                struct fat_unlink_match m = { exist_sec, exist_off, 0 };
+                vfs_for_each_vnode(fat_unlink_cb, &m);
+                if (!m.found_open && exist_e.fst_clus_lo) fat_free_chain(exist_e.fst_clus_lo);
+                delete_entry_and_lfn(ndnode, exist_idx, (int)exist_lfn_slots);
+            }
         }
     } else {
         delete_entry_and_lfn(odnode, old_idx, (int)old_lfn_slots);
@@ -1175,6 +1287,25 @@ static int fat16_rename(vnode_t* old_dir, const char* old_name, vnode_t* new_dir
     if (!is_same_file) {
         delete_entry_and_lfn(odnode, old_idx, (int)old_lfn_slots);
     }
+
+    /* If directory was moved across directories, update its ".." pointer */
+    if ((old_e.attr & FAT_ATTR_DIRECTORY) && odnode != ndnode) {
+        uint16_t sub_clus = old_e.fst_clus_lo;
+        if (sub_clus >= 2 && sub_clus < 0xFFF8) {
+            uint32_t clba = cluster_to_lba(sub_clus);
+            uint8_t sbuf[512];
+            if (bcache_read(clba, sbuf) == 0) {
+                fat_dirent_t* dotdot = (fat_dirent_t*)&sbuf[32];
+                dotdot->fst_clus_lo = ndnode->is_root ? 0 : ndnode->first_cluster;
+                bcache_write(clba, sbuf);
+            }
+        }
+    }
+
+    /* Update any open vnode matching old location to new location */
+    struct fat_rename_match rm = { old_sec, old_off, new_sec, new_off };
+    vfs_for_each_vnode(fat_rename_cb, &rm);
+
     return 0;
 }
 

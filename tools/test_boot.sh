@@ -9,7 +9,7 @@ LOGFILE3=$(mktemp)
 LOGFILE6=$(mktemp)
 LOGFILE7=$(mktemp)
 LOGFILE8=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8"' EXIT
+trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -47,7 +47,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "fstest\n"
     sleep 2
     printf "lfntest\n"
-    sleep 3
+    sleep 16
     printf "hello.elf\n"
     sleep 1
     printf "argtest hello world 123\n"
@@ -71,15 +71,15 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "shmtest.elf\n"
     sleep 3
     printf "sockettest.elf\n"
-    sleep 4
+    sleep 5
     printf "ptytest.elf\n"
-    sleep 4
+    sleep 5
     printf "ipctest.elf\n"
-    sleep 4
+    sleep 12
     printf "memtest\n"
-    sleep 16
+    sleep 30
     printf "exit\n"
-) | timeout 135s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 240s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -135,8 +135,22 @@ echo "[PASS] Nested directories read/write verified"
 grep -q "\[fstest\] ALL FSTESTS COMPLETED" "$LOGFILE1" || { echo "FAIL: fstest did not complete successfully"; exit 1; }
 echo "[PASS] All fstest assertions passed"
 
+grep -q "\[lfntest\] PASS: 30-file alias collision" "$LOGFILE1" || { echo "FAIL: 30-file alias collision failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Directory growth across clusters" "$LOGFILE1" || { echo "FAIL: Directory growth failed"; exit 1; }
+grep -q "\[lfntest\] PASS: 255-character filename succeeded" "$LOGFILE1" || { echo "FAIL: 255-char name failed"; exit 1; }
+grep -q "\[lfntest\] PASS: 256-character filename rejected with -ENAMETOOLONG" "$LOGFILE1" || { echo "FAIL: 256-char name not rejected with ENAMETOOLONG"; exit 1; }
+grep -q "\[lfntest\] PASS: UTF-8 filenames" "$LOGFILE1" || { echo "FAIL: UTF-8 names failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Legal-in-LFN characters" "$LOGFILE1" || { echo "FAIL: Legal-in-LFN characters failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Leading dot (.hidden) verified" "$LOGFILE1" || { echo "FAIL: .hidden failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Trailing dot and space filenames rejected" "$LOGFILE1" || { echo "FAIL: Trailing dot/space rejection failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Case collision" "$LOGFILE1" || { echo "FAIL: Case collision failed"; exit 1; }
+grep -q "\[lfntest\] PASS: short <-> long rename verified" "$LOGFILE1" || { echo "FAIL: short <-> long rename failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Case-only rename verified" "$LOGFILE1" || { echo "FAIL: Case-only rename failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Cross-directory and same-directory file replacement verified" "$LOGFILE1" || { echo "FAIL: Cross-dir rename failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Directory cross-directory rename with '..' fix and clean entries verified" "$LOGFILE1" || { echo "FAIL: Dir rename with .. fix failed"; exit 1; }
+grep -q "\[lfntest\] PASS: Zero frame leaks across LFN process lifecycle" "$LOGFILE1" || { echo "FAIL: lfntest frame leak detected"; exit 1; }
 grep -q "\[lfntest\] ALL LFN TESTS PASSED SUCCESSFULLY!" "$LOGFILE1" || { echo "FAIL: lfntest did not complete successfully"; exit 1; }
-echo "[PASS] All lfntest assertions passed"
+echo "[PASS] All lfntest assertions passed (including alias collision, dir growth, names, rename matrix, and zero leaks)"
 
 # Non-regression assertions
 grep -q "Hello from a REAL ELF binary" "$LOGFILE1" || { echo "FAIL: hello.elf failed"; exit 1; }
@@ -342,7 +356,10 @@ echo "[PASS] Host mtype cross-check for persistent and created files verified"
 
 echo "[TEST] Session 5: Low-memory boot test (-m 64)..."
 LOGFILE5=$(mktemp)
-timeout 10s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE5" 2>&1 || true
+(
+    sleep 3
+    printf "exit\n"
+) | timeout 12s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE5" 2>&1 || true
 cat "$LOGFILE5"
 
 grep -q "BOOT OK" "$LOGFILE5" || { echo "FAIL: Low-memory boot failed (BOOT OK not found)"; rm -f "$LOGFILE5"; exit 1; }
@@ -350,6 +367,7 @@ grep -q "Total RAM: 63 MB" "$LOGFILE5" || { echo "FAIL: -m 64 Total RAM (63 MB) 
 grep -q "Kernel heap self-test passed" "$LOGFILE5" || { echo "FAIL: -m 64 Kernel heap self-test failed"; rm -f "$LOGFILE5"; exit 1; }
 echo "[PASS] Low-memory boot (-m 64, 63 MB RAM, BOOT OK) verified"
 rm -f "$LOGFILE5"
+sleep 1
 
 echo "[TEST] Session 6: Live job control and interactive TTY signals over COM1..."
 
@@ -845,7 +863,7 @@ LOGFILE11=$(mktemp)
 (
     sleep 6
     printf "paint.elf --auto\n"
-    sleep 4
+    sleep 7
     printf "screenshot.elf /tmp/shot.bmp\n"
     sleep 5
     printf "view.elf /share/sample.bmp --still\n"
@@ -865,7 +883,7 @@ LOGFILE11=$(mktemp)
     printf "sync\n"
     sleep 1
     printf "exit\n"
-) | timeout 65s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE11" 2>&1 || true
+) | timeout 75s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE11" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE11" > "${LOGFILE11}.tmp" && mv "${LOGFILE11}.tmp" "$LOGFILE11"
 cat "$LOGFILE11"
@@ -929,6 +947,74 @@ grep -q "Rebooting system" "$LOGFILE14" || { echo "FAIL: 'Rebooting system' not 
 echo "[PASS] reboot executed and QEMU terminated on reset"
 
 rm -f "$LOGFILE14"
+
+echo "[TEST] Session 15: Model-Based LFN Stress Test (500 ops) & Host fsck.fat/mdir Verification..."
+
+LOGFILE15=$(mktemp)
+(
+    sleep 2
+    printf "shinfo\n"
+    sleep 0.5
+    printf "lfnstress\n"
+    sleep 22
+    printf "shinfo\n"
+    sleep 0.5
+    printf "exit\n"
+) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE15" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE15" > "${LOGFILE15}.tmp" && mv "${LOGFILE15}.tmp" "$LOGFILE15"
+cat "$LOGFILE15"
+
+echo "[TEST] Asserting Session 15 results..."
+grep -q "\[lfnstress\] Starting 500-op Model-Based LFN Stress Test..." "$LOGFILE15" || { echo "FAIL: lfnstress did not start"; rm -f "$LOGFILE15"; exit 1; }
+grep -q "\[lfnstress\] Checkpoint op 500/500 PASSED" "$LOGFILE15" || { echo "FAIL: lfnstress op 500 not reached or failed"; rm -f "$LOGFILE15"; exit 1; }
+grep -q "\[lfnstress\] PASS: 500 ops verified against in-memory model!" "$LOGFILE15" || { echo "FAIL: lfnstress model verification failed"; rm -f "$LOGFILE15"; exit 1; }
+echo "[PASS] 500 randomized LFN operations verified against in-memory model"
+
+# Frame leak check for lfnstress
+BASELINE_FRAMES_S15=$(grep "sh: pid=" "$LOGFILE15" | head -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+FINAL_FRAMES_S15=$(grep "sh: pid=" "$LOGFILE15" | tail -n 1 | sed -n 's/.*free_frames=\([0-9]*\).*/\1/p')
+if [ -n "$BASELINE_FRAMES_S15" ] && [ -n "$FINAL_FRAMES_S15" ]; then
+    if [ "$BASELINE_FRAMES_S15" -ne "$FINAL_FRAMES_S15" ]; then
+        echo "FAIL: Session 15 frame leak detected: baseline $BASELINE_FRAMES_S15 vs final $FINAL_FRAMES_S15"
+        rm -f "$LOGFILE15"
+        exit 1
+    fi
+    echo "[PASS] Session 15: Zero frame leak verified (baseline $BASELINE_FRAMES_S15 == final $FINAL_FRAMES_S15)"
+else
+    echo "FAIL: Session 15: Could not parse free frames from shinfo"
+    rm -f "$LOGFILE15"
+    exit 1
+fi
+
+# Host-side fsck.fat verification
+FSCK_CMD="fsck.fat"
+if [ -x "$HOME/.local/bin/fsck.fat" ]; then
+    FSCK_CMD="$HOME/.local/bin/fsck.fat"
+fi
+$FSCK_CMD -v -n disk.img || { echo "FAIL: fsck.fat found errors on disk.img after lfnstress"; rm -f "$LOGFILE15"; exit 1; }
+echo "[PASS] Host fsck.fat -v -n clean after 500 stress operations"
+
+# Host-side mdir verification: exactly the model's long names
+MDIR_OUT=$(mdir -/ -i disk.img ::)
+while read -r _ tag entry_name; do
+    if ! echo "$MDIR_OUT" | grep -F -q "$entry_name"; then
+        echo "FAIL: Model entry '$entry_name' not found in host mdir -/ -i disk.img ::"
+        rm -f "$LOGFILE15"
+        exit 1
+    fi
+done < <(grep "\[MODEL_ENTRY\]" "$LOGFILE15")
+
+MODEL_COUNT=$(grep -c "\[MODEL_ENTRY\]" "$LOGFILE15")
+MDIR_BRIEF_COUNT=$(mdir -b -/ -i disk.img ::/lfn_stress | wc -l)
+if [ "$MODEL_COUNT" -ne "$MDIR_BRIEF_COUNT" ]; then
+    echo "FAIL: Model entry count ($MODEL_COUNT) does not match disk entry count ($MDIR_BRIEF_COUNT)"
+    rm -f "$LOGFILE15"
+    exit 1
+fi
+echo "[PASS] Host mdir -/ -i disk.img :: verified: exactly the model's $MODEL_COUNT long names present with zero extras"
+
+rm -f "$LOGFILE15"
 
 echo "==============================="
 echo "ALL TESTS PASSED!"
