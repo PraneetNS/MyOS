@@ -171,17 +171,20 @@ void vnode_unref(vnode_t* vn) {
         if (vn->refcount > 500) { vfs_unlock(f); return; } /* permanent vnode (e.g. devfs) */
         vn->refcount--;
         if (vn->refcount == 0) {
-            if (vn->ops && vn->ops->cleanup) {
-                vn->ops->cleanup(vn);
-            }
+            const struct fs_ops* ops = vn->ops;
+            void* fs_data = vn->fs_data;
+            vnode_t* p = vn->parent;
+            vn->parent = 0;
             vn->fs_data = 0;
-            if (vn->parent) {
-                vnode_t* p = vn->parent;
-                vn->parent = 0;
-                vfs_unlock(f);
-                vnode_unref(p);
-                return;
+            vfs_unlock(f);
+
+            if (ops && ops->cleanup) {
+                vnode_t tmp = *vn;
+                tmp.fs_data = fs_data;
+                ops->cleanup(&tmp);
             }
+            if (p) vnode_unref(p);
+            return;
         }
     }
     vfs_unlock(f);

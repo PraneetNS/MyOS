@@ -770,24 +770,7 @@ static int fat16_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     uint32_t sec, off;
 
     if (!find_entry_in_dir_lfn(dnode, name, &e, &sec, &off, 0, 0)) {
-        char name_83[11];
-        to_dos_name(name, name_83);
-        int found = 0;
-        int baselen = 0;
-        while (name[baselen] && name[baselen] != '.') baselen++;
-        if (baselen > 6) {
-            char alt_83[11];
-            for (int k = 0; k < 11; k++) alt_83[k] = name_83[k];
-            alt_83[6] = '~';
-            for (char num = '1'; num <= '9'; num++) {
-                alt_83[7] = num;
-                if (find_entry_in_dir(dnode, alt_83, &e, &sec, &off)) {
-                    found = 1;
-                    break;
-                }
-            }
-        }
-        if (!found) return -ENOENT;
+        return -ENOENT;
     }
 
     fat_node_t* fnode = alloc_fat_node();

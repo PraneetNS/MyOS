@@ -818,7 +818,7 @@ echo "[TEST] Session 10B: 4 Concurrent Processes + Preemption Spinner Stress Tes
 LOGFILE10B=$(mktemp)
 (
     sleep 2
-    printf "concur_t.elf\n"
+    printf "concur_test.elf\n"
     sleep 20
     printf "exit\n"
 ) | timeout 45s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10B" 2>&1 || true
@@ -852,7 +852,7 @@ LOGFILE11=$(mktemp)
     sleep 3
     printf "gfxdemo.elf --still --timeout 500\n"
     sleep 3
-    printf "crash_sa.elf\n"
+    printf "crash_safety_test.elf\n"
     sleep 3
     printf "echo AFTER_CRASH=\$?\n"
     sleep 2
