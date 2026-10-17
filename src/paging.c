@@ -93,10 +93,12 @@ static void page_fault_handler(struct registers* regs) {
 
                 /* Special handling for tmpfs files */
                 if ((vma->flags & VMA_FLAG_FILE) && vma->file && tmpfs_is_tmpfs_vnode(vma->file)) {
+                    tmpfs_node_t* tnode = (tmpfs_node_t*) vma->file->fs_data;
+                    uint32_t cur_size = tnode ? tnode->size : vma->file->size;
                     /* Access beyond the current EOF of a mapped tmpfs file raises SIGBUS */
-                    if (file_offset >= vma->file->size) {
+                    if (file_offset >= cur_size) {
                         serial_printf("[pf] SIGBUS: access beyond EOF (off %u >= size %u) PID %d\n",
-                                      file_offset, vma->file->size, proc->pid);
+                                      file_offset, cur_size, proc->pid);
                         sig_send(proc, SIGBUS);
                         signal_handle_pending(regs);
                         return;

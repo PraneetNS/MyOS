@@ -243,7 +243,10 @@ void open_file_unref(open_file_t* of) {
     of->refcount--;
     if (of->refcount == 0) {
         if (of->type == OPEN_FILE_CONSOLE) {
-            console_restore_text_mode();
+            process_t* cur = scheduler_current();
+            if (cur && console_get_graphics_pid() != 0 && console_get_graphics_pid() == cur->pid) {
+                console_restore_text_mode();
+            }
         }
         vnode_t* vto_unref = 0;
         pipe_t* pto_close = 0;

@@ -428,6 +428,10 @@ int console_get_mode(void) {
     return g_kd_mode;
 }
 
+int console_get_graphics_pid(void) {
+    return g_graphics_pid;
+}
+
 void console_restore_text_mode(void) {
     if (g_kd_mode == KD_GRAPHICS) {
         g_kd_mode = KD_TEXT;

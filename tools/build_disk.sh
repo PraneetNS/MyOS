@@ -23,6 +23,9 @@ mmd -i "$IMAGE" "::/dev/shm" || true
 mmd -i "$IMAGE" "::/run" || true
 mmd -i "$IMAGE" "::/share" || true
 mmd -i "$IMAGE" "::/share/fonts" || true
+mmd -i "$IMAGE" "::/usr" || true
+mmd -i "$IMAGE" "::/usr/share" || true
+mmd -i "$IMAGE" "::/usr/share/keymaps" || true
 
 echo "Setting /etc/timezone to 330..."
 printf "330\n" > /tmp/myos_timezone
@@ -75,6 +78,11 @@ fi
 if [ -f "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" ]; then
     echo "Copying DejaVuSans font..."
     mcopy -i "$IMAGE" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "::/share/fonts/dejavu.ttf"
+fi
+
+if [ -f "userland/data/keymaps/us.map" ]; then
+    echo "Copying US keymap..."
+    mcopy -i "$IMAGE" userland/data/keymaps/us.map "::/usr/share/keymaps/us.map"
 fi
 
 python3 -c "

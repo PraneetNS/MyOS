@@ -194,6 +194,7 @@ static int tmpfs_op_lookup(vnode_t* dir, const char* name, vnode_t** out) {
                 return -ENOMEM;
             }
             tmpfs_node_ref(curr->node);
+            vn->size = curr->node->size;
             vn->parent = dir;
             vnode_ref(dir);
             *out = vn;
