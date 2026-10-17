@@ -17,8 +17,10 @@ make -C libgfx all
 
 for src in *.c; do
     name="${src%.c}"
-    "$MYOS_GCC" -O2 "$src" -o "$name.elf"
-    echo "Built userland/$name.elf"
+    if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ]; then
+        "$MYOS_GCC" -O2 "$src" -o "$name.elf"
+        echo "Built userland/$name.elf"
+    fi
 done
 
 if [ -f "kilo.elf" ]; then
