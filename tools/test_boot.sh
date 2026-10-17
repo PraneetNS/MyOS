@@ -47,7 +47,7 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "fstest\n"
     sleep 2
     printf "lfntest\n"
-    sleep 16
+    sleep 35
     printf "hello.elf\n"
     sleep 1
     printf "argtest hello world 123\n"

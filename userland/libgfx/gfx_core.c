@@ -114,8 +114,8 @@ gfx_context_t *gfx_open(void) {
     if (tty_fd >= 0) {
         ioctl(tty_fd, KDSETMODE, KD_GRAPHICS);
         ioctl(tty_fd, KDSKBMODE, K_OFF);
-        close(tty_fd);
     }
+    ctx->tty_fd = tty_fd;
 
     /* Open input devices non-blocking */
     ctx->mouse_fd = open("/dev/input/mouse0", O_RDONLY | O_NONBLOCK);
@@ -137,11 +137,11 @@ void gfx_close(gfx_context_t *ctx) {
     if (!ctx) return;
 
     /* Restore console text mode and keyboard */
-    int tty_fd = open("/dev/console", O_RDWR);
-    if (tty_fd >= 0) {
-        ioctl(tty_fd, KDSKBMODE, K_XLATE);
-        ioctl(tty_fd, KDSETMODE, KD_TEXT);
-        close(tty_fd);
+    if (ctx->tty_fd >= 0) {
+        ioctl(ctx->tty_fd, KDSKBMODE, K_XLATE);
+        ioctl(ctx->tty_fd, KDSETMODE, KD_TEXT);
+        close(ctx->tty_fd);
+        ctx->tty_fd = -1;
     }
 
     if (ctx->mouse_fd >= 0) close(ctx->mouse_fd);

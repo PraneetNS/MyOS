@@ -62,6 +62,7 @@ void terminal_writestring(const char* data);
 void console_switch_to_fb(void);
 int  console_set_mode(int mode);
 int  console_get_mode(void);
+int  console_get_graphics_pid(void);
 void console_restore_text_mode(void);
 void console_on_process_exit(int pid);
 void console_repaint(void);

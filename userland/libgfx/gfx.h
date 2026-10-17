@@ -52,6 +52,7 @@ typedef struct {
     int fb_fd;
     int mouse_fd;
     int kbd_fd;
+    int tty_fd;
     int width;
     int height;
     int pitch;
