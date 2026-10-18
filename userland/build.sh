@@ -15,6 +15,7 @@ fi
 make -C ../libmyos all
 make -C libgfx all
 make -C libwin all
+make -C libui all
 
 for src in *.c; do
     name="${src%.c}"
