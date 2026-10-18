@@ -27,6 +27,8 @@ mmd -i "$IMAGE" "::/usr" || true
 mmd -i "$IMAGE" "::/usr/share" || true
 mmd -i "$IMAGE" "::/usr/share/keymaps" || true
 
+mmd -i "$IMAGE" "::/etc/myos" || true
+
 echo "Setting /etc/timezone to 330..."
 printf "330\n" > /tmp/myos_timezone
 mcopy -i "$IMAGE" /tmp/myos_timezone "::/etc/timezone"
@@ -39,6 +41,11 @@ respawn /dev/console /bin/sh.elf
 EOF
 mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
 rm -f /tmp/myos_init_conf
+
+if [ -f "userland/data/desktop.conf" ]; then
+    echo "Copying /etc/myos/desktop.conf..."
+    mcopy -i "$IMAGE" userland/data/desktop.conf "::/etc/myos/desktop.conf"
+fi
 
 echo "Building userland..."
 bash userland/build.sh
