@@ -74,6 +74,15 @@
 #define SYS_RECVFROM     116
 #define SYS_MSYNC        144
 #define SYS_POLL         168
+#define SYS_AGENT_CREATE  170
+#define SYS_AGENT_ATTACH  171
+#define SYS_AGENT_KILL    172
+#define SYS_AGENT_SUSPEND 173
+#define SYS_AGENT_RESUME  174
+#define SYS_AGENT_INFO    175
+#define SYS_SOCK_PEERINFO        176
+#define SYS_BUS_DAEMON_REGISTER  177
+#define SYS_AUDIT_APPEND         178
 
 static inline int __syscall0(int num) {
     int ret;
