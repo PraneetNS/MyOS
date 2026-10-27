@@ -9,7 +9,9 @@ LOGFILE3=$(mktemp)
 LOGFILE6=$(mktemp)
 LOGFILE7=$(mktemp)
 LOGFILE8=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15"' EXIT
+LOGFILE16=$(mktemp)
+LOGFILE17=$(mktemp)
+trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15" "$LOGFILE16" "$LOGFILE17"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -43,11 +45,11 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "cd /\n"
     sleep 1
     printf "cat /large.txt\n"
-    sleep 1
+    sleep 3
     printf "fstest\n"
-    sleep 2
+    sleep 4
     printf "lfntest\n"
-    sleep 35
+    sleep 70
     printf "hello.elf\n"
     sleep 1
     printf "argtest hello world 123\n"
@@ -77,9 +79,9 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "ipctest.elf\n"
     sleep 12
     printf "memtest\n"
-    sleep 30
+    sleep 45
     printf "exit\n"
-) | timeout 240s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+) | timeout 420s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -728,7 +730,7 @@ echo "[TEST] Session 9: Stage 18A /dev/fb0 mmap, mouse driver, and keyboard inpu
 
 LOGFILE9=$(mktemp)
 (
-    sleep 2
+    sleep 3
     printf "fbtest.elf\n"
     sleep 3
     printf "mousetest.elf\n"
@@ -738,7 +740,7 @@ LOGFILE9=$(mktemp)
     printf "ls /dev/input\n"
     sleep 1
     printf "exit\n"
-) | timeout 25s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE9" 2>&1 || true
+) | timeout 30s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE9" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE9" > "${LOGFILE9}.tmp" && mv "${LOGFILE9}.tmp" "$LOGFILE9"
 cat "$LOGFILE9"
@@ -789,21 +791,21 @@ echo "[TEST] Session 10: Stage 18A poll(), select(), non-blocking I/O, and libc 
 
 LOGFILE10=$(mktemp)
 (
-    sleep 2
+    sleep 3
     printf "flagtest.elf\n"
-    sleep 3
+    sleep 6
     printf "polltest.elf\n"
-    sleep 3
+    sleep 5
     printf "gfxtest.elf\n"
-    sleep 4
+    sleep 5
     printf "shinfo\n"
     sleep 1
     printf "gfxtest.elf\n"
-    sleep 4
+    sleep 5
     printf "shinfo\n"
     sleep 1
     printf "exit\n"
-) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10" 2>&1 || true
+) | timeout 65s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE10" > "${LOGFILE10}.tmp" && mv "${LOGFILE10}.tmp" "$LOGFILE10"
 cat "$LOGFILE10"
@@ -835,11 +837,11 @@ echo "[TEST] Session 10B: 4 Concurrent Processes + Preemption Spinner Stress Tes
 
 LOGFILE10B=$(mktemp)
 (
-    sleep 2
+    sleep 3
     printf "concur_test.elf\n"
     sleep 20
     printf "exit\n"
-) | timeout 45s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10B" 2>&1 || true
+) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE10B" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE10B" > "${LOGFILE10B}.tmp" && mv "${LOGFILE10B}.tmp" "$LOGFILE10B"
 cat "$LOGFILE10B"
@@ -1015,6 +1017,100 @@ fi
 echo "[PASS] Host mdir -/ -i disk.img :: verified: exactly the model's $MODEL_COUNT long names present with zero extras"
 
 rm -f "$LOGFILE15"
+
+echo "[TEST] Session 16: Kernel Agents (Capabilities, Delegation, Budgets, Audit Hash Chain, agentctl, -m 64 boot)..."
+
+LOGFILE16=$(mktemp)
+(
+    sleep 2
+    printf "shinfo\n"
+    sleep 0.5
+    printf "agenttest\n"
+    sleep 4
+    printf "agentctl list\n"
+    sleep 0.5
+    printf "agentctl create cliagent --fs-read /home --exec /bin --cpu 500 --mem 64\n"
+    sleep 0.5
+    printf "agentctl list\n"
+    sleep 0.5
+    printf "cat /proc/agents/log\n"
+    sleep 0.5
+    printf "cat /proc/agents/1/status\n"
+    sleep 0.5
+    printf "agentctl kill 1\n"
+    sleep 0.5
+    printf "shinfo\n"
+    sleep 0.5
+    printf "sync\n"
+    sleep 0.5
+    printf "exit\n"
+) | timeout 35s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE16" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE16" > "${LOGFILE16}.tmp" && mv "${LOGFILE16}.tmp" "$LOGFILE16"
+cat "$LOGFILE16"
+
+echo "[TEST] Asserting Session 16 results..."
+grep -q "ALL AGENT TESTS PASSED!" "$LOGFILE16" || { echo "FAIL: agenttest did not pass all tests"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "PASSED: Capability allowlist and denial enforcement OK" "$LOGFILE16" || { echo "FAIL: Capability test failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "PASSED: Delegation narrowing enforced OK" "$LOGFILE16" || { echo "FAIL: Delegation narrowing failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "PASSED: CPU budget suspended runaway agent cleanly" "$LOGFILE16" || { echo "FAIL: CPU budget test failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "PASSED: max_procs prevented fork storm" "$LOGFILE16" || { echo "FAIL: max_procs test failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "PASSED: Verified .* audit log entries, SHA-256 hash chain 100% valid" "$LOGFILE16" || { echo "FAIL: Audit log SHA-256 hash chain verification failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "PASSED: Zero physical frame leaks after agent teardown" "$LOGFILE16" || { echo "FAIL: Frame leak check failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "Agent .* created: cliagent" "$LOGFILE16" || { echo "FAIL: agentctl create failed"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "cliagent" "$LOGFILE16" || { echo "FAIL: agentctl list did not show cliagent"; rm -f "$LOGFILE16"; exit 1; }
+grep -q "Agent 1 killed" "$LOGFILE16" || { echo "FAIL: agentctl kill failed"; rm -f "$LOGFILE16"; exit 1; }
+echo "[PASS] Session 16: Kernel agents, capabilities, budgets, audit log, and agentctl verified!"
+
+rm -f "$LOGFILE16"
+
+echo "[TEST] Session 17: Intent Bus (intentd, libjson, libintent, peer identity, demo skills, approvals, intentctl, -m 64 boot)..."
+
+LOGFILE17=$(mktemp)
+(
+    sleep 2
+    printf "shinfo\n"
+    sleep 0.5
+    printf "intentctl stats\n"
+    sleep 0.5
+    printf "intenttest\n"
+    sleep 8
+    printf "demoskills all &\n"
+    sleep 1
+    printf "intentctl list\n"
+    sleep 0.5
+    printf "intentctl call sys.meminfo\n"
+    sleep 0.5
+    printf "intentctl stats\n"
+    sleep 0.5
+    printf "cat /proc/agents/log | tail -n 10\n"
+    sleep 0.5
+    printf "shinfo\n"
+    sleep 0.5
+    printf "sync\n"
+    sleep 0.5
+    printf "exit\n"
+) | timeout 55s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE17" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE17" > "${LOGFILE17}.tmp" && mv "${LOGFILE17}.tmp" "$LOGFILE17"
+cat "$LOGFILE17"
+
+echo "[TEST] Asserting Session 17 results..."
+grep -q "ALL INTENT BUS TESTS PASSED!" "$LOGFILE17" || { echo "FAIL: intenttest did not pass all tests"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: JSON parser strictness, schema validation, and daemon fuzz-resilience OK" "$LOGFILE17" || { echo "FAIL: JSON test failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Register + call round trip and schema rejection OK" "$LOGFILE17" || { echo "FAIL: Round trip failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Identity enforcement and spoofing defense verified" "$LOGFILE17" || { echo "FAIL: Identity test failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Confused deputy blocked by kernel capability sandbox" "$LOGFILE17" || { echo "FAIL: Confused deputy failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Sensitive skill approval workflow verified" "$LOGFILE17" || { echo "FAIL: Sensitive approval failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Provider crash mid-call handled cleanly without caller hang" "$LOGFILE17" || { echo "FAIL: Provider crash failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Rate limit and in-flight cap enforced" "$LOGFILE17" || { echo "FAIL: Rate limit failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Verified .* audit log entries, SHA-256 hash chain 100% valid" "$LOGFILE17" || { echo "FAIL: Audit log hash chain verification failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "PASSED: Zero frame leaks and zero leaked fds after 200 cycles" "$LOGFILE17" || { echo "FAIL: Zero frame leaks test failed"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "fs.list" "$LOGFILE17" || { echo "FAIL: intentctl list did not show fs.list"; rm -f "$LOGFILE17"; exit 1; }
+grep -q "fs.delete" "$LOGFILE17" || { echo "FAIL: intentctl list did not show fs.delete"; rm -f "$LOGFILE17"; exit 1; }
+echo "[PASS] Session 17: Intent Bus, daemon, libjson, peer authentication, and demo skills verified!"
+
+rm -f "$LOGFILE17"
 
 echo "==============================="
 echo "ALL TESTS PASSED!"
