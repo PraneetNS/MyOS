@@ -72,11 +72,12 @@ typedef struct process {
     uint8_t fpu_buffer[512 + 16];
 
     /* Stage 18A: poll wait channels and op flags */
-#define MAX_POLL_CHANNELS 32
+#define MAX_POLL_CHANNELS 64
     void* poll_channels[MAX_POLL_CHANNELS];
     int   num_poll_channels;
     int   current_op_flags;     /* Per-process active VFS operation flags (prevents global static race) */
     void* ctty;                 /* Controlling terminal (tty_t*) */
+    int   agent_id;             /* Stage 19: Bound agent ID (0 if unconfined) */
 } process_t;
 
 /* Sets up the fixed process table with slot 0 as either the resident
