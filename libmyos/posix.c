@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include "agent.h"
 
 extern char **environ;
 extern void __sigreturn_restorer(void);
@@ -1061,4 +1062,50 @@ int reboot(int cmd) {
     int ret = __syscall4(SYS_REBOOT, 0xfee1dead, 672274793, cmd, 0);
     return __check_syscall_err(ret);
 }
+
+int agent_create(const char* name, const agent_caps_t* caps, const agent_budget_t* budget) {
+    int ret = __syscall3(SYS_AGENT_CREATE, (long)name, (long)caps, (long)budget);
+    return __check_syscall_err(ret);
+}
+
+int agent_attach(int agent_id) {
+    int ret = __syscall1(SYS_AGENT_ATTACH, (long)agent_id);
+    return __check_syscall_err(ret);
+}
+
+int agent_kill(int agent_id) {
+    int ret = __syscall1(SYS_AGENT_KILL, (long)agent_id);
+    return __check_syscall_err(ret);
+}
+
+int agent_suspend(int agent_id) {
+    int ret = __syscall1(SYS_AGENT_SUSPEND, (long)agent_id);
+    return __check_syscall_err(ret);
+}
+
+int agent_resume(int agent_id) {
+    int ret = __syscall1(SYS_AGENT_RESUME, (long)agent_id);
+    return __check_syscall_err(ret);
+}
+
+int agent_info(int agent_id, agent_info_t* info) {
+    int ret = __syscall2(SYS_AGENT_INFO, (long)agent_id, (long)info);
+    return __check_syscall_err(ret);
+}
+
+int sock_peerinfo(int fd, peerinfo_t* pinfo) {
+    int ret = __syscall2(SYS_SOCK_PEERINFO, (long)fd, (long)pinfo);
+    return __check_syscall_err(ret);
+}
+
+int bus_daemon_register(void) {
+    int ret = __syscall0(SYS_BUS_DAEMON_REGISTER);
+    return __check_syscall_err(ret);
+}
+
+int audit_append(int agent_id, uint32_t event_type, const char* detail) {
+    int ret = __syscall3(SYS_AUDIT_APPEND, (long)agent_id, (long)event_type, (long)detail);
+    return __check_syscall_err(ret);
+}
+
 
