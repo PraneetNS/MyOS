@@ -13,6 +13,8 @@ if [ ! -x "$MYOS_GCC" ]; then
 fi
 
 make -C ../libmyos all
+make -C libjson all
+make -C libintent all
 make -C libgfx all
 make -C libwin all
 make -C libui all
