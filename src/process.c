@@ -14,6 +14,7 @@
 #include "fpu.h"
 #include "kmutex.h"
 #include "tty.h"
+#include "agent.h"
 
 int respawn_shell_needed = 0;
 
@@ -127,6 +128,7 @@ void process_init_table(int use_kshell) {
     shell->cpu_ticks = 0;
     shell->nice = 0;
     shell->current_op_flags = 0;
+    shell->agent_id = 0;
     init_fds(shell);
     signal_init_proc(shell);
 
@@ -265,6 +267,11 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->heap_end = HEAP_BASE;
     p->heap_mapped_up_to = HEAP_BASE;
     p->current_op_flags = 0;
+    p->agent_id = (parent_pid > 0 && process_find_by_pid(parent_pid)) ? process_find_by_pid(parent_pid)->agent_id : 0;
+    if (p->agent_id > 0) {
+        agent_t* ag = agent_get_by_id(p->agent_id);
+        if (ag) ag->usage.procs_count++;
+    }
     init_fds(p);
     signal_init_proc(p);
     fpu_init_proc(p);
@@ -280,6 +287,10 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 void process_destroy(process_t* p) {
     if (p->state == PROC_UNUSED) return;
     kmutex_assert_none_held();
+    if (p->agent_id > 0) {
+        agent_proc_exited(p->agent_id);
+        p->agent_id = 0;
+    }
     timer_sleep_dequeue(p);
     p->sleep_deadline = 0;
     p->sleep_next = 0;
@@ -304,22 +315,33 @@ void process_destroy(process_t* p) {
 }
 
 process_t* process_fork(process_t* parent, const struct registers* parent_regs) {
+    if (parent->agent_id > 0) {
+        if (!agent_can_fork(parent->agent_id)) {
+            return 0;
+        }
+    }
+
     int slot = -1;
     for (int i = 1; i < MAX_PROCESSES; i++) {
         if (table[i].state == PROC_UNUSED) { slot = i; break; }
     }
     if (slot < 0) {
         terminal_writestring("[proc] fork: no free process slots\n");
+        if (parent->agent_id > 0) agent_proc_exited(parent->agent_id);
         return 0;
     }
 
     process_t* p = &table[slot];
     p->as = vmm_create_address_space();
-    if (!p->as.directory) return 0;
+    if (!p->as.directory) {
+        if (parent->agent_id > 0) agent_proc_exited(parent->agent_id);
+        return 0;
+    }
 
     if (vmm_clone_user_pages(&p->as, &parent->as, parent->vma_list) != 0) {
         terminal_writestring("[proc] fork: failed to clone address space (out of memory?)\n");
         vmm_destroy_address_space(&p->as);
+        if (parent->agent_id > 0) agent_proc_exited(parent->agent_id);
         return 0;
     }
 
@@ -353,6 +375,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->heap_end = parent->heap_end;
     p->heap_mapped_up_to = parent->heap_mapped_up_to;
     p->current_op_flags = 0;
+    p->agent_id = parent->agent_id;
     p->ctty = parent->ctty;
 
     fpu_save(parent);
