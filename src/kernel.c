@@ -32,6 +32,7 @@
 #include "pty.h"
 #include "io.h"
 #include "signal.h"
+#include "agent.h"
 
 int kernel_has_serial_shell = 0;
 int g_kernel_shutting_down = 0;
@@ -271,6 +272,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     pty_init();
     kprintf("[ok] PTY layer initialized\n");
+
+    agent_init();
+    kprintf("[ok] Agent subsystem initialized\n");
 
     int use_kshell = check_boot_flag(mb_info_addr, "kshell");
     if (check_boot_flag(mb_info_addr, "serial_shell=1")) {
