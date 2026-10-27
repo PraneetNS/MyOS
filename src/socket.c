@@ -63,6 +63,10 @@ socket_t* socket_alloc(int domain, int type, int protocol) {
     s->refcount = 1;
     kmutex_init(&s->lock, "socket");
 
+    process_t* me = scheduler_current();
+    s->creator_pid = me ? me->pid : 0;
+    s->creator_agent_id = me ? me->agent_id : 0;
+
     uint32_t f = irq_save();
     s->inode = next_sock_inode++;
     s->next_all = all_sockets_head;
@@ -339,13 +343,17 @@ int socket_connect(socket_t* s, const struct sockaddr* addr, uint32_t addrlen) {
     srv_conn->peer = s;
     socket_ref(s);
 
+    s->peer_pid = srv->creator_pid;
+    s->peer_agent_id = srv->creator_agent_id;
+    srv_conn->peer_pid = me ? me->pid : 0;
+    srv_conn->peer_agent_id = me ? me->agent_id : 0;
+
     s->state = SS_CONNECTED;
     srv_conn->state = SS_CONNECTED;
 
     /* Enqueue to server */
     uint32_t f = irq_save();
     srv->accept_queue[srv->accept_tail] = srv_conn;
-    socket_ref(srv_conn);
     srv->accept_tail = (srv->accept_tail + 1) % UNIX_BACKLOG_MAX;
     srv->accept_count++;
     irq_restore(f);
@@ -479,7 +487,7 @@ short socket_poll(socket_t* s, short events, void** chan_out) {
 
     if (s->state == SS_LISTENING) {
         if (s->accept_count > 0) {
-            revents |= POLLIN;
+            if (events & POLLIN) revents |= POLLIN;
         } else if ((events & POLLIN) && chan_out && !*chan_out) {
             *chan_out = &s->accept_wait;
         }
@@ -488,13 +496,13 @@ short socket_poll(socket_t* s, short events, void** chan_out) {
 
     if (s->state == SS_CONNECTED) {
         if (s->rx_ring.count > 0 || s->shutdown_rd || s->peer_closed || s->peer_shutdown_wr) {
-            revents |= POLLIN;
+            if (events & POLLIN) revents |= POLLIN;
         } else if ((events & POLLIN) && chan_out && !*chan_out) {
             *chan_out = &s->rx_ring.read_wait;
         }
 
         if (!s->shutdown_wr && s->peer && !s->peer_closed) {
-            if (s->peer->rx_ring.count < UNIX_RING_SIZE) {
+            if ((events & POLLOUT) && s->peer->rx_ring.count < UNIX_RING_SIZE) {
                 revents |= POLLOUT;
             } else if ((events & POLLOUT) && chan_out && !*chan_out) {
                 *chan_out = &s->peer->rx_ring.write_wait;
@@ -528,11 +536,30 @@ int socket_pair(int domain, int type, int protocol, socket_t** s1_out, socket_t*
     s1->peer = s2; socket_ref(s2);
     s2->peer = s1; socket_ref(s1);
 
+    process_t* me = scheduler_current();
+    s1->peer_pid = me ? me->pid : 0;
+    s1->peer_agent_id = me ? me->agent_id : 0;
+    s2->peer_pid = me ? me->pid : 0;
+    s2->peer_agent_id = me ? me->agent_id : 0;
+
     s1->state = SS_CONNECTED;
     s2->state = SS_CONNECTED;
 
     *s1_out = s1;
     *s2_out = s2;
+    return 0;
+}
+
+int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out) {
+    if (!s) return -EINVAL;
+    kmutex_lock(&s->lock);
+    if (s->state != SS_CONNECTED) {
+        kmutex_unlock(&s->lock);
+        return -ENOTCONN;
+    }
+    if (pid_out) *pid_out = s->peer_pid;
+    if (agent_out) *agent_out = s->peer_agent_id;
+    kmutex_unlock(&s->lock);
     return 0;
 }
 
