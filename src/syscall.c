@@ -28,6 +28,7 @@
 #include "tmpfs.h"
 #include "socket.h"
 #include "pty.h"
+#include "agent.h"
 
 #define SYS_EXIT       0
 #define SYS_WRITE      1
@@ -99,6 +100,16 @@
 #define SYS_RECVFROM   116
 #define SYS_MSYNC      144
 #define SYS_POLL       168
+
+#define SYS_AGENT_CREATE  170
+#define SYS_AGENT_ATTACH  171
+#define SYS_AGENT_KILL    172
+#define SYS_AGENT_SUSPEND 173
+#define SYS_AGENT_RESUME  174
+#define SYS_AGENT_INFO    175
+#define SYS_SOCK_PEERINFO        176
+#define SYS_BUS_DAEMON_REGISTER  177
+#define SYS_AUDIT_APPEND         178
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -260,6 +271,17 @@ static void syscall_handler(struct registers* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) {
+                    int aerr = agent_check_access(me, CAP_FS_WRITE, path, "open_write");
+                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                }
+                if (((flags & 3) == O_RDONLY) || (flags & O_RDWR)) {
+                    int aerr = agent_check_access(me, CAP_FS_READ, path, "open_read");
+                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                }
+            }
+
             int slot = -1;
             for (int i = 3; i < MAX_FDS; i++) {
                 if (!me->fds[i]) { slot = i; break; }
@@ -451,6 +473,12 @@ static void syscall_handler(struct registers* regs) {
             int err = validate_user_string(name);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
+            process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_EXEC, name, "exec");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
+
             typedef struct {
                 char kname[PATH_MAX];
                 char bin_path[PATH_MAX];
@@ -471,7 +499,6 @@ static void syscall_handler(struct registers* regs) {
             }
             ep->kname[ki] = '\0';
 
-            process_t* me = scheduler_current();
             vnode_t* vn = 0;
             if (vfs_resolve_path(ep->kname, me->cwd, &vn) != 0 || !vn) {
                 ep->bin_path[0] = '/'; ep->bin_path[1] = 'b'; ep->bin_path[2] = 'i'; ep->bin_path[3] = 'n'; ep->bin_path[4] = '/';
@@ -984,6 +1011,10 @@ static void syscall_handler(struct registers* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, path, "mkdir");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
             vnode_t* parent = 0;
             char child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
@@ -1011,6 +1042,10 @@ static void syscall_handler(struct registers* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, path, "rmdir");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
             vnode_t* parent = 0;
             char child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
@@ -1036,6 +1071,10 @@ static void syscall_handler(struct registers* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, path, "unlink");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
             vnode_t* parent = 0;
             char child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
@@ -1064,6 +1103,12 @@ static void syscall_handler(struct registers* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, oldpath, "rename_old");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                aerr = agent_check_access(me, CAP_FS_WRITE, newpath, "rename_new");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
             vnode_t *old_parent = 0, *new_parent = 0;
             char old_child[NAME_MAX + 1], new_child[NAME_MAX + 1];
             int ret = vfs_resolve_parent(oldpath, me->cwd, &old_parent, old_child, sizeof(old_child));
@@ -1832,6 +1877,7 @@ static void syscall_handler(struct registers* regs) {
                     open_file_t* of = me->fds[fd];
                     void* chan = 0;
                     short rev = vfs_poll(of, kfds[i].events, &chan);
+                    rev &= (kfds[i].events | POLLERR | POLLHUP | POLLNVAL);
                     kfds[i].revents = rev;
                     if (rev != 0) {
                         ready_count++;
@@ -1894,6 +1940,7 @@ static void syscall_handler(struct registers* regs) {
                             continue;
                         }
                         short rev = vfs_poll(me->fds[fd], kfds[i].events, 0);
+                        rev &= (kfds[i].events | POLLERR | POLLHUP | POLLNVAL);
                         kfds[i].revents = rev;
                         if (rev != 0) ready_count++;
                     }
@@ -2092,6 +2139,14 @@ static void syscall_handler(struct registers* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0 && uaddr) {
+                const struct sockaddr_un* un = (const struct sockaddr_un*) uaddr;
+                if (un->sun_family == 1) { /* AF_UNIX */
+                    int aerr = agent_check_access(me, CAP_SOCKET_CONNECT, un->sun_path, "connect");
+                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                }
+            }
+
             if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
                 regs->eax = (uint32_t) -EBADF;
                 break;
@@ -2363,6 +2418,140 @@ static void syscall_handler(struct registers* regs) {
         case SYS_SETSOCKOPT:
         case SYS_GETSOCKOPT: {
             regs->eax = 0;
+            break;
+        }
+
+        case SYS_AGENT_CREATE: {
+            const char* uname = (const char*) regs->ebx;
+            const agent_caps_t* ucaps = (const agent_caps_t*) regs->ecx;
+            const agent_budget_t* ubudget = (const agent_budget_t*) regs->edx;
+
+            int err = validate_user_string(uname);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            err = validate_user_buffer(ucaps, sizeof(agent_caps_t), 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            err = validate_user_buffer(ubudget, sizeof(agent_budget_t), 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            char kname[AGENT_NAME_MAX];
+            int i = 0;
+            while (uname[i] && i < AGENT_NAME_MAX - 1) {
+                kname[i] = uname[i];
+                i++;
+            }
+            kname[i] = '\0';
+
+            agent_caps_t kcaps;
+            memcpy(&kcaps, ucaps, sizeof(agent_caps_t));
+
+            agent_budget_t kbudget;
+            memcpy(&kbudget, ubudget, sizeof(agent_budget_t));
+
+            process_t* me = scheduler_current();
+            int ret = agent_create_kernel(kname, &kcaps, &kbudget, me->pid, me->agent_id);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_ATTACH: {
+            int agent_id = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            int ret = agent_attach_proc(agent_id, me);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_KILL: {
+            int agent_id = (int) regs->ebx;
+            int ret = agent_kill_kernel(agent_id);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_SUSPEND: {
+            int agent_id = (int) regs->ebx;
+            int ret = agent_suspend_kernel(agent_id);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_RESUME: {
+            int agent_id = (int) regs->ebx;
+            int ret = agent_resume_kernel(agent_id);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_INFO: {
+            int agent_id = (int) regs->ebx;
+            agent_info_t* uinfo = (agent_info_t*) regs->ecx;
+
+            int err = validate_user_buffer(uinfo, sizeof(agent_info_t), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            agent_info_t kinfo;
+            int ret = agent_get_info(agent_id, &kinfo);
+            if (ret == 0) {
+                memcpy(uinfo, &kinfo, sizeof(agent_info_t));
+            }
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_SOCK_PEERINFO: {
+            int fd = (int) regs->ebx;
+            peerinfo_t* upinfo = (peerinfo_t*) regs->ecx;
+
+            int err = validate_user_buffer(upinfo, sizeof(peerinfo_t), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int pid_val = 0, agent_val = 0;
+            int ret = socket_get_peerinfo(of->sock, &pid_val, &agent_val);
+            if (ret == 0) {
+                upinfo->pid = pid_val;
+                upinfo->agent_id = agent_val;
+            }
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_BUS_DAEMON_REGISTER: {
+            process_t* me = scheduler_current();
+            int ret = agent_bus_daemon_register(me);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AUDIT_APPEND: {
+            int agent_id = (int) regs->ebx;
+            uint32_t event_type = (uint32_t) regs->ecx;
+            const char* udetail = (const char*) regs->edx;
+
+            int err = validate_user_string(udetail);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            char kdetail[64];
+            int i = 0;
+            while (udetail[i] && i < (int)(sizeof(kdetail) - 1)) {
+                kdetail[i] = udetail[i];
+                i++;
+            }
+            kdetail[i] = '\0';
+
+            int ret = agent_audit_append(agent_id, event_type, kdetail);
+            regs->eax = (uint32_t) ret;
             break;
         }
 
