@@ -1,39 +1,202 @@
-# MyOS — Stage 1
+# MyOS — 32-bit x86 Unix-like Multitasking Operating System
+
+A monolithic, preemptive 32-bit x86 Unix-like operating system written from scratch in C and assembly. MyOS boots via GRUB (Multiboot2), transitions to protected mode, establishes higher-half virtual memory, and provides a POSIX-compatible userspace environment complete with an in-kernel VFS, writable FAT16 filesystem with VFAT Long File Names (LFN), `tmpfs`, UNIX domain sockets, shared memory (`MAP_SHARED`), pseudoterminals (PTYs), signal delivery, an init supervisor (`/sbin/init`), a full Newlib C library toolchain, ported software (Lua 5.4, Kilo editor), a 1024x768 32bpp linear framebuffer with hardware write-combining (PAT), and a client-server graphical windowing system and desktop environment (`wm`, `libwin`, `libui`, `term`, `files`).
+
+---
+
+## Operating System Features
+
+- **Kernel Core & Hardware**:
+  - 32-bit x86 protected mode kernel loaded at 1MB and mapped to higher-half (`0xC0000000+`).
+  - GDT, IDT, 8259 PIC remapping, 8254 PIT timer at 100 Hz, PS/2 keyboard and IntelliMouse drivers.
+  - CMOS RTC driver with UTC epoch tracking and configurable `/etc/timezone`.
+  - FPU / SSE support with dynamic CPUID detection and `FXSAVE`/`FXRSTOR` context switching.
+  - ACPI shutdown and 8042 keyboard controller reset primitives for clean power management.
+- **Memory Management**:
+  - Physical Memory Manager (PMM) with frame reference counting over full Multiboot2 memory map.
+  - Higher-half virtual memory with 4MB PSE direct physical map (`0xC0000000 + phys`) covering up to 768MB.
+  - Sorted per-process Virtual Memory Areas (VMAs) tracking virtual memory segments and protections.
+  - Demand paging, lazy heap growth, and automatic stack growth downward up to 8MB.
+  - Copy-On-Write (COW) `fork()` with reference-counted page frames and zero leak teardown.
+  - Hardened dynamic kernel heap with bidirectional coalescing and magic canary bounds checking.
+  - System calls: `mmap`, `munmap`, `mprotect`, `sbrk`.
+- **Processes, Scheduling & Signals**:
+  - Preemptive round-robin scheduler with per-process dynamic nice values (-20 to 19) and time slices.
+  - Non-busy deadline-sorted sleep wait queues (`sleep`, `nanosleep`) with CPU accounting; idle task executes `hlt`.
+  - Non-spinning FIFO sleeping mutex subsystem (`kmutex_t`) eliminating timer tick starvation during I/O.
+  - Full process hierarchy: orphan reparenting to PID 1 (`/sbin/init`), non-blocking `waitpid()`.
+  - System init supervisor (`/sbin/init`) parsing `/etc/init.conf` with `once`, `wait`, and `respawn` rate-limiting.
+  - 32 POSIX signals with userspace delivery trampolines, `sigaction`, `sigprocmask`, and `sigreturn`.
+  - Terminal process groups, session IDs, and job control (`SIGINT`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`, `SIGCHLD`, `SIGWINCH`).
+- **Filesystems & I/O**:
+  - Virtual File System (VFS) abstraction with dynamic mount table (`/proc/mounts`).
+  - Writable FAT16 driver with full VFAT Long File Names (LFN) support (read, write, multi-slot directory entry allocation, numeric tail generation, UTF-16 decoding, multi-slot unlink/rmdir/rename).
+  - ATA PIO hard disk driver with interrupts enabled during transfers, protected by sleeping mutexes.
+  - In-memory 64-entry LRU buffer cache (`bcache`) with write-back flushing.
+  - In-memory `tmpfs` mounted at `/dev/shm` and `/run` supporting sparse allocation, `truncate`/`ftruncate`.
+  - `devfs` providing `/dev/console`, `/dev/tty`, `/dev/null`, `/dev/zero`, `/dev/serial0`, `/dev/fb0`, `/dev/input/*`, `/dev/ptmx`, `/dev/pts/*`.
+  - `procfs` virtual filesystem exposing `/proc/meminfo`, `/proc/uptime`, `/proc/cpuinfo`, `/proc/version`, `/proc/cmdline`, `/proc/mounts`, `/proc/net/unix`, `/proc/<pid>/*`.
+- **Inter-Process Communication (IPC)**:
+  - Anonymous VFS pipes with reader/writer wait queues and EOF signaling.
+  - Shared Memory (`MAP_SHARED`): anonymous shared mappings and tmpfs file-backed shared memory with beyond-EOF `SIGBUS` enforcement, `shm_open`, and `shm_unlink`.
+  - UNIX Domain Sockets (`AF_UNIX`, `SOCK_STREAM`): bidirectional 64KB kernel ring buffers, tmpfs filesystem binding (`S_IFSOCK`), `socketpair`, `bind`, `listen`, `accept`, `connect`.
+  - UNIX98 Pseudoterminals (PTY): master multiplexer `/dev/ptmx`, dynamic slave nodes `/dev/pts/<N>`, line discipline, window resize notification (`TIOCSWINSZ`/`SIGWINCH`), `openpty`, and `forkpty`.
+- **Toolchain & Userspace Software**:
+  - GCC 13.2.0 + GNU Binutils cross-toolchain targeting `i686-elf` with Newlib C library 4.4.0 (`libc.a`, `libm.a`).
+  - System call emulation and POSIX compatibility layer (`libmyos.a`).
+  - Full Lua 5.4.6 runtime and bytecode compiler (`lua.elf`, `luac.elf`).
+  - Kilo text editor (`edit.elf`) with terminal raw mode and syntax highlighting.
+  - Comprehensive POSIX CLI userland: interactive shell (`sh`) with pipelines, redirections, and job control, plus utilities (`cat`, `ls`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `grep`, `head`, `tail`, `wc`, `diff`, `nl`, `seq`, `cal`, `hexdump`, `sort`, `uniq`, `tee`, `uname`, `which`, `clear`, `env`, `ps`, `top`, `free`, `uptime`, `date`, `time`, `sleep`, `kill`, `poweroff`, `reboot`, `halt`, `shutdown`).
+- **Graphics & Window System**:
+  - 1024x768 32bpp linear framebuffer with Page Attribute Table (PAT) write-combining MSR acceleration.
+  - Fast graphical text console with Terminus 8x16 PSF2 font and dirty row shadow buffering.
+  - 2D Graphics Engine (`libgfx`): primitives, anti-aliased gradients, alpha blending, TrueType font rendering (`stb_truetype.h`), and BMP/PNG/JPEG decoding (`stb_image.h`).
+  - Compositing Display Server (`wm`): AF_UNIX socket protocol (`/run/display.sock`), out-of-band shared memory surface buffers (`/dev/shm/win-*`), dirty rectangle composition, server-side titlebars, buttons, dragging, resizing, focus, and Alt+Tab overlay.
+  - Window Client Library (`libwin`): window lifecycle, double-buffered rendering surface, damage reporting, atomic commits, and event dispatching.
+  - GUI Widget Toolkit (`libui`): retained widget hierarchy, labels, buttons, checkboxes, radio groups, progress bars, textboxes, multiline textareas, scrollbars, listboxes, tab controls, menubars, and modal dialogs.
+  - Desktop Applications: Graphical Terminal Emulator (`term`), Graphical File Manager (`files`), Widget Demo (`uidemo`), Drawing Program (`paint`), Image Viewer (`view`), Screen Capture (`screenshot`), and Window Control CLI (`wmctl`).
+- **Automated Verification**:
+  - 15 end-to-end automated boot sessions validating zero frame leaks, memory integrity, stress concurrency, filesystem consistency (`fsck.fat`), and QEMU monitor screendump pixel correctness.
+
+---
+
+## Repository Layout
+
+```text
+boot/
+  boot.s            -- Multiboot2 header, higher-half bootstrap page directory, and _start
+  linker.ld         -- Linker script placing kernel at 1MB physical (0xC0100000 virtual)
+  grub.cfg          -- GRUB2 configuration with text, serial, and desktop boot targets
+  gdt_flush.s       -- GDT reload assembly helper
+  idt_flush.s       -- IDT reload assembly helper
+  isr.s             -- 32 CPU exception stubs, 16 IRQ stubs, int 0x80 syscall gate
+  paging_asm.s      -- Page directory load (CR3) and paging enable (CR0.PG)
+  task_switch.s     -- Context switch stack swap
+  usermode_asm.s    -- Ring 3 iret trampoline
+  uaccess.s         -- Safe copy_to_user / copy_from_user with page fault recovery
+src/
+  kernel.c          -- Subsystem initialization, multiboot parsing, and reboot handler
+  pmm.c/.h          -- Physical Memory Manager with per-frame reference counts
+  paging.c/.h       -- Page directory/table manipulation, demand paging, and COW
+  vmm.c/.h          -- Virtual memory manager, address space cloning, and tear-down
+  vma.c/.h          -- Virtual Memory Area tracking per-process
+  kheap.c/.h        -- Dynamic kernel heap allocator with guard canaries
+  process.c/.h      -- Process creation, fork, execve, exit, and orphan reparenting
+  scheduler.c/.h    -- Preemptive round-robin scheduler with nice values and wait queues
+  kmutex.c/.h       -- Non-spinning FIFO sleeping mutexes
+  syscall.c/.h      -- System call table and dispatcher (48+ syscalls)
+  signal.c/.h       -- POSIX signal infrastructure and trampoline
+  vfs.c/.h          -- Virtual File System mount and vnode abstraction
+  fat16.c/.h        -- Writable FAT16 filesystem with VFAT LFN read/write
+  bcache.c/.h       -- 64-entry LRU sector buffer cache with writeback
+  ata.c/.h          -- Polling/interrupt ATA PIO hard disk driver
+  tmpfs.c/.h        -- In-memory filesystem for /dev/shm and /run
+  devfs.c/.h        -- Device filesystem (/dev)
+  procfs.c/.h       -- Process and system metrics virtual filesystem (/proc)
+  pipe.c/.h         -- Unnamed VFS pipes
+  socket.c/.h       -- UNIX domain sockets (AF_UNIX SOCK_STREAM)
+  pty.c/.h          -- UNIX98 pseudoterminals (/dev/ptmx, /dev/pts/*)
+  tty.c/.h          -- Terminal line discipline and canonical input editing
+  fb.c/.h           -- Linear framebuffer driver (/dev/fb0)
+  ioremap.c/.h      -- Physical I/O memory mapping and PAT write-combining MSR
+  console.c/.h      -- PSF2 graphical text console with shadow buffering
+  font.c/.h         -- Embedded Terminus 8x16 PSF2 bitmap font
+  mouse.c/.h        -- PS/2 IntelliMouse driver with wheel stream
+  input.c/.h        -- Linux-compatible input event ring buffers (/dev/input/*)
+  rtc.c/.h          -- CMOS RTC real-time clock driver
+  fpu.c/.h          -- FPU and SSE context switching
+libmyos/            -- Newlib C library syscall stubs and POSIX emulation layer
+userland/
+  libgfx/           -- 2D graphics, TrueType fonts, and image loading
+  libwin/           -- Client-side windowing library and IPC protocol
+  libui/            -- Retained GUI widget toolkit
+  lua/              -- Ported Lua 5.4.6 runtime source
+  wm.c              -- Display server and compositing window manager
+  wmctl.c           -- Window management CLI tool
+  term.c            -- PTY-backed VT100/xterm-256color graphical terminal emulator
+  files.c           -- Graphical file manager with LFN support
+  uidemo.c          -- libui widget showcase application
+  paint.c           -- 2D painting and raster graphics editor
+  view.c            -- Multi-format image viewer (BMP, PNG, JPEG)
+  sh.c              -- Interactive shell with job control, pipes, and redirection
+  init.c            -- /sbin/init supervisor parsing /etc/init.conf
+  kilo.c            -- Kilo text editor (also built as edit.elf)
+  *.c               -- POSIX utilities (cat, ls, cp, grep, ps, top, etc.) and test suites
+tools/
+  build_disk.sh     -- Disk image builder (FAT16 format, userland ELFs, configs)
+  test_boot.sh      -- Comprehensive automated regression harness (Sessions 1-15)
+  test_step*.py     -- Automated test suites for window system and GUI components
+  toolchain/        -- Pinned GNU Binutils, GCC, and Newlib build scripts
+Makefile            -- Kernel compilation, ISO creation, and QEMU run rules
+```
+
+---
+
+## Build & Run
+
+### Prerequisites (Ubuntu / Debian)
+
+```bash
+sudo apt install build-essential gcc-multilib binutils grub-pc-bin grub-common \
+                 xorriso qemu-system-x86 mtools dosfstools python3
+```
+
+### Building Kernel & Disk Image
+
+```bash
+make            # Compiles kernel and builds bootable ISO (myos.iso)
+make disk.img   # Builds 64MB FAT16 hard disk image with userland binaries and configs
+```
+
+### Running in QEMU
+
+**Text Mode (Default Shell on Console):**
+```bash
+make run
+# or run with full display and disk:
+qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d
+```
+
+**Graphical Desktop Mode:**
+```bash
+# Boot and select "MyOS (desktop)" from GRUB menu, or pass mode=desktop:
+qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d
+```
+
+**Serial Shell Session:**
+```bash
+qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio
+```
+
+### Running Automated Verification Tests
+
+```bash
+# Run complete end-to-end regression harness (Sessions 1 through 15):
+bash tools/test_boot.sh
+
+# Run window system and GUI component verification suites:
+python3 tools/test_step1.py    # libwin & wm protocol
+python3 tools/test_step2.py    # Window decorations & wmctl
+python3 tools/test_step3.py    # libui widgets & uidemo
+python3 tools/test_step4.py    # Graphical terminal emulator (term)
+python3 tools/test_step5a.py   # Graphical file manager (files)
+```
+
+---
+
+## Progressive Architecture & Development History
+
+The following sections document the step-by-step evolution of MyOS from an initial bare-metal bootloader to a modern multitasking operating system with a graphical windowing system.
+
+---
+
+## Stage 1 (done): Multiboot2 foundation & VGA driver
 
 A minimal x86 kernel that boots via GRUB (Multiboot2), enters 32-bit
 protected mode, and prints to the screen via a hand-written VGA text-mode
 driver. This is the foundation stage of a "build your own OS" project.
 
-## What's here
-
-```
-boot/
-  boot.s       -- Multiboot2 header + assembly entry point (_start)
-  linker.ld    -- linker script: places the kernel at the 1MB mark
-  grub.cfg     -- tells GRUB how to boot myos.bin
-src/
-  kernel.c     -- kernel_main(), called from boot.s
-  vga.c/.h     -- VGA text-mode driver (writes to 0xB8000)
-Makefile
-```
-
-## Build & run (Linux, needs gcc, binutils, grub-pc-bin, xorriso, qemu)
-
-```bash
-sudo apt install build-essential grub-pc-bin grub-common xorriso qemu-system-x86
-
-make         # builds boot/boot.o, src/*.o, links kernel, makes myos.iso
-make run     # boots it in QEMU
-```
-
-`make run` uses `-serial stdio -display none`, so if you want to *see*
-the VGA output (not just serial), instead run:
-
-```bash
-qemu-system-i386 -cdrom myos.iso
-```
-
-## What's actually happening on boot
+### What's actually happening on boot
 
 1. GRUB reads the Multiboot2 header in `boot.s`, loads `myos.bin` at 1MB,
    switches the CPU to 32-bit protected mode, and jumps to `_start`.
@@ -712,13 +875,13 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 6. **Strict User Pointer Validation**:
    Kernel validates all userspace pointers against mapped pages in the calling process's page directory to prevent kernel memory corruption.
 
-### Known Limitations
+### Known Limitations (at Stage 14 — all resolved in subsequent stages)
 1. **Signals (SIGPIPE, SIGCHLD, SIGINT)**:
-   Signal delivery is deferred to a future stage. Writing to a pipe with no readers returns `-EPIPE` instead of sending `SIGPIPE`.
+   *Resolved in Stage 16 & 18B*: Full POSIX signal delivery trampoline, sigaction, sigprocmask, SIGPIPE, and child SIGCHLD reparenting to PID 1.
 2. **Job Control**:
-   Background jobs run asynchronously with `&`, but full POSIX job control (`Ctrl+Z`, `fg`, `bg`, terminal process groups) is not yet implemented.
+   *Resolved in Stage 16*: Terminal process groups (`tcsetpgrp`), sessions (`setsid`), interactive `Ctrl+Z`, `Ctrl+C`, `fg`, `bg`, and `SIGTTIN`/`SIGTTOU`.
 3. **LFN (Long File Names)**:
-   Filenames follow 8.3 FAT conventions; full VFAT LFN Unicode parsing is deferred.
+   *Resolved in FAT16 LFN stage*: Full RFC VFAT 255-character Unicode LFN directory parsing, numeric tail generation, and multi-slot creation/deletion.
 
 ---
 
@@ -899,6 +1062,318 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
 
 ---
 
+## FAT16 Long Filenames (LFN) & Concurrency Architecture (done)
+
+- **Sleeping Mutex Subsystem (`src/kmutex.c`, `src/kmutex.h`, `src/scheduler.c`)**:
+  - Implements non-spinning FIFO sleeping mutexes (`kmutex_t`).
+  - Processes contending for an acquired mutex block cleanly on a wait queue via `scheduler_wait_or_idle()`, consuming 0% CPU without burning cycles in spinloops.
+  - Dynamically asserts lock ownership (`owner == scheduler_current()`) and validates that no sleeping mutexes are held when a process exits (`process_exit`).
+  - Added lock leak checks and interrupt flag assertions (`assert_interrupts_disabled()`) on all syscall boundaries.
+
+- **Elimination of Interrupt Latency During Disk I/O (`src/bcache.c`, `src/fat16.c`)**:
+  - Migrated buffer cache (`bcache`) and FAT16 filesystem operations from disabling spinlocks to sleeping mutexes (`bcache_mutex`, `fat16_mutex`).
+  - Enabled CPU interrupts (`sti`) during multi-millisecond ATA PIO sector transfer loops (`inw`/`outb`).
+  - Completely eliminated timer tick starvation and keyboard/mouse dropped packets during heavy disk read/write bursts.
+  - Converted static `fat_node_t` pool to dynamic per-node heap allocation (`kmalloc`/`kfree`) with VFS cleanup callbacks, eliminating fixed pool exhaustion.
+
+- **VFAT Long Filenames (LFN) Subsystem (`src/fat16.c`, `src/fat16.h`)**:
+  - Full RFC-compliant VFAT Long Filename implementation with support for filenames up to 255 characters and mixed case.
+  - Multi-slot LFN directory entry parsing and contiguous slot allocation.
+  - 8.3 numeric tail alias generation (`NAME~1.EXT` through `NAME~999999.EXT`) with collision detection.
+  - UTF-16LE to ASCII/UTF-8 character conversion with checksum verification across all directory slots.
+  - Multi-slot atomic deletion and renaming in `unlink()`, `rmdir()`, and `rename()`.
+  - Case-insensitive directory lookup matching both LFN and short 8.3 aliases.
+
+- **ProcFS & Kernel Telemetry Additions (`src/procfs.c`, `src/procfs.h`)**:
+  - `/proc/cpuinfo`: Reports CPU vendor, family, model, stepping, CPUID feature flags (FPU, PSE, MSR, CX8, APIC, SEP, MTRR, PGE, MCA, CMOV, PAT, CLFSH, DS, ACPI, MMX, FXSR, SSE, SSE2, SS, HTT, TM, PBE), and clock frequency estimate.
+  - `/proc/version`: Exposes kernel version string, compiler build info, and target architecture.
+  - `/proc/cmdline`: Exposes Multiboot2 boot command-line arguments.
+
+- **Core POSIX Utilities & Shell Builtins (`userland/`, `userland/sh.c`)**:
+  - `uname`: Implements standard system information tool supporting `-a`, `-s`, `-r`, `-m`, `-v`, `-n`.
+  - `which`: Command resolution searching directories in `PATH`.
+  - `clear`: ANSI terminal screen clearing.
+  - `basename` / `dirname`: Path component extraction and suffix stripping.
+  - `seq`: Sequence generator with start, step, and end parameters.
+  - `cal`: Gregorian calendar generator using CMOS RTC and libc time.
+  - `env`: Environment variable viewer and runner.
+  - `nl`: Filter adding line numbers to input streams.
+  - Shell builtins: Added `which`, `clear`, and `version` directly into `sh`.
+
+- **Automated Concurrency & LFN Validation Suite**:
+  - `userland/lfntest.c`: 35-second test suite validating LFN creation, multi-slot directory extension, numeric tail alias generation, case insensitivity, deep directory recursion, multi-slot unlinking, and renaming.
+  - `userland/lfnstress.c`: Model-based fuzzing and stress testing executing 500 pseudo-random filesystem operations (create, write, read, rename, delete) followed by host-side `fsck.fat -v -a` and `mdir` verification.
+  - `userland/ticktest.c`: 20-second timer tick benchmark running under heavy concurrent ATA disk I/O, proving zero timer tick loss.
+  - `userland/concur_test.c`: 4 concurrent child processes executing simultaneous disk operations with preemption spinners without data corruption or kernel panics.
+
+---
+
+## Stage 18B (done): Kernel IPC, Session Infrastructure & Process Tree
+
+- **`tmpfs` In-Memory Filesystem & Flexible VFS Mounts (`src/tmpfs.c`, `src/tmpfs.h`, `src/mount.c`)**:
+  - Dynamic page-backed in-memory filesystem mounted at `/dev/shm` and `/run` with 63MB allocation caps.
+  - Supports sparse page arrays, directory trees, `S_IFSOCK` socket nodes, `S_IFCHR` device nodes, and file truncation (`truncate`, `ftruncate`).
+  - Dynamic VFS mount table exposed via `/proc/mounts` in standard `/etc/mtab` format (`fat16`, `devfs`, `procfs`, `tmpfs`).
+
+- **Shared Memory (`MAP_SHARED`) & POSIX SHM (`src/paging.c`, `src/vmm.c`, `src/vma.c`, `src/syscall.c`, `libmyos/`)**:
+  - Unified page-table-level shared memory supporting anonymous mappings (`MAP_SHARED | MAP_ANON`) and tmpfs file-backed mappings.
+  - Shared page tables across `fork()`: parent and child map identical physical frames with `PAGE_WRITABLE` (no Copy-On-Write duplication), enabling atomic synchronization.
+  - Beyond-EOF access protection: attempting to touch mapped addresses past `st_size` delivers `SIGBUS` (signal 7) to the faulting process.
+  - POSIX shared memory APIs in `libmyos`: `shm_open`, `shm_unlink`, and `msync`.
+
+- **UNIX Domain Sockets (`AF_UNIX`) (`src/socket.c`, `src/socket.h`, `src/syscall.c`)**:
+  - Bidirectional byte-stream IPC (`SOCK_STREAM`) with 64KB kernel ring buffers (`UNIX_SOCKET_BUF_SIZE = 65536`).
+  - Filesystem rendezvous nodes (`S_IFSOCK`) created via `bind()` on `tmpfs` mounts (e.g. `/run/display.sock`).
+  - Syscalls: `SYS_SOCKET` (47), `SYS_BIND` (48), `SYS_LISTEN` (49), `SYS_ACCEPT` (50), `SYS_CONNECT` (51), `SYS_SHUTDOWN` (52).
+  - Telemetry: Dynamic socket table exposed via `/proc/net/unix` and open file descriptors listed under `/proc/<pid>/fd`.
+
+- **UNIX98 Pseudoterminals (PTY) & Multiple TTYs (`src/pty.c`, `src/pty.h`, `src/devfs.c`, `libmyos/`)**:
+  - Master multiplexer device node `/dev/ptmx` and dynamic slave nodes `/dev/pts/<N>`.
+  - Full bidirectional line discipline integration on slave PTYs (canonical input editing, `ICRNL`, `ECHO`, `ONLCR`).
+  - Window resizing ioctls (`TIOCSWINSZ` / `TIOCGWINSZ`) delivering `SIGWINCH` signals to the foreground process group.
+  - Libc APIs in `libmyos`: `posix_openpt()`, `grantpt()`, `unlockpt()`, `ptsname_r()`, `openpty()`, and `forkpty()`.
+  - Kernel command-line `serial_shell=1` argument in `/proc/cmdline` spawning an independent shell on `/dev/serial0`.
+
+- **Process Hierarchy & Init Supervisor (`src/process.c`, `userland/init.c`)**:
+  - Process orphan reparenting: when any process terminates, its surviving child processes are automatically reparented to PID 1 (`/sbin/init`), with `SIGCHLD` signals delivered to the new parent.
+  - Init supervisor (`/sbin/init`) parsing `/etc/init.conf` with `once`, `wait`, and `respawn` directives.
+  - Rate-limiting protection: tracks service spawn timestamps and caps restarts to 5 within 10 seconds, applying a 5-second backoff to prevent fork storms.
+  - Non-blocking zombie reaping via `waitpid(-1, &status, WNOHANG)`.
+
+- **Kernel Power Subsystem & Clean Shutdown (`src/kernel.c`, `src/syscall.c`, `userland/power.c`)**:
+  - ACPI shutdown primitive via I/O ports (`0x604`, `0xB004`, `0x4004`, `0x600`).
+  - 8042 keyboard controller reset primitive (`outb(0x64, 0xFE)`) and IDT null triple-fault fallback for reboot.
+  - Syscall: `SYS_REBOOT` (53) supporting `LINUX_REBOOT_CMD_POWER_OFF`, `LINUX_REBOOT_CMD_RESTART`, and `LINUX_REBOOT_CMD_HALT`.
+  - Graceful shutdown sequence: broadcasts `SIGTERM` to all user processes, waits up to 2 seconds, sends `SIGKILL` to stragglers, synchronizes dirty buffer cache sectors to disk (`bcache_sync`), and executes power action.
+  - Userland utilities: `poweroff`, `reboot`, `halt`, and `shutdown`.
+  - GRUB dual boot configurations in `boot/grub.cfg` for text mode vs. graphical desktop sessions.
+
+- **Comprehensive Stage 18B Verification**:
+  - `userland/shmtest.c`: Validates shared memory across `fork()`, cross-process atomics, tmpfs file-backed mappings, and beyond-EOF `SIGBUS` delivery.
+  - `userland/sockettest.c`: Validates `socketpair`, client-server stream connection, 64KB ring buffer throughput, `select()` polling, non-blocking modes, and `/proc/net/unix` inspection.
+  - `userland/ptytest.c`: Validates master/slave PTY pair allocation, bidirectional transmission, canonical line buffering, `TIOCSWINSZ` window size delivery, and `SIGWINCH` signal receipt.
+  - `userland/ipctest.c`: Comprehensive test suite integrating tmpfs mounts, truncate, shared memory, domain sockets, PTYs, and power management.
+  - `tools/test_boot.sh` (Sessions 11 & 13): Automated regression tests asserting clean poweroff and reboot with dirty filesystem buffer flush.
+
+---
+
+## Stage 18B-2 (done): Window System & Desktop Environment
+
+- **Architecture & IPC Protocol (`docs/window_system.md`, `userland/libwin/win_proto.h`)**:
+  - Client-server architecture communicating over AF_UNIX stream socket `/run/display.sock`.
+  - Fixed 12-byte binary framing header: `{uint32_t len, uint16_t type, uint16_t flags, uint32_t window_id}` (little-endian, max 4096 bytes).
+  - Out-of-band shared memory surface buffers: clients allocate double-buffered framebuffers under `/dev/shm/win-<pid>-<win_id>-<buf_idx>` via `shm_open()` and attach them to the window manager via `WIN_MSG_ATTACH_BUFFER`.
+  - Asynchronous event flow: clients send damage rectangles (`WIN_MSG_DAMAGE`) and commit frames (`WIN_MSG_COMMIT`); compositor delivers keyboard (`WIN_MSG_KEY`), mouse move/button/wheel (`WIN_MSG_POINTER_*`), focus changes (`WIN_MSG_FOCUS`), and configure events (`WIN_MSG_CONFIGURE`).
+
+- **Display Server & Window Manager (`wm`) (`userland/wm.c`)**:
+  - Takes exclusive display ownership via `KD_GRAPHICS` and disables console translation via `K_OFF`.
+  - Composes client windows into a 32bpp RAM back buffer with dirty rectangle tracking, flushing only damaged sub-regions to `/dev/fb0`.
+  - Renders server-side window decorations: titlebar, window title text, close button, minimize button, maximize button, and drop shadows.
+  - Translates raw scancodes into Unicode characters using `/usr/share/keymaps/us.map`.
+  - Software mouse cursor overlay with automatic background restoration.
+  - Interactive window management: titlebar mouse drag-to-move, border resizing, and z-order restacking.
+  - Keyboard window switcher: `Alt + Tab` overlay displaying active window thumbnails/titles.
+  - Fault isolation: automatically cleans up destroyed or disconnected clients; protects compositor against truncated shared memory surfaces via `SIGBUS` handlers.
+
+- **Window Client Library (`libwin`) (`userland/libwin/`)**:
+  - High-performance client library providing window creation, surface allocation (`gfx_surface_t`), damage tracking, atomic frame commits, and event dispatch loops (`win_dispatch_event`, `win_poll_event`, `win_wait_event`).
+  - Integrated clipboard management (`WIN_MSG_CLIPBOARD_SET`, `WIN_MSG_CLIPBOARD_GET`).
+
+- **Window Management Control CLI (`wmctl`) (`userland/wmctl.c`)**:
+  - Command-line tool communicating with `wm` over `/run/display.sock`.
+  - Operations: list active windows (`wmctl -l`), switch focus (`wmctl -f <id>`), close window (`wmctl -c <id>`), move window (`wmctl -m <id> <x> <y>`), minimize window (`wmctl -i <id>`), query compositor stats (`wmctl -s`), and capture full-screen screendumps to BMP (`wmctl -d <path>`).
+
+- **GUI Widget Toolkit (`libui`) (`userland/libui/`)**:
+  - Retained-mode hierarchical widget toolkit with parent-child layout management, dirty rectangle invalidation, and event bubbling.
+  - Keyboard focus traversal via `Tab` and `Shift + Tab`.
+  - **Core Controls**:
+    - `ui_label`: Static text labels with alignment and custom colors.
+    - `ui_button`: Push buttons with hover, active, and focus states and click callbacks.
+    - `ui_checkbox`: Checkbox controls with toggled states and label captions.
+    - `ui_radio_group`: Mutually exclusive radio option groups.
+    - `ui_progress_bar`: Progress indicators supporting determinate (0-100%) and indeterminate modes.
+  - **Text Controls**:
+    - `ui_textbox`: Single-line text input with cursor blinking, text selection, clipboard copy/cut/paste, backspace/delete, and enter callbacks.
+    - `ui_textarea`: Multiline text editor with word wrap, vertical scrolling, cursor positioning, and selection.
+  - **Advanced Controls**:
+    - `ui_listbox`: Scrollable item lists with item selection callbacks.
+    - `ui_scrollbar`: Standalone vertical and horizontal scrollbars.
+    - `ui_tab_control`: Multi-page notebook tab container.
+    - `ui_menubar`: Application menubars with dropdown menus and keyboard accelerators.
+    - `ui_dialog`: Modal message boxes and confirmation dialogs.
+
+- **Desktop Applications & Showcases**:
+  - **`uidemo` (`userland/uidemo.c`)**: Comprehensive demonstration application showcasing all `libui` widgets across multiple tabbed views (buttons, textboxes, textareas, checkboxes, radio groups, listboxes, progress bars, and dialogs).
+  - **`winhello` (`userland/winhello.c`)**: Basic window system client demonstrating protocol handshakes, buffer attachment, damage reporting, and event handling.
+  - **`term` (`userland/term.c`)**: Graphical terminal emulator running atop `libwin` and PTYs (`forkpty`), featuring VT100 / ANSI escape sequence parsing, xterm-256color support, smooth scrolling, and shell session integration (`/bin/sh`).
+  - **`files` (`userland/files.c`)**: Graphical file manager featuring directory navigation, path breadcrumbs, VFAT LFN directory listings, item counters, status bar, and file deletion.
+
+- **Automated Verification Suites (`tools/test_step*.py`)**:
+  - `tools/test_step1.py`: Protocol handshake, buffer attachments, damage reporting, and `winhello` rendering verification.
+  - `tools/test_step2.py`: Server-side decorations, mouse dragging, resizing, focus restacking, and `wmctl` actions.
+  - `tools/test_step3.py`: Complete `libui` widget suite validation and `uidemo` interactions.
+  - `tools/test_step4.py`: Graphical terminal emulator (`term`) VT100 escape code rendering, PTY input echo, and 256-color palette verification.
+  - `tools/test_step5a.py`: Graphical file manager (`files`) directory navigation, LFN rendering, and file operations.
+
+---
+
+## Stage 19 (done): AI-Native OS Core — First-Class Kernel Agents
+
+Stage 19 introduces Phase 1 of an AI-Native Operating System: transforming AI and autonomous tasks into first-class kernel objects with hardware-enforced boundaries, default-deny capability allowlists, resource budgets, and cryptographic audit trails.
+
+- **Kernel Agent Subsystem (`src/agent.h`, `src/agent.c`)**:
+  - `agent_t` structure tracking `id`, `name`, `owner_pid`, `parent_agent_id`, `state` (`RUNNING`, `SUSPENDED`, `KILLED`), capability set, resource budgets, and consumption counters.
+  - Global agent table of up to 32 concurrent agent contexts synchronized via non-spinning sleeping mutex (`kmutex_t`).
+  - Process binding: `process_t.agent_id` links processes to agents. Children inherit agent bindings on `fork()`; bindings are strictly preserved across `execve()`. Non-agent processes (`agent_id = 0`) execute unconfined with zero overhead.
+- **Default-Deny Capability Model**:
+  - Bitmask permissions (`CAP_FS_READ`, `CAP_FS_WRITE`, `CAP_EXEC`, `CAP_SOCKET_CONNECT`, `CAP_WINDOW`, `CAP_SPAWN`, `CAP_NET_PROXY`).
+  - Canonical path-prefix allowlists (`fs_read`, `fs_write`, `exec`, `connect`) evaluated against process working directories via `vfs_path_canonical()`.
+  - Enforced directly within kernel system calls: `open`, `unlink`, `rename`, `mkdir`, `rmdir`, `execve`, `connect`, `fork`. Every violation returns `-EACCES`, triggers an audit log event, and is logged to serial (`kprintf`).
+  - Strict delegation narrowing: sub-agents can only be delegated a subset of the parent agent's capability bitmask and path prefixes; privilege widening is mathematically blocked and denied.
+- **Resource Budgets & Automatic Suspension**:
+  - Per-agent budgets: `max_cpu_ticks`, `max_mem_pages`, `max_procs`, `max_tokens`.
+  - Dynamic charging: PIT timer interrupt charges CPU ticks. Upon budget exhaustion, the agent transitions to `AGENT_STATE_SUSPENDED`, descheduling its processes while leaving the shell and desktop interactive.
+  - Fork storm prevention: `fork()` checks `max_procs` and fails with `-EAGAIN` once the limit is reached.
+- **Cryptographic Tamper-Evident Audit Trail**:
+  - 64KB kernel ring buffer holding up to 256 structured audit entries (`seq`, `agent_id`, `tick`, `wall_time`, `event_type`, `detail`).
+  - Cryptographic hash chaining: in-kernel FIPS 180-2 SHA-256 implementation (`src/sha256.c`, `src/sha256.h`) computes $\text{hash}_n = \text{SHA-256}(\text{hash}_{n-1} \parallel \text{payload}_n)$.
+  - Exposed via virtual filesystem at `/proc/agents/log`, `/proc/agents/<id>/{status,caps,budget}`, and `/proc/agents`.
+- **System Calls & Userland Tooling**:
+  - New system calls: `SYS_AGENT_CREATE` (170), `SYS_AGENT_ATTACH` (171), `SYS_AGENT_KILL` (172), `SYS_AGENT_SUSPEND` (173), `SYS_AGENT_RESUME` (174), `SYS_AGENT_INFO` (175). Wrappers in `libmyos.a` (`libmyos/posix.c`, `libmyos/include/agent.h`).
+  - Management CLI `agentctl` (`userland/agentctl.c`): `create`, `list`, `log [-f]`, `kill`, `suspend`, `resume`, `run`.
+  - Comprehensive automated test suite `agenttest` (`userland/agenttest.c`): validates capability allowlists, delegation narrowing, CPU limits, fork storm limits, SHA-256 chain verification, and zero physical frame leaks.
+
+---
+
+## Stage 20 (done): AI-Native OS Phase 2 — The Intent Bus
+
+Stage 20 introduces Phase 2 of an AI-Native Operating System: the **Intent Bus**, providing secure, authenticated inter-agent skill registration and invocation over Unix domain sockets (`/run/intent.sock`) with kernel peer authentication, fine-grained capability checks, schema validation, sensitive skill approvals, and privacy-preserving audit logging.
+
+- **Bus Daemon (`intentd`, `userland/intentd.c`)**:
+  - Event-driven, single-threaded `poll()` daemon listening on `/run/intent.sock`, launched as `respawn` in `/etc/init.conf`.
+  - Privileged registration via `SYS_BUS_DAEMON_REGISTER` (177) restricted to the init process tree.
+  - In-kernel audit logging via `SYS_AUDIT_APPEND` (178) appending `BUS_REGISTER`, `BUS_CALL`, `BUS_DENIED`, and `BUS_APPROVAL` directly into the SHA-256 tamper-evident hash chain.
+  - Per-caller rate limiting (50 calls/sec) and in-flight concurrency caps (max 8) preventing bus exhaustion or starvation.
+  - Bounded 5s provider timeouts and instant mid-call cleanup on provider termination without hung callers.
+- **Kernel Peer Authentication (`SYS_SOCK_PEERINFO`)**:
+  - `SYS_SOCK_PEERINFO` (176) captures immutable `{pid, agent_id}` at `connect()`/`accept()` time, eliminating caller spoofing or body impersonation attacks.
+- **Bus Capabilities (`CAP_BUS_CALL`, `CAP_BUS_PROVIDE`)**:
+  - Fine-grained prefix allowlists (`fs.`, `sys.`) stored in `agent_caps_t` and exposed in `/proc/agents/<id>/caps`.
+  - Narrowing rules enforced on agent delegation; managed via `agentctl create --bus-call <pfx> --bus-provide <pfx>`.
+- **Wire Protocol & Lightweight JSON Engine (`libjson`, `userland/libjson/`)**:
+  - 12-byte binary framing header `{len, type, flags, call_id}` with strict UTF-8 JSON bodies.
+  - Small, zero-malloc-in-hot-path JSON parser and serializer with bounded recursion depth (<= 16) and JSON Schema type validation.
+- **Client Libraries & Language Bindings (`libintent`, `userland/libintent/`)**:
+  - C client library: `intent_connect`, `intent_register_skill`, `intent_serve`, `intent_call`, `intent_list_skills`, `intent_list_approvals`, `intent_resolve_approval`.
+  - Lua 5.4 module binding (`lua_intent.c`): `intent.register()`, `intent.call()`, `intent.serve()`, `intent.list()`.
+- **Management CLI & Demo Skills (`intentctl`, `demoskills`)**:
+  - `intentctl`: `list`, `call <skill> '<args>'`, `approvals`, `approve <id>`, `deny <id>`, `stats`.
+  - Demo skills: `fs.list`, `fs.read` (confined to `/home`), `sys.meminfo`, and sensitive `fs.delete` (confined to `/home/out`).
+- **Comprehensive Verification Suite (`intenttest`)**:
+  - Automated test suite validating round-trip invocation, schema rejection, malformed fuzzing resilience, capability denial, confused deputy defense against kernel sandbox, approval workflow, crash handling, rate limits, audit hash chain verification, and zero frame/fd leaks over 200 cycles.
+
+---
+
+## Complete System Call Reference
+
+MyOS implements a POSIX-compatible system call interface invoked via `int 0x80`:
+
+| Syscall | Number | Signature / Description |
+|---|---|---|
+| `SYS_RESTART` | 0 | Internal syscall restart |
+| `SYS_EXIT` | 1 | `void exit(int status)` -- terminate calling process |
+| `SYS_FORK` | 2 | `pid_t fork(void)` -- clone address space with Copy-On-Write |
+| `SYS_READ` | 3 | `ssize_t read(int fd, void *buf, size_t count)` |
+| `SYS_WRITE` | 4 | `ssize_t write(int fd, const void *buf, size_t count)` |
+| `SYS_OPEN` | 5 | `int open(const char *pathname, int flags, mode_t mode)` |
+| `SYS_CLOSE` | 6 | `int close(int fd)` |
+| `SYS_WAITPID` | 7 | `pid_t waitpid(pid_t pid, int *status, int options)` |
+| `SYS_CREAT` | 8 | `int creat(const char *pathname, mode_t mode)` |
+| `SYS_LINK` | 9 | `int link(const char *oldpath, const char *newpath)` |
+| `SYS_UNLINK` | 10 | `int unlink(const char *pathname)` |
+| `SYS_EXECVE` | 11 | `int execve(const char *pathname, char *const argv[], char *const envp[])` |
+| `SYS_CHDIR` | 12 | `int chdir(const char *path)` |
+| `SYS_TIME` | 13 | `time_t time(time_t *tloc)` |
+| `SYS_LSEEK` | 19 | `off_t lseek(int fd, off_t offset, int whence)` |
+| `SYS_GETPID` | 20 | `pid_t getpid(void)` |
+| `SYS_SETUID` | 23 | `int setuid(uid_t uid)` |
+| `SYS_GETUID` | 24 | `uid_t getuid(void)` |
+| `SYS_PIPE` | 29 | `int pipe(int pipefd[2])` |
+| `SYS_MMAP` | 30 | `void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)` |
+| `SYS_MUNMAP` | 31 | `int munmap(void *addr, size_t length)` |
+| `SYS_MPROTECT` | 32 | `int mprotect(void *addr, size_t len, int prot)` |
+| `SYS_DUP` | 33 | `int dup(int oldfd)` |
+| `SYS_DUP2` | 34 | `int dup2(int oldfd, int newfd)` |
+| `SYS_FCNTL` | 35 | `int fcntl(int fd, int cmd, ...)` |
+| `SYS_NANOSLEEP` | 36 | `int nanosleep(const struct timespec *req, struct timespec *rem)` |
+| `SYS_CLOCK_GETTIME`| 37 | `int clock_gettime(clockid_t clk_id, struct timespec *tp)` |
+| `SYS_SIGACTION` | 38 | `int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact)` |
+| `SYS_SIGPROCMASK` | 39 | `int sigprocmask(int how, const sigset_t *set, sigset_t *oldset)` |
+| `SYS_SIGRETURN` | 40 | `int sigreturn(void)` -- return from userspace signal trampoline |
+| `SYS_KILL` | 41 | `int kill(pid_t pid, int sig)` |
+| `SYS_ALARM` | 42 | `unsigned int alarm(unsigned int seconds)` |
+| `SYS_PAUSE` | 43 | `int pause(void)` -- wait for signal interrupt |
+| `SYS_SETPGID` | 44 | `int setpgid(pid_t pid, pid_t pgid)` |
+| `SYS_GETPGRP` | 45 | `pid_t getpgrp(void)` |
+| `SYS_SETSID` | 46 | `pid_t setsid(void)` |
+| `SYS_SOCKET` | 47 | `int socket(int domain, int type, int protocol)` |
+| `SYS_BIND` | 48 | `int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)` |
+| `SYS_LISTEN` | 49 | `int listen(int sockfd, int backlog)` |
+| `SYS_ACCEPT` | 50 | `int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)` |
+| `SYS_CONNECT` | 51 | `int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)` |
+| `SYS_SHUTDOWN` | 52 | `int shutdown(int sockfd, int how)` |
+| `SYS_REBOOT` | 53 | `int reboot(int cmd)` -- poweroff, reboot, or halt with dirty cache sync |
+| `SYS_TRUNCATE` | 54 | `int truncate(const char *path, off_t length)` |
+| `SYS_FTRUNCATE` | 55 | `int ftruncate(int fd, off_t length)` |
+| `SYS_IOCTL` | 56 | `int ioctl(int fd, unsigned long request, ...)` |
+| `SYS_POLL` | 57 | `int poll(struct pollfd *fds, nfds_t nfds, int timeout)` |
+| `SYS_SBRK` | 69 | `void *sbrk(intptr_t increment)` -- dynamic heap expansion |
+| `SYS_GETDENTS` | 78 | `int getdents(unsigned int fd, struct dirent *dirp, unsigned int count)` |
+| `SYS_STAT` | 106 | `int stat(const char *pathname, struct stat *statbuf)` |
+| `SYS_FSTAT` | 108 | `int fstat(int fd, struct stat *statbuf)` |
+| `SYS_AGENT_CREATE` | 170 | `int agent_create(const char *name, const agent_caps_t *caps, const agent_budget_t *budget)` |
+| `SYS_AGENT_ATTACH` | 171 | `int agent_attach(int agent_id)` -- bind calling process to agent |
+| `SYS_AGENT_KILL` | 172 | `int agent_kill(int agent_id)` -- kill agent and all its processes |
+| `SYS_AGENT_SUSPEND` | 173 | `int agent_suspend(int agent_id)` -- suspend agent execution |
+| `SYS_AGENT_RESUME` | 174 | `int agent_resume(int agent_id)` -- resume suspended agent |
+| `SYS_AGENT_INFO` | 175 | `int agent_info(int agent_id, agent_info_t *info)` -- query agent status and metrics |
+| `SYS_SOCK_PEERINFO`| 176 | `int sock_peerinfo(int fd, peerinfo_t *pinfo)` -- get peer pid and agent_id |
+| `SYS_BUS_DAEMON_REGISTER`| 177 | `int bus_daemon_register(void)` -- register caller as privileged bus daemon |
+| `SYS_AUDIT_APPEND` | 178 | `int audit_append(int agent_id, uint32_t event_type, const char *detail)` |
+
+---
+
+## Verification Test Matrix
+
+MyOS includes an automated test matrix executed via QEMU serial automation and monitor sockets:
+
+| Suite / Session | Coverage | Key Assertions |
+|---|---|---|
+| **Session 1** | Boot, Shell, VFS, Core Utils | Command parsing, path resolution, `mkdir`, `cp`, `mv`, `rm`, `ls -l`, `fstest`, `lfntest`. |
+| **Session 2** | Filesystem Persistence | Data written in Session 1 survives across QEMU reboot on the identical disk image. |
+| **Session 3** | Pipes, Redirection, Pipelines | `cat \| grep \| wc`, multi-stage pipelines, `<` and `>`, background `&` execution. |
+| **Session 4** | Host FAT Integrity Check | Host-side `dosfsck` / `fsck.fat -v` asserts zero cluster leaks or directory corruption. |
+| **Session 5** | Low-Memory Boot (`-m 64`) | System boots and runs userspace successfully under constrained 64MB physical RAM. |
+| **Session 6** | TTY & Signal Job Control | Interactive `Ctrl+C`, `Ctrl+Z`, `Ctrl+\`, `fg`, `bg`, `jobs`, `SIGTTIN`/`SIGTTOU` stopping. |
+| **Session 7** | RTC Time, ProcFS & Wait Queues | CMOS UTC clock, non-busy `sleep`, `/proc` file enumeration, zero physical frame leaks. |
+| **Session 8** | Newlib Libc & Lua 5.4 Runtime | Full `libctest` (stdio, math, malloc stress, setjmp), Lua scripts, table allocations. |
+| **Session 9** | Framebuffer `/dev/fb0` & Input | Direct framebuffer `mmap()`, PS/2 mouse wheel stream, `/dev/input/*` events. |
+| **Session 10** | Non-blocking I/O & Multiplexing | `poll()`, `select()`, `O_NONBLOCK` on pipes/TTYs, libc flag translation test. |
+| **Session 10B** | Preemption Spinner Concurrency | 4 concurrent processes doing heavy disk operations alongside CPU spinners; `fsck.fat` clean. |
+| **Session 11** | Graphical Demos & Crash Safety | `gfxdemo`, `paint`, `view`, `screenshot`, crash recovery from `KD_GRAPHICS` to `KD_TEXT`. |
+| **Session 12** | QEMU Monitor Pixel Verification | Screendump framebuffer capture, RGB channel validation, synthetic input injection. |
+| **Session 13** | Dirty Buffer Poweroff & Reboot | Poweroff and reboot flushing dirty ATA sectors before shutdown; zero corruption. |
+| **Session 15** | Model-Based LFN Fuzzing | 500 pseudo-random filesystem operations; host `fsck.fat -v -a` and `mdir` validation. |
+| **Session 16** | Kernel Agents & Security Subsystem | Default-deny caps, delegation narrowing, CPU/proc budgets, SHA-256 audit chain, zero frame leaks, `-m 64` boot. |
+| **Session 17** | Intent Bus & Agent Skills | Daemon (`intentd`), `libjson`, `libintent`, peer identity, demo skills, approvals, `intentctl`, `-m 64` boot. |
+| **Step 1** | Window Protocol & `libwin` | AF_UNIX handshake, shared memory buffer attachments, damage reporting, `winhello`. |
+| **Step 2** | Window Decorations & `wmctl` | Server-side titlebars, dragging, resizing, focus restacking, `wmctl` control commands. |
+| **Step 3** | `libui` Widget Toolkit & `uidemo` | Complete widget tree validation (buttons, textboxes, textareas, listboxes, menus, dialogs). |
+| **Step 4** | Graphical Terminal Emulator (`term`)| PTY VT100 / xterm-256color rendering, smooth scrolling, and shell integration. |
+| **Step 5a** | Graphical File Manager (`files`) | Directory breadcrumb navigation, LFN rendering, item counters, and file operations. |
+
+---
+
 ## Notes on the toolchain choices made here
 
 - **Multiboot2 + GRUB** instead of a hand-rolled bootloader: lets us skip
@@ -910,4 +1385,5 @@ Stage 13 introduces a Virtual File System (VFS) abstraction layer, a full write-
   complexity to front-load. Getting comfortable in protected mode first,
   then transitioning to long mode once paging is understood, is the more
   common learning path.
+
 
