@@ -8,6 +8,7 @@
 #include "errno.h"
 
 #include "socket.h"
+#include "agent.h"
 
 static vnode_t proc_root_vnode;
 static vnode_t proc_meminfo_vnode;
@@ -27,6 +28,13 @@ static vnode_t proc_dir_vnodes[MAX_PROCESSES];
 static vnode_t proc_status_vnodes[MAX_PROCESSES];
 static vnode_t proc_cmdline_vnodes[MAX_PROCESSES];
 static vnode_t proc_fd_dir_vnodes[MAX_PROCESSES];
+
+static vnode_t proc_agents_dir_vnode;
+static vnode_t proc_agents_log_vnode;
+static vnode_t proc_agent_dir_vnodes[MAX_AGENTS];
+static vnode_t proc_agent_status_vnodes[MAX_AGENTS];
+static vnode_t proc_agent_caps_vnodes[MAX_AGENTS];
+static vnode_t proc_agent_budget_vnodes[MAX_AGENTS];
 
 /* String formatting utilities */
 static void append_char(char* buf, int* pos, int max, char c) {
@@ -670,6 +678,273 @@ static const struct fs_ops proc_pid_dir_ops = {
     .stat = procfs_dir_stat
 };
 
+/* /proc/agents/log read */
+static int proc_agents_log_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    return agent_audit_read(offset, buf, count);
+}
+
+static const struct fs_ops agents_log_ops = {
+    .read = proc_agents_log_read,
+    .stat = procfs_file_stat
+};
+
+/* /proc/agents/<id>/status read */
+static int proc_agent_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    int slot = (int)(uintptr_t)vn->fs_data;
+    agent_info_t info;
+    if (agent_get_info(slot + 1, &info) != 0) return -ENOENT;
+
+    char text[512];
+    int pos = 0;
+    const char* st_str = "UNUSED";
+    if (info.state == AGENT_STATE_RUNNING) st_str = "RUNNING";
+    else if (info.state == AGENT_STATE_SUSPENDED) st_str = "SUSPENDED";
+    else if (info.state == AGENT_STATE_KILLED) st_str = "KILLED";
+
+    append_str(text, &pos, sizeof(text), "Id:\t");
+    append_uint(text, &pos, sizeof(text), (uint32_t)info.id);
+    append_str(text, &pos, sizeof(text), "\nName:\t");
+    append_str(text, &pos, sizeof(text), info.name);
+    append_str(text, &pos, sizeof(text), "\nState:\t");
+    append_str(text, &pos, sizeof(text), st_str);
+    append_str(text, &pos, sizeof(text), "\nOwnerPid:\t");
+    append_int(text, &pos, sizeof(text), info.owner_pid);
+    append_str(text, &pos, sizeof(text), "\nParentId:\t");
+    append_int(text, &pos, sizeof(text), info.parent_agent_id);
+    append_str(text, &pos, sizeof(text), "\nProcs:\t");
+    append_uint(text, &pos, sizeof(text), info.usage.procs_count);
+    append_str(text, &pos, sizeof(text), "\nCpuTicks:\t");
+    append_uint(text, &pos, sizeof(text), info.usage.cpu_ticks);
+    append_str(text, &pos, sizeof(text), "\nMemPages:\t");
+    append_uint(text, &pos, sizeof(text), info.usage.mem_pages);
+    append_str(text, &pos, sizeof(text), "\nTokens:\t");
+    append_uint(text, &pos, sizeof(text), info.usage.tokens_used);
+    append_str(text, &pos, sizeof(text), "\n");
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops agent_status_ops = {
+    .read = proc_agent_status_read,
+    .stat = procfs_file_stat
+};
+
+/* /proc/agents/<id>/caps read */
+static int proc_agent_caps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    int slot = (int)(uintptr_t)vn->fs_data;
+    agent_info_t info;
+    if (agent_get_info(slot + 1, &info) != 0) return -ENOENT;
+
+    char text[1024];
+    int pos = 0;
+    append_str(text, &pos, sizeof(text), "Mask:\t0x");
+    append_hex(text, &pos, sizeof(text), info.caps.mask, 8);
+    append_str(text, &pos, sizeof(text), "\nFsRead:\t");
+    for (uint32_t i = 0; i < info.caps.num_fs_read && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(text, &pos, sizeof(text), ',');
+        append_str(text, &pos, sizeof(text), info.caps.fs_read[i].prefix);
+    }
+    append_str(text, &pos, sizeof(text), "\nFsWrite:\t");
+    for (uint32_t i = 0; i < info.caps.num_fs_write && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(text, &pos, sizeof(text), ',');
+        append_str(text, &pos, sizeof(text), info.caps.fs_write[i].prefix);
+    }
+    append_str(text, &pos, sizeof(text), "\nExec:\t");
+    for (uint32_t i = 0; i < info.caps.num_exec && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(text, &pos, sizeof(text), ',');
+        append_str(text, &pos, sizeof(text), info.caps.exec[i].prefix);
+    }
+    append_str(text, &pos, sizeof(text), "\nConnect:\t");
+    for (uint32_t i = 0; i < info.caps.num_connect && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(text, &pos, sizeof(text), ',');
+        append_str(text, &pos, sizeof(text), info.caps.connect[i].prefix);
+    }
+    append_str(text, &pos, sizeof(text), "\nBusCall:\t");
+    for (uint32_t i = 0; i < info.caps.num_bus_call && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(text, &pos, sizeof(text), ',');
+        append_str(text, &pos, sizeof(text), info.caps.bus_call[i].prefix);
+    }
+    append_str(text, &pos, sizeof(text), "\nBusProvide:\t");
+    for (uint32_t i = 0; i < info.caps.num_bus_provide && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(text, &pos, sizeof(text), ',');
+        append_str(text, &pos, sizeof(text), info.caps.bus_provide[i].prefix);
+    }
+    append_str(text, &pos, sizeof(text), "\n");
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops agent_caps_ops = {
+    .read = proc_agent_caps_read,
+    .stat = procfs_file_stat
+};
+
+/* /proc/agents/<id>/budget read */
+static int proc_agent_budget_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    int slot = (int)(uintptr_t)vn->fs_data;
+    agent_info_t info;
+    if (agent_get_info(slot + 1, &info) != 0) return -ENOENT;
+
+    char text[512];
+    int pos = 0;
+    append_str(text, &pos, sizeof(text), "MaxCpuTicks:\t");
+    append_uint(text, &pos, sizeof(text), info.budget.max_cpu_ticks);
+    append_str(text, &pos, sizeof(text), "\nMaxMemPages:\t");
+    append_uint(text, &pos, sizeof(text), info.budget.max_mem_pages);
+    append_str(text, &pos, sizeof(text), "\nMaxProcs:\t");
+    append_uint(text, &pos, sizeof(text), info.budget.max_procs);
+    append_str(text, &pos, sizeof(text), "\nMaxTokens:\t");
+    append_uint(text, &pos, sizeof(text), info.budget.max_tokens);
+    append_str(text, &pos, sizeof(text), "\n");
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops agent_budget_ops = {
+    .read = proc_agent_budget_read,
+    .stat = procfs_file_stat
+};
+
+/* /proc/agents/<id> directory ops */
+static int proc_agent_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    int slot = (int)(uintptr_t)dir->fs_data;
+    if (streq(name, ".")) {
+        *out = dir;
+        vnode_ref(dir);
+        return 0;
+    }
+    if (streq(name, "..")) {
+        *out = &proc_agents_dir_vnode;
+        vnode_ref(&proc_agents_dir_vnode);
+        return 0;
+    }
+    if (streq(name, "status")) {
+        *out = &proc_agent_status_vnodes[slot];
+        vnode_ref(&proc_agent_status_vnodes[slot]);
+        return 0;
+    }
+    if (streq(name, "caps")) {
+        *out = &proc_agent_caps_vnodes[slot];
+        vnode_ref(&proc_agent_caps_vnodes[slot]);
+        return 0;
+    }
+    if (streq(name, "budget")) {
+        *out = &proc_agent_budget_vnodes[slot];
+        vnode_ref(&proc_agent_budget_vnodes[slot]);
+        return 0;
+    }
+    return -ENOENT;
+}
+
+static int proc_agent_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+    if (index == 2) {
+        entry->d_ino = 3; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "status");
+        return 1;
+    }
+    if (index == 3) {
+        entry->d_ino = 4; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "caps");
+        return 1;
+    }
+    if (index == 4) {
+        entry->d_ino = 5; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "budget");
+        return 1;
+    }
+    return 0;
+}
+
+static const struct fs_ops proc_agent_dir_ops = {
+    .lookup = proc_agent_dir_lookup,
+    .readdir = proc_agent_dir_readdir,
+    .stat = procfs_dir_stat
+};
+
+/* /proc/agents directory ops */
+static int proc_agents_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    if (streq(name, ".")) {
+        *out = dir;
+        vnode_ref(dir);
+        return 0;
+    }
+    if (streq(name, "..")) {
+        *out = &proc_root_vnode;
+        vnode_ref(&proc_root_vnode);
+        return 0;
+    }
+    if (streq(name, "log")) {
+        *out = &proc_agents_log_vnode;
+        vnode_ref(&proc_agents_log_vnode);
+        return 0;
+    }
+    if (is_all_digits(name)) {
+        int id = parse_int(name);
+        agent_t* ag = agent_get_by_id(id);
+        if (ag) {
+            *out = &proc_agent_dir_vnodes[id - 1];
+            vnode_ref(&proc_agent_dir_vnodes[id - 1]);
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+static int proc_agents_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+    if (index == 2) {
+        entry->d_ino = 3; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "log");
+        return 1;
+    }
+
+    uint32_t target_idx = index - 3;
+    uint32_t active_count = 0;
+    for (int i = 1; i <= MAX_AGENTS; i++) {
+        agent_t* ag = agent_get_by_id(i);
+        if (ag) {
+            if (active_count == target_idx) {
+                entry->d_ino = 500 + i;
+                entry->d_type = 2; /* directory */
+                entry->d_size = 0;
+                int pos = 0;
+                append_uint(entry->d_name, &pos, sizeof(entry->d_name), (uint32_t)i);
+                return 1;
+            }
+            active_count++;
+        }
+    }
+    return 0;
+}
+
+static const struct fs_ops proc_agents_dir_ops = {
+    .lookup = proc_agents_dir_lookup,
+    .readdir = proc_agents_dir_readdir,
+    .stat = procfs_dir_stat
+};
+
 /* /proc root directory operations */
 static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (streq(name, ".") || streq(name, "..")) {
@@ -715,6 +990,11 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (streq(name, "cmdline")) {
         *out = &proc_global_cmdline_vnode;
         vnode_ref(&proc_global_cmdline_vnode);
+        return 0;
+    }
+    if (streq(name, "agents")) {
+        *out = &proc_agents_dir_vnode;
+        vnode_ref(&proc_agents_dir_vnode);
         return 0;
     }
     if (is_all_digits(name)) {
@@ -783,9 +1063,14 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "cmdline");
         return 1;
     }
+    if (index == 10) {
+        entry->d_ino = 18; entry->d_type = 2; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "agents");
+        return 1;
+    }
 
-    /* index >= 10 corresponds to active processes */
-    uint32_t target_idx = index - 10;
+    /* index >= 11 corresponds to active processes */
+    uint32_t target_idx = index - 11;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -931,6 +1216,50 @@ void procfs_init(void) {
         proc_fd_dir_vnodes[i].ops = &proc_fd_dir_ops;
         proc_fd_dir_vnodes[i].refcount = 1000;
         proc_fd_dir_vnodes[i].parent = &proc_dir_vnodes[i];
+    }
+
+    proc_agents_dir_vnode.type = VNODE_DIR;
+    proc_agents_dir_vnode.size = 0;
+    proc_agents_dir_vnode.fs_data = 0;
+    proc_agents_dir_vnode.ops = &proc_agents_dir_ops;
+    proc_agents_dir_vnode.refcount = 1000;
+    proc_agents_dir_vnode.parent = &proc_root_vnode;
+
+    proc_agents_log_vnode.type = VNODE_FILE;
+    proc_agents_log_vnode.size = 0;
+    proc_agents_log_vnode.fs_data = 0;
+    proc_agents_log_vnode.ops = &agents_log_ops;
+    proc_agents_log_vnode.refcount = 1000;
+    proc_agents_log_vnode.parent = &proc_agents_dir_vnode;
+
+    for (int i = 0; i < MAX_AGENTS; i++) {
+        proc_agent_dir_vnodes[i].type = VNODE_DIR;
+        proc_agent_dir_vnodes[i].size = 0;
+        proc_agent_dir_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_agent_dir_vnodes[i].ops = &proc_agent_dir_ops;
+        proc_agent_dir_vnodes[i].refcount = 1000;
+        proc_agent_dir_vnodes[i].parent = &proc_agents_dir_vnode;
+
+        proc_agent_status_vnodes[i].type = VNODE_FILE;
+        proc_agent_status_vnodes[i].size = 0;
+        proc_agent_status_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_agent_status_vnodes[i].ops = &agent_status_ops;
+        proc_agent_status_vnodes[i].refcount = 1000;
+        proc_agent_status_vnodes[i].parent = &proc_agent_dir_vnodes[i];
+
+        proc_agent_caps_vnodes[i].type = VNODE_FILE;
+        proc_agent_caps_vnodes[i].size = 0;
+        proc_agent_caps_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_agent_caps_vnodes[i].ops = &agent_caps_ops;
+        proc_agent_caps_vnodes[i].refcount = 1000;
+        proc_agent_caps_vnodes[i].parent = &proc_agent_dir_vnodes[i];
+
+        proc_agent_budget_vnodes[i].type = VNODE_FILE;
+        proc_agent_budget_vnodes[i].size = 0;
+        proc_agent_budget_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_agent_budget_vnodes[i].ops = &agent_budget_ops;
+        proc_agent_budget_vnodes[i].refcount = 1000;
+        proc_agent_budget_vnodes[i].parent = &proc_agent_dir_vnodes[i];
     }
 }
 
