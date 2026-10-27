@@ -8,6 +8,8 @@
 #include "tty.h"
 #include "fpu.h"
 #include "console.h"
+#include "signal.h"
+#include "agent.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -31,7 +33,14 @@ static process_t* pick_next_from(int idx) {
         int candidate = (idx + step) % MAX_PROCESSES;
         if (candidate == 0) continue;
         process_t* p = process_table_entry(candidate);
-        if (p && p->state == PROC_READY && !p->is_stopped) return p;
+        if (p && p->state == PROC_READY && !p->is_stopped) {
+            if (p->agent_id > 0 && !agent_is_runnable(p->agent_id)) {
+                if (!(p->sig_pending & (sigmask(SIGKILL) | sigmask(SIGTERM)))) {
+                    continue;
+                }
+            }
+            return p;
+        }
     }
     process_t* p0 = process_table_entry(0);
     if (p0 && p0->state == PROC_READY) return p0;
@@ -111,6 +120,13 @@ void scheduler_tick(void) {
         }
     }
 
+    if (current && current->agent_id > 0 && !agent_is_runnable(current->agent_id)) {
+        if (!(current->sig_pending & (sigmask(SIGKILL) | sigmask(SIGTERM)))) {
+            scheduler_yield();
+            return;
+        }
+    }
+
     int slice = time_slice_for(current);
     if (++tick_counter < (uint32_t)slice) return;
     tick_counter = 0;
@@ -169,6 +185,11 @@ void scheduler_exit_current(int exit_status) {
     if (!p->is_kernel_task && p->as.directory) {
         vmm_destroy_address_space(&p->as);
         p->as.directory = 0;
+    }
+
+    if (p->agent_id > 0) {
+        agent_proc_exited(p->agent_id);
+        p->agent_id = 0;
     }
 
     p->exit_code = exit_status;
