@@ -27,6 +27,8 @@ BASE_FLAGS=(
     -isystem "$ROOT_DIR/userland/libui"
     -isystem "$ROOT_DIR/userland/libwin"
     -isystem "$ROOT_DIR/userland/libgfx"
+    -isystem "$ROOT_DIR/userland/libintent"
+    -isystem "$ROOT_DIR/userland/libjson"
     -isystem "$LIBMYOS_INC"
     -isystem "$SYSROOT/include"
 )
@@ -45,8 +47,10 @@ if [ "$IS_LINKING" -eq 1 ]; then
         -L"$ROOT_DIR/userland/libui" \
         -L"$ROOT_DIR/userland/libwin" \
         -L"$ROOT_DIR/userland/libgfx" \
+        -L"$ROOT_DIR/userland/libintent" \
+        -L"$ROOT_DIR/userland/libjson" \
         -L"$SYSROOT/lib" \
-        -Wl,--start-group -lui -lwin -lgfx -lmyos -lc -lm -Wl,--end-group -lgcc
+        -Wl,--start-group -lintent -ljson -lui -lwin -lgfx -lmyos -lc -lm -Wl,--end-group -lgcc
 else
     exec "$CC" "${BASE_FLAGS[@]}" "$@"
 fi
