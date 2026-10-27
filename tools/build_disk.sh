@@ -37,6 +37,7 @@ rm -f /tmp/myos_timezone
 echo "Setting up /etc/init.conf..."
 cat << 'EOF' > /tmp/myos_init_conf
 # /etc/init.conf - MyOS init configuration
+respawn /dev/null /bin/intentd.elf
 respawn /dev/console /bin/sh.elf
 EOF
 mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
