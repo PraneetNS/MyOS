@@ -20,6 +20,11 @@
 #define CAP_BUS_CALL        (1 << 7)
 #define CAP_BUS_PROVIDE     (1 << 8)
 
+/* Model backend capability flags */
+#define MODEL_BACKEND_LOCAL  (1 << 0)
+#define MODEL_BACKEND_HOST   (1 << 1)
+#define MODEL_BACKEND_ALL    (MODEL_BACKEND_LOCAL | MODEL_BACKEND_HOST)
+
 /* Agent states */
 typedef enum {
     AGENT_STATE_UNUSED = 0,
@@ -60,6 +65,7 @@ typedef struct {
     agent_path_rule_t bus_call[MAX_PATH_RULES];
     uint32_t num_bus_provide;
     agent_path_rule_t bus_provide[MAX_PATH_RULES];
+    uint32_t model_backends; /* Bitmask of allowed backends: 0 = MODEL_BACKEND_ALL */
 } agent_caps_t;
 
 typedef struct {
@@ -150,6 +156,10 @@ const char* agent_event_name(uint32_t event_type);
 
 int agent_bus_daemon_register(struct process* p);
 int agent_is_bus_daemon(struct process* p);
+int agent_model_daemon_register(struct process* p);
+int agent_is_model_daemon(struct process* p);
 int agent_audit_append(int agent_id, uint32_t event_type, const char* detail);
+int agent_charge_tokens(int agent_id, uint32_t tokens);
+int agent_tokens_left(int agent_id);
 
 #endif

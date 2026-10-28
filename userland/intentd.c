@@ -169,7 +169,7 @@ typedef struct {
     uint64_t timeout_ms;
     bool pending_approval;
     uint32_t approval_id;
-    char pending_body[4096];
+    char pending_body[INTENT_MAX_MSG_LEN];
     bool active;
 } call_slot_t;
 
@@ -494,8 +494,11 @@ static void handle_msg_list(int cslot, const struct intent_header* hdr) {
     json_buf_obj_key(&jb, "skills");
     json_buf_arr_start(&jb);
 
+    int first_sk = 1;
     for (int i = 0; i < MAX_SKILLS; i++) {
         if (s_skills[i].active) {
+            if (!first_sk) json_buf_append_raw(&jb, ",", 1);
+            first_sk = 0;
             json_buf_obj_start(&jb);
             json_buf_obj_key(&jb, "name");
             json_buf_append_str(&jb, s_skills[i].name);
@@ -631,7 +634,7 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
 
     /* Calculate SHA-256 of args */
     const char* raw_args = strstr(body, "\"args\":");
-    char args_body_str[2048];
+    static char args_body_str[INTENT_MAX_MSG_LEN];
     if (raw_args) {
         raw_args += 7;
         while (*raw_args == ' ') raw_args++;
@@ -675,7 +678,13 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
     memcpy(cs->args_hash_hex, hex_hash, 16);
     cs->args_hash_hex[16] = '\0';
     cs->start_ms = now;
-    cs->timeout_ms = INTENT_DEFAULT_TIMEOUT;
+    int req_timeout = 0;
+    if (json_obj_get_int(doc.root, "timeout", &req_timeout) == 0 && req_timeout > 0) {
+        if (req_timeout > 60000) req_timeout = 60000;
+        cs->timeout_ms = (uint64_t)req_timeout;
+    } else {
+        cs->timeout_ms = INTENT_DEFAULT_TIMEOUT;
+    }
     strncpy(cs->pending_body, args_body_str, sizeof(cs->pending_body) - 1);
     cs->active = true;
     cli->in_flight++;
@@ -776,8 +785,11 @@ static void handle_msg_list_approvals(int cslot, const struct intent_header* hdr
     json_buf_obj_key(&jb, "approvals");
     json_buf_arr_start(&jb);
 
+    int first_app = 1;
     for (int i = 0; i < MAX_APPROVALS; i++) {
         if (s_approvals[i].active) {
+            if (!first_app) json_buf_append_raw(&jb, ",", 1);
+            first_app = 0;
             json_buf_obj_start(&jb);
             json_buf_obj_key(&jb, "id");
             json_buf_append_int(&jb, s_approvals[i].id);

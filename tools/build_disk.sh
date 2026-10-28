@@ -4,9 +4,10 @@ export PATH="$HOME/.local/bin:$PATH"
 cd "$(dirname "$0")/.."
 
 IMAGE="disk.img"
-echo "Creating 64MB disk image..."
+DISK_SIZE_MB="${DISK_SIZE_MB:-128}"
+echo "Creating ${DISK_SIZE_MB}MB disk image..."
 rm -f "$IMAGE"
-dd if=/dev/zero of="$IMAGE" bs=1M count=64 status=none
+dd if=/dev/zero of="$IMAGE" bs=1M count="$DISK_SIZE_MB" status=none
 
 echo "Formatting disk image with FAT16..."
 mkfs.fat -F 16 -n "MYOS" "$IMAGE"
@@ -18,6 +19,7 @@ mmd -i "$IMAGE" "::/dev"
 mmd -i "$IMAGE" "::/etc"
 mmd -i "$IMAGE" "::/proc"
 mmd -i "$IMAGE" "::/home"
+mmd -i "$IMAGE" "::/home/out" || true
 mmd -i "$IMAGE" "::/sbin" || true
 mmd -i "$IMAGE" "::/dev/shm" || true
 mmd -i "$IMAGE" "::/run" || true
@@ -38,6 +40,7 @@ echo "Setting up /etc/init.conf..."
 cat << 'EOF' > /tmp/myos_init_conf
 # /etc/init.conf - MyOS init configuration
 respawn /dev/null /bin/intentd.elf
+respawn /dev/null /bin/modeld.elf
 respawn /dev/console /bin/sh.elf
 EOF
 mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
@@ -71,12 +74,23 @@ if [ -f "userland/init.elf" ]; then
 fi
 
 echo "Copying data files..."
+if [ ! -f "tools/stories.bin" ] || [ ! -f "tools/tokenizer.bin" ]; then
+    python3 tools/create_tiny_checkpoint.py tools/stories.bin tools/tokenizer.bin
+fi
+mcopy -i "$IMAGE" tools/stories.bin "::/share/stories.bin"
+mcopy -i "$IMAGE" tools/tokenizer.bin "::/share/tokenizer.bin"
+
 if [ -f "tools/hello.txt" ]; then
     mcopy -i "$IMAGE" tools/hello.txt "::/hello.txt"
 fi
 
 if [ -f "userland/demo.lua" ]; then
     mcopy -i "$IMAGE" userland/demo.lua "::/home/demo.lua"
+fi
+
+if [ -f "userland/lua/agent.lua" ]; then
+    mcopy -i "$IMAGE" userland/lua/agent.lua "::/home/agent.lua"
+    mcopy -i "$IMAGE" userland/lua/agent.lua "::/share/agent.lua"
 fi
 
 if [ -f "userland/alloc.lua" ]; then

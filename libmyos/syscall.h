@@ -83,6 +83,9 @@
 #define SYS_SOCK_PEERINFO        176
 #define SYS_BUS_DAEMON_REGISTER  177
 #define SYS_AUDIT_APPEND         178
+#define SYS_AGENT_CHARGE_TOKENS  179
+#define SYS_AGENT_TOKENS_LEFT    180
+#define SYS_MODEL_DAEMON_REGISTER 181
 
 static inline int __syscall0(int num) {
     int ret;

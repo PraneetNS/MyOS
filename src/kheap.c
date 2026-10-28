@@ -88,8 +88,8 @@ static block_header_t* kheap_expand(size_t size, block_header_t* last) {
 
 void kheap_init(void) {
     heap_head = 0;
-    /* Allocate initial chunk from direct map */
-    kheap_expand(KHEAP_CHUNK_MIN, 0);
+    /* Allocate initial chunk from direct map (512KB for kernel & init daemons) */
+    kheap_expand(2 * KHEAP_CHUNK_MIN, 0);
 
     terminal_writestring("[ok] Kernel heap initialized (dynamic, direct-map)\n");
 

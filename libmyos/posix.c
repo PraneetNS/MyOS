@@ -1108,4 +1108,19 @@ int audit_append(int agent_id, uint32_t event_type, const char* detail) {
     return __check_syscall_err(ret);
 }
 
+int agent_charge_tokens(int agent_id, uint32_t n) {
+    int ret = __syscall2(SYS_AGENT_CHARGE_TOKENS, (long)agent_id, (long)n);
+    return __check_syscall_err(ret);
+}
+
+int agent_tokens_left(int agent_id) {
+    int ret = __syscall1(SYS_AGENT_TOKENS_LEFT, (long)agent_id);
+    return __check_syscall_err(ret);
+}
+
+int model_daemon_register(void) {
+    int ret = __syscall0(SYS_MODEL_DAEMON_REGISTER);
+    return __check_syscall_err(ret);
+}
+
 

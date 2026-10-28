@@ -272,6 +272,16 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
                 return -EACCES;
             }
         }
+
+        /* Check model_backends narrowing */
+        uint32_t p_mb = parent->caps.model_backends ? parent->caps.model_backends : MODEL_BACKEND_ALL;
+        uint32_t c_mb = caps->model_backends ? caps->model_backends : p_mb;
+        if ((c_mb & ~p_mb) != 0) {
+            kmutex_unlock(&s_agent_lock);
+            agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: model_backends widening attempted");
+            kprintf("[agent %d] DENIED: model_backends widening attempted\n", parent_agent_id);
+            return -EACCES;
+        }
     }
 
     int slot = -1;
@@ -296,6 +306,14 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
     ag->parent_agent_id = parent_agent_id;
     ag->state = AGENT_STATE_RUNNING;
     ag->caps = *caps;
+    if (ag->caps.model_backends == 0) {
+        if (parent_agent_id > 0) {
+            agent_t* parent = agent_get_by_id(parent_agent_id);
+            ag->caps.model_backends = parent ? parent->caps.model_backends : MODEL_BACKEND_ALL;
+        } else {
+            ag->caps.model_backends = MODEL_BACKEND_ALL;
+        }
+    }
     ag->budget = *budget;
     ag->usage.cpu_ticks = 0;
     ag->usage.mem_pages = 0;
@@ -650,6 +668,7 @@ uint32_t agent_audit_size(void) {
 }
 
 static int s_bus_daemon_pid = -1;
+static int s_model_daemon_pid = -1;
 
 static int is_init_tree_process(process_t* p) {
     if (!p) return 0;
@@ -682,12 +701,89 @@ int agent_is_bus_daemon(process_t* p) {
     return (s_bus_daemon_pid > 0 && p->pid == s_bus_daemon_pid);
 }
 
+int agent_model_daemon_register(process_t* p) {
+    if (!p) return -EINVAL;
+    if (p->agent_id != 0) return -EPERM; /* must be non-agent */
+    if (!is_init_tree_process(p)) return -EPERM; /* must be in init tree */
+
+    kmutex_lock(&s_agent_lock);
+    s_model_daemon_pid = p->pid;
+    kmutex_unlock(&s_agent_lock);
+
+    kprintf("[model] Registered PID %d as model daemon\n", p->pid);
+    return 0;
+}
+
+int agent_is_model_daemon(process_t* p) {
+    if (!p) return 0;
+    return (s_model_daemon_pid > 0 && p->pid == s_model_daemon_pid);
+}
+
 int agent_audit_append(int agent_id, uint32_t event_type, const char* detail) {
     process_t* me = scheduler_current();
-    if (!agent_is_bus_daemon(me)) return -EPERM;
+    if (!agent_is_bus_daemon(me) && !agent_is_model_daemon(me)) return -EPERM;
 
     agent_audit_log(agent_id, event_type, detail);
     kprintf("[bus] AUDIT: agent %d event %u (%s): %s\n",
             agent_id, event_type, agent_event_name(event_type), detail ? detail : "");
     return 0;
+}
+
+int agent_charge_tokens(int agent_id, uint32_t tokens) {
+    process_t* me = scheduler_current();
+    if (!agent_is_bus_daemon(me) && !agent_is_model_daemon(me)) {
+        return -EPERM;
+    }
+
+    if (agent_id <= 0) return 0; /* unconfined */
+
+    kmutex_lock(&s_agent_lock);
+    agent_t* ag = agent_get_by_id(agent_id);
+    if (!ag) {
+        kmutex_unlock(&s_agent_lock);
+        return -ENOENT;
+    }
+
+    ag->usage.tokens_used += tokens;
+    int exceeded = (ag->budget.max_tokens > 0 && ag->usage.tokens_used > ag->budget.max_tokens);
+    uint32_t used = ag->usage.tokens_used;
+    uint32_t max = ag->budget.max_tokens;
+    kmutex_unlock(&s_agent_lock);
+
+    if (exceeded) {
+        char detail[64];
+        detail[0] = '\0';
+        int pos = 0;
+        append_str_to_buf(detail, &pos, sizeof(detail), "token limit exceeded: ");
+        append_uint_to_buf(detail, &pos, sizeof(detail), used);
+        append_str_to_buf(detail, &pos, sizeof(detail), " > ");
+        append_uint_to_buf(detail, &pos, sizeof(detail), max);
+        agent_audit_log(agent_id, AUDIT_EVENT_BUDGET_EXCEEDED, detail);
+        kprintf("[agent %d] BUDGET EXCEEDED: %s\n", agent_id, detail);
+        return -EDQUOT;
+    }
+
+    return 0;
+}
+
+int agent_tokens_left(int agent_id) {
+    if (agent_id <= 0) return 0x7FFFFFFF;
+
+    kmutex_lock(&s_agent_lock);
+    agent_t* ag = agent_get_by_id(agent_id);
+    if (!ag) {
+        kmutex_unlock(&s_agent_lock);
+        return -ENOENT;
+    }
+
+    int left;
+    if (ag->budget.max_tokens == 0) {
+        left = 0x7FFFFFFF;
+    } else if (ag->usage.tokens_used >= ag->budget.max_tokens) {
+        left = 0;
+    } else {
+        left = (int)(ag->budget.max_tokens - ag->usage.tokens_used);
+    }
+    kmutex_unlock(&s_agent_lock);
+    return left;
 }

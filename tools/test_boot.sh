@@ -11,7 +11,9 @@ LOGFILE7=$(mktemp)
 LOGFILE8=$(mktemp)
 LOGFILE16=$(mktemp)
 LOGFILE17=$(mktemp)
-trap 'rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15" "$LOGFILE16" "$LOGFILE17"' EXIT
+LOGFILE18=$(mktemp)
+LOGFILE18_LOWMEM=$(mktemp)
+trap 'kill -9 "$HB_PID" 2>/dev/null || true; rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15" "$LOGFILE16" "$LOGFILE17" "$LOGFILE18" "$LOGFILE18_LOWMEM"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -278,7 +280,7 @@ echo "[TEST] Session 3: Stage 14 IPC, pipes, redirections, pipelines, filters, a
     sleep 1
     printf 'yes | head -n 5\n'
     sleep 1
-    printf 'ls /bin | grep elf | sort | head -n 3\n'
+    printf 'ls /bin | grep elf | sort | head -n 4\n'
     sleep 1
     printf 'cat < /tmp/a | tee /tmp/b | wc -c\n'
     sleep 1
@@ -320,8 +322,8 @@ grep -q "y" "$LOGFILE3" || { echo "FAIL: 'yes | head -n 5' failed"; exit 1; }
 echo "[PASS] 'yes | head -n 5' (backpressure/EPIPE) verified"
 
 # Multi-stage pipeline: ls | grep | sort | head
-grep -q "argtest.elf" "$LOGFILE3" || { echo "FAIL: 'ls /bin | grep elf | sort | head -n 3' failed"; exit 1; }
-echo "[PASS] 'ls /bin | grep elf | sort | head -n 3' verified"
+grep -E -q "(agentctl.elf|argtest.elf)" "$LOGFILE3" || { echo "FAIL: 'ls /bin | grep elf | sort | head -n 4' failed"; exit 1; }
+echo "[PASS] 'ls /bin | grep elf | sort | head -n 4' verified"
 
 # tee and diff
 grep -q "10" "$LOGFILE3" || { echo "FAIL: 'cat < /tmp/a | tee /tmp/b | wc -c' failed"; exit 1; }
@@ -662,7 +664,7 @@ echo "[TEST] Session 8: Testing Newlib libc (libctest) and Lua 5.4 runtime..."
     sleep 1
     printf "lua.elf /home/demo.lua\n"
     sleep 3
-    printf "ls /bin | lua.elf -e \"for l in io.lines() do if l:find('elf') then print(l) end end\" | head -n 3\n"
+    printf "ls /bin | lua.elf -e \"for l in io.lines() do if l:find('elf') then print(l) end end\" | head -n 4\n"
     sleep 2
     printf "lua.elf -e \"invalid lua syntax !!!\"\n"
     sleep 1
@@ -700,7 +702,7 @@ grep -q "File I/O read back line 1: Lua 5.4 file I/O test on MyOS" "$LOGFILE8" |
 grep -q "=== Demo Complete ===" "$LOGFILE8" || { echo "FAIL: Lua demo completion not found"; exit 1; }
 echo "[PASS] Lua /home/demo.lua execution verified"
 
-grep -q "argtest.elf" "$LOGFILE8" || { echo "FAIL: Lua pipeline failed"; exit 1; }
+grep -E -q "(agentctl.elf|argtest.elf)" "$LOGFILE8" || { echo "FAIL: Lua pipeline failed"; exit 1; }
 echo "[PASS] Shell to Lua stdin/stdout pipeline verified"
 
 grep -q "LUA_ERR=1" "$LOGFILE8" || { echo "FAIL: Lua syntax error exit status not 1"; exit 1; }
@@ -1111,6 +1113,75 @@ grep -q "fs.delete" "$LOGFILE17" || { echo "FAIL: intentctl list did not show fs
 echo "[PASS] Session 17: Intent Bus, daemon, libjson, peer authentication, and demo skills verified!"
 
 rm -f "$LOGFILE17"
+
+echo "[TEST] Session 18: Model Daemon, host bridge, token budgets, and agent loop..."
+
+# Part A: Verify -m 64 low memory boot with modeld handling low memory gracefully
+LOGFILE18_LOWMEM=$(mktemp)
+(
+    sleep 2
+    printf "shinfo\n"
+    sleep 0.5
+    printf "cat /proc/meminfo\n"
+    sleep 0.5
+    printf "intentctl stats\n"
+    sleep 0.5
+    printf "exit\n"
+) | timeout 25s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE18_LOWMEM" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE18_LOWMEM" > "${LOGFILE18_LOWMEM}.tmp" && mv "${LOGFILE18_LOWMEM}.tmp" "$LOGFILE18_LOWMEM"
+grep -q "reg model.complete" "$LOGFILE18_LOWMEM" || { echo "FAIL: modeld did not register in -m 64 low-memory boot"; rm -f "$LOGFILE18_LOWMEM"; exit 1; }
+grep -q "MemTotal:       65020 kB" "$LOGFILE18_LOWMEM" || { echo "FAIL: MemTotal in -m 64 unexpected"; rm -f "$LOGFILE18_LOWMEM"; exit 1; }
+echo "[PASS] Low-memory -m 64 boot with modeld verified!"
+rm -f "$LOGFILE18_LOWMEM"
+
+# Part B: Start hostbridge daemon
+python3 tools/hostbridge.py --host 127.0.0.1 --port 4445 --backend mock > /tmp/hostbridge.log 2>&1 &
+HB_PID=$!
+sleep 1
+
+(
+    sleep 2
+    printf "demoskills &\n"
+    sleep 1
+    printf "modeltest\n"
+    sleep 8
+    printf "agentrun organizer --goal \"list /home and summarize what is there\"\n"
+    sleep 10
+    printf "sync\n"
+    sleep 1
+    printf "exit\n"
+) | timeout 65s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -serial tcp:127.0.0.1:4445 -display none -no-reboot > "$LOGFILE18" 2>&1 || true
+
+kill -9 $HB_PID 2>/dev/null || true
+
+tr -d '\r' < "$LOGFILE18" > "${LOGFILE18}.tmp" && mv "${LOGFILE18}.tmp" "$LOGFILE18"
+cat "$LOGFILE18"
+
+echo "[TEST] Asserting Session 18 results..."
+grep -q "ALL MODEL DAEMON TESTS PASSED!" "$LOGFILE18" || { echo "FAIL: modeltest suite failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: COM2 raw device and framing resilience verified" "$LOGFILE18" || { echo "FAIL: COM2 raw resilience failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: model.status and model.embed verified" "$LOGFILE18" || { echo "FAIL: model.status/embed failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: model.complete host backend returned text" "$LOGFILE18" || { echo "FAIL: model.complete host backend failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: Local model is deterministic" "$LOGFILE18" || { echo "FAIL: Local model determinism failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: Token budget clamping and -EDQUOT properly enforced" "$LOGFILE18" || { echo "FAIL: Token budget clamping failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: Model backend allowlist and delegation narrowing verified" "$LOGFILE18" || { echo "FAIL: Model backend allowlist failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: Prompt injection attempt thwarted" "$LOGFILE18" || { echo "FAIL: Prompt injection defense failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: 100 cycles completed with zero FD leaks" "$LOGFILE18" || { echo "FAIL: 100 cycles fd leaks failed"; rm -f "$LOGFILE18"; exit 1; }
+grep -q "PASSED: Verified .* audit log entries; cryptographic hash chain 100% valid" "$LOGFILE18" || { echo "FAIL: Audit log SHA-256 chain failed"; rm -f "$LOGFILE18"; exit 1; }
+
+# Agent loop assertions
+grep -q "Agent 'organizer' execution finished. Result: SUCCESS" "$LOGFILE18" || { echo "FAIL: agentrun organizer did not finish with SUCCESS"; rm -f "$LOGFILE18"; exit 1; }
+
+# Verify /home/out/agent-*.log exists on disk image
+mdir -i disk.img ::/home/out | grep -qi "agent-.*log" || { echo "FAIL: /home/out/agent-*.log does not exist on disk image"; rm -f "$LOGFILE18"; exit 1; }
+
+# Security assertion: Host API key NEVER transmitted to guest logs or disk image
+grep -q "MOCK_SECRET_KEY_NOT_IN_GUEST_998877" "$LOGFILE18" && { echo "FAIL: Host API secret key leaked into guest logs!"; rm -f "$LOGFILE18"; exit 1; }
+strings disk.img | grep -q "MOCK_SECRET_KEY_NOT_IN_GUEST_998877" && { echo "FAIL: Host API secret key leaked onto guest disk image!"; rm -f "$LOGFILE18"; exit 1; }
+
+echo "[PASS] Session 18: Model daemon, host bridge, token budgets, and agent loop verified!"
+rm -f "$LOGFILE18"
 
 echo "==============================="
 echo "ALL TESTS PASSED!"

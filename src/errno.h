@@ -56,5 +56,6 @@
 #define ETOOMANYREFS 129  /* Too many references: cannot splice */
 #define ETIMEDOUT    116  /* Connection timed out */
 #define ECONNREFUSED 111  /* Connection refused */
+#define EDQUOT       132  /* Quota exceeded */
 
 #endif

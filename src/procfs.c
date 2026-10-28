@@ -770,6 +770,17 @@ static int proc_agent_caps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint
         if (i > 0) append_char(text, &pos, sizeof(text), ',');
         append_str(text, &pos, sizeof(text), info.caps.bus_provide[i].prefix);
     }
+    append_str(text, &pos, sizeof(text), "\nModelBackends:\t");
+    uint32_t mb = info.caps.model_backends;
+    if (mb == 0 || mb == MODEL_BACKEND_ALL) {
+        append_str(text, &pos, sizeof(text), "local,host");
+    } else if (mb == MODEL_BACKEND_LOCAL) {
+        append_str(text, &pos, sizeof(text), "local");
+    } else if (mb == MODEL_BACKEND_HOST) {
+        append_str(text, &pos, sizeof(text), "host");
+    } else {
+        append_str(text, &pos, sizeof(text), "none");
+    }
     append_str(text, &pos, sizeof(text), "\n");
 
     return procfs_read_helper(text, pos, offset, buf, count);
@@ -796,6 +807,8 @@ static int proc_agent_budget_read(vnode_t* vn, uint32_t offset, uint8_t* buf, ui
     append_uint(text, &pos, sizeof(text), info.budget.max_procs);
     append_str(text, &pos, sizeof(text), "\nMaxTokens:\t");
     append_uint(text, &pos, sizeof(text), info.budget.max_tokens);
+    append_str(text, &pos, sizeof(text), "\nTokensUsed:\t");
+    append_uint(text, &pos, sizeof(text), info.usage.tokens_used);
     append_str(text, &pos, sizeof(text), "\n");
 
     return procfs_read_helper(text, pos, offset, buf, count);
