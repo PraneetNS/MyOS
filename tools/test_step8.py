@@ -58,6 +58,7 @@ try:
     # 1. Wait for boot OK
     out = read_until("sh:/$", timeout=10)
     assert "sh:/$" in out, "Shell prompt did not appear"
+    time.sleep(0.5)
     print("[PASS] Kernel booted and shell prompt ready")
 
     mon = QemuMonitor(sock_path=SOCK_PATH, timeout=5.0)

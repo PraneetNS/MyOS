@@ -36,6 +36,9 @@ int intent_resolve_approval(int fd, uint32_t approval_id, bool approved,
                             char* err_buf, size_t err_cap);
 int intent_get_stats(int fd, char* out_json, size_t cap);
 
+int intent_get_caller_agent(void);
+int intent_get_caller_pid(void);
+
 #ifdef __cplusplus
 }
 #endif

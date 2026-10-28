@@ -47,6 +47,9 @@ LUAMOD_API int (luaopen_package) (lua_State *L);
 #define LUA_INTENTLIBNAME	"intent"
 LUAMOD_API int (luaopen_intent) (lua_State *L);
 
+#define LUA_AGENTLIBNAME	"agent"
+LUAMOD_API int (luaopen_agent) (lua_State *L);
+
 
 /* open all previous libraries */
 LUALIB_API void (luaL_openlibs) (lua_State *L);

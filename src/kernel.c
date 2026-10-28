@@ -182,6 +182,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
     (void) magic;
 
     serial_init();
+    serial1_init();
     terminal_initialize();
     save_cmdline(mb_info_addr);
     kprintf("MyOS kernel booted successfully.\n");
@@ -207,6 +208,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     serial_install_irq();
     kprintf("[ok] Serial COM1 IRQ installed\n");
+    serial1_install_irq();
+    kprintf("[ok] Serial COM2 IRQ installed\n");
 
     fpu_init();
 

@@ -21,6 +21,7 @@ static void print_usage(const char* prog) {
     printf("    --net-proxy              Allow network proxy capability\n");
     printf("    --bus-call <prefix>      Allow calling intent bus skills with prefix\n");
     printf("    --bus-provide <prefix>   Allow providing intent bus skills with prefix\n");
+    printf("    --model-backend <list>   Allow model backends (local, host, local,host)\n");
     printf("    --cpu <ticks>            Set maximum CPU ticks budget\n");
     printf("    --mem <pages>            Set maximum memory pages budget\n");
     printf("    --procs <count>          Set maximum active processes budget\n");
@@ -108,6 +109,12 @@ static int cmd_create(int argc, char** argv) {
             budget.max_procs = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--tokens") == 0 && i + 1 < argc) {
             budget.max_tokens = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--model-backend") == 0 && i + 1 < argc) {
+            const char* val = argv[++i];
+            caps.model_backends = 0;
+            if (strstr(val, "local")) caps.model_backends |= MODEL_BACKEND_LOCAL;
+            if (strstr(val, "host")) caps.model_backends |= MODEL_BACKEND_HOST;
+            if (strcmp(val, "none") == 0) caps.model_backends = 0x80000000;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
@@ -137,7 +144,7 @@ static int cmd_list(void) {
 
             printf("%-4d %-20s %-10s %-5u %-9u %-9u\n",
                    info.id, info.name, st,
-                   info.usage.procs_count, info.usage.cpu_ticks, info.usage.mem_pages);
+                   (unsigned int)info.usage.procs_count, (unsigned int)info.usage.cpu_ticks, (unsigned int)info.usage.mem_pages);
             count++;
         }
     }

@@ -23,6 +23,17 @@ static int s_num_skills = 0;
 static volatile int s_serve_running = 0;
 static uint32_t s_next_call_id = 1;
 
+static int s_current_caller_agent = 0;
+static int s_current_caller_pid = 0;
+
+int intent_get_caller_agent(void) {
+    return s_current_caller_agent;
+}
+
+int intent_get_caller_pid(void) {
+    return s_current_caller_pid;
+}
+
 int intent_connect(void) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -148,15 +159,20 @@ static int recv_frame(int fd, struct intent_header* out_hdr, char* body_buf, siz
     }
 
     size_t payload_len = out_hdr->len - sizeof(struct intent_header);
-    if (payload_len >= body_cap) return -1;
-
+    size_t to_read = payload_len;
+    size_t to_store = (payload_len < body_cap) ? payload_len : (body_cap > 0 ? body_cap - 1 : 0);
     size_t body_read = 0;
-    while (body_read < payload_len) {
-        ssize_t n = read(fd, body_buf + body_read, payload_len - body_read);
+    while (body_read < to_read) {
+        char dummy[128];
+        char* target = (body_read < to_store) ? (body_buf + body_read) : dummy;
+        size_t chunk = (body_read < to_store) ? (to_store - body_read) : sizeof(dummy);
+        if (chunk > to_read - body_read) chunk = to_read - body_read;
+        ssize_t n = read(fd, target, chunk);
         if (n <= 0) return -1;
         body_read += (size_t)n;
     }
-    body_buf[body_read] = '\0';
+    if (body_cap > 0) body_buf[to_store] = '\0';
+    if (payload_len >= body_cap) return -1;
     return 0;
 }
 
@@ -250,7 +266,7 @@ int intent_unregister_skill(int fd, const char* name) {
         return -1;
     }
 
-    for (int i = 0; i < s_num_skills; i++) {
+    for (int i = 0; i < MAX_LOCAL_SKILLS; i++) {
         if (s_skills[i].active && strcmp(s_skills[i].name, name) == 0) {
             s_skills[i].active = false;
             break;
@@ -279,6 +295,13 @@ int intent_serve(int fd) {
 
             int call_id = 0;
             json_obj_get_int(doc.root, "call_id", &call_id);
+            int caller_agent = 0;
+            json_obj_get_int(doc.root, "caller_agent", &caller_agent);
+            int caller_pid = 0;
+            json_obj_get_int(doc.root, "caller_pid", &caller_pid);
+            s_current_caller_agent = caller_agent;
+            s_current_caller_pid = caller_pid;
+
             const char* skill_name = json_obj_get_str(doc.root, "skill");
             const json_val_t* args_val = json_obj_get(doc.root, "args");
 
@@ -367,6 +390,10 @@ int intent_call(int fd, const char* skill, const char* json_args,
     json_buf_obj_start(&jb);
     json_buf_obj_key(&jb, "skill");
     json_buf_append_str(&jb, skill);
+    if (timeout_ms > 0) {
+        json_buf_obj_key(&jb, "timeout");
+        json_buf_append_int(&jb, timeout_ms);
+    }
     json_buf_obj_key(&jb, "args");
     if (json_args && (json_args[0] == '{' || json_args[0] == '[')) {
         json_buf_append_raw(&jb, json_args, strlen(json_args));
@@ -406,12 +433,7 @@ int intent_call(int fd, const char* skill, const char* json_args,
                 if (res && json_result && result_cap > 0) {
                     res += 9;
                     while (*res == ' ') res++;
-                    /* copy till end before closing brace */
-                    size_t l = strlen(res);
-                    if (l > 0 && res[l-1] == '}') l--;
-                    if (l >= result_cap) l = result_cap - 1;
-                    memcpy(json_result, res, l);
-                    json_result[l] = '\0';
+                    extract_json_value(res, json_result, result_cap);
                 }
                 return 0;
             } else {

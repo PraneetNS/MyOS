@@ -110,6 +110,9 @@
 #define SYS_SOCK_PEERINFO        176
 #define SYS_BUS_DAEMON_REGISTER  177
 #define SYS_AUDIT_APPEND         178
+#define SYS_AGENT_CHARGE_TOKENS  179
+#define SYS_AGENT_TOKENS_LEFT    180
+#define SYS_MODEL_DAEMON_REGISTER 181
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -2551,6 +2554,28 @@ static void syscall_handler(struct registers* regs) {
             kdetail[i] = '\0';
 
             int ret = agent_audit_append(agent_id, event_type, kdetail);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_CHARGE_TOKENS: {
+            int agent_id = (int) regs->ebx;
+            uint32_t tokens = (uint32_t) regs->ecx;
+            int ret = agent_charge_tokens(agent_id, tokens);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_TOKENS_LEFT: {
+            int agent_id = (int) regs->ebx;
+            int ret = agent_tokens_left(agent_id);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_MODEL_DAEMON_REGISTER: {
+            process_t* me = scheduler_current();
+            int ret = agent_model_daemon_register(me);
             regs->eax = (uint32_t) ret;
             break;
         }

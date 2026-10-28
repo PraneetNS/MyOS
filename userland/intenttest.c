@@ -891,7 +891,7 @@ static int test_zero_leaks_200_cycles(void) {
             return 0;
         }
 
-        char res[256];
+        char res[2048];
         intent_list_skills(fd, res, sizeof(res));
 
         intent_unregister_skill(fd, skill_name);

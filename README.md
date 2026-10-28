@@ -1274,6 +1274,39 @@ Stage 20 introduces Phase 2 of an AI-Native Operating System: the **Intent Bus**
 
 ---
 
+## Stage 21 (done): AI-Native OS Phase 3 — Model Daemon, Host Bridge, Token Budgets & Autonomous Agent Loop
+
+Stage 21 introduces Phase 3 of the AI-Native Operating System: turning LLM inference into a governed, budgeted OS service. Agents invoke model completion, embedding, and status skills via the Intent Bus, while the kernel and daemons guarantee that host API credentials never cross the VM boundary, token budgets are strictly enforced, and prompt injections are quarantined.
+
+- **Raw Second Serial Device (`/dev/serial1`)**:
+  - COM2 raw, non-TTY byte device (`0x2F8`, IRQ3) with an 8KB circular RX buffer, non-blocking I/O (`O_NONBLOCK`), and `poll()` support, leaving COM1 console completely untouched.
+- **Host Bridge (`tools/hostbridge.py`)**:
+  - Host-side Python daemon bridging QEMU COM2 chardev to local/cloud models (`mock`, `anthropic`, `openai_compat`).
+  - Strict host-side secret isolation: API keys are read solely on the host from environment variables and never transmitted to or stored on the guest.
+  - Length-prefixed framing with CRC32 integrity verification and forward scanning for stream resynchronization over garbage bytes.
+- **Token Budgets & Kernel Sycalls**:
+  - `SYS_AGENT_CHARGE_TOKENS` (179) charges token usage against kernel agent budgets, returns `-EDQUOT` (132) on depletion, and logs `BUDGET_EXCEEDED` to the audit log.
+  - `SYS_AGENT_TOKENS_LEFT` (180) allows agents and services to inspect remaining token allowances.
+  - `SYS_MODEL_DAEMON_REGISTER` (181) restricts token charging privileges to the authorized model daemon.
+  - `TokensUsed` tracked and exposed in `/proc/agents/<id>/budget`.
+- **Model Backend Allowlist & Delegation Narrowing**:
+  - `MODEL_BACKEND_LOCAL` (1) and `MODEL_BACKEND_HOST` (2) bitmasks stored in `agent_caps_t`, narrowing-only on delegation, visible in `/proc/agents/<id>/caps`, managed via `agentctl create --model-backend local,host`.
+- **Local Model Inference Engine (`libllm`, `userland/llm/`)**:
+  - llama2.c-style C transformer inference engine supporting INT8 quantized (`runq`) and FP32 checkpoints with greedy and temperature sampling.
+  - Default tiny checkpoint `<2MB` (`/share/stories.bin`, `/share/tokenizer.bin`) loading seamlessly in <= 64MB RAM.
+- **Model Daemon (`modeld`, `userland/modeld.c`)**:
+  - Intent Bus provider daemon (`respawn` in `/etc/init.conf`) serving `model.complete`, `model.embed`, and `model.status`.
+  - Automatic fallback (`backend: "auto"`) preferring host bridge when available and allowed, falling back to local `libllm`.
+  - Audit logging with prompt SHA-256 hashing (never logging raw prompt/completion text).
+- **Autonomous Agent Loop (`agentrun` & Lua `agent` module)**:
+  - `agentrun <name> --goal "..."` CLI launcher attaching to a restricted kernel agent.
+  - Dynamic tool discovery via `skill.list`, tool execution over Intent Bus, and prompt injection defense wrapping all tool outputs in `[UNTRUSTED DATA]` blocks.
+  - Full execution trace persisted to `/home/out/agent-<id>.log`.
+- **Verification Suite (`modeltest` & `tools/test_boot.sh` Session 18)**:
+  - Automated validation of COM2 framing resilience, `model.status`/`model.embed`, host and local deterministic completions, token budget clamping & `-EDQUOT`, delegation narrowing, prompt injection defense, 100-cycle zero FD leaks, and SHA-256 audit chain verification.
+
+---
+
 ## Complete System Call Reference
 
 MyOS implements a POSIX-compatible system call interface invoked via `int 0x80`:
@@ -1340,6 +1373,9 @@ MyOS implements a POSIX-compatible system call interface invoked via `int 0x80`:
 | `SYS_SOCK_PEERINFO`| 176 | `int sock_peerinfo(int fd, peerinfo_t *pinfo)` -- get peer pid and agent_id |
 | `SYS_BUS_DAEMON_REGISTER`| 177 | `int bus_daemon_register(void)` -- register caller as privileged bus daemon |
 | `SYS_AUDIT_APPEND` | 178 | `int audit_append(int agent_id, uint32_t event_type, const char *detail)` |
+| `SYS_AGENT_CHARGE_TOKENS` | 179 | `int agent_charge_tokens(int agent_id, uint32_t n)` -- charge token usage to agent |
+| `SYS_AGENT_TOKENS_LEFT`   | 180 | `int agent_tokens_left(int agent_id)` -- query remaining token budget |
+| `SYS_MODEL_DAEMON_REGISTER`| 181 | `int model_daemon_register(void)` -- register caller as privileged model daemon |
 
 ---
 
@@ -1366,6 +1402,7 @@ MyOS includes an automated test matrix executed via QEMU serial automation and m
 | **Session 15** | Model-Based LFN Fuzzing | 500 pseudo-random filesystem operations; host `fsck.fat -v -a` and `mdir` validation. |
 | **Session 16** | Kernel Agents & Security Subsystem | Default-deny caps, delegation narrowing, CPU/proc budgets, SHA-256 audit chain, zero frame leaks, `-m 64` boot. |
 | **Session 17** | Intent Bus & Agent Skills | Daemon (`intentd`), `libjson`, `libintent`, peer identity, demo skills, approvals, `intentctl`, `-m 64` boot. |
+| **Session 18** | Model Daemon & Agent Loop | COM2 raw framing resilience, `modeld`, token budgets & `-EDQUOT`, delegation narrowing, prompt injection defense, zero leaks, organizer demo, secret key isolation, `-m 64` boot. |
 | **Step 1** | Window Protocol & `libwin` | AF_UNIX handshake, shared memory buffer attachments, damage reporting, `winhello`. |
 | **Step 2** | Window Decorations & `wmctl` | Server-side titlebars, dragging, resizing, focus restacking, `wmctl` control commands. |
 | **Step 3** | `libui` Widget Toolkit & `uidemo` | Complete widget tree validation (buttons, textboxes, textareas, listboxes, menus, dialogs). |
