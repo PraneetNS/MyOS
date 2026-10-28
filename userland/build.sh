@@ -33,8 +33,7 @@ fi
 
 # Build Lua if present
 if [ -d "lua/src" ]; then
-    ROOT_DIR="$(cd .. && pwd)"
-    make -C lua/src posix CC="$ROOT_DIR/tools/myos-gcc" AR="$PREFIX/bin/i686-elf-ar rcu" RANLIB="$PREFIX/bin/i686-elf-ranlib"
+    make -C lua/src posix CC="../../../tools/myos-gcc" AR="$PREFIX/bin/i686-elf-ar rcu" RANLIB="$PREFIX/bin/i686-elf-ranlib"
     cp lua/src/lua lua.elf
     cp lua/src/luac luac.elf
 fi
