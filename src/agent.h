@@ -19,6 +19,10 @@
 #define CAP_NET_PROXY       (1 << 6)
 #define CAP_BUS_CALL        (1 << 7)
 #define CAP_BUS_PROVIDE     (1 << 8)
+#define CAP_WINDOW_OBSERVE  (1 << 9)
+#define CAP_WINDOW_ACT      (1 << 10)
+#define CAP_WINDOW_SECRET   (1 << 11)
+#define CAP_WINDOW_RAW      (1 << 12)
 
 /* Model backend capability flags */
 #define MODEL_BACKEND_LOCAL  (1 << 0)
@@ -46,6 +50,8 @@ typedef enum {
 #define AUDIT_EVENT_BUS_CALL                  10
 #define AUDIT_EVENT_BUS_DENIED                11
 #define AUDIT_EVENT_BUS_APPROVAL              12
+#define AUDIT_EVENT_KILLSWITCH                13
+#define AUDIT_EVENT_WINDOW_ACTION             14
 
 typedef struct {
     char prefix[MAX_PATH_PREFIX_LEN];
@@ -65,6 +71,10 @@ typedef struct {
     agent_path_rule_t bus_call[MAX_PATH_RULES];
     uint32_t num_bus_provide;
     agent_path_rule_t bus_provide[MAX_PATH_RULES];
+    uint32_t num_window_observe;
+    agent_path_rule_t window_observe[MAX_PATH_RULES];
+    uint32_t num_window_act;
+    agent_path_rule_t window_act[MAX_PATH_RULES];
     uint32_t model_backends; /* Bitmask of allowed backends: 0 = MODEL_BACKEND_ALL */
 } agent_caps_t;
 
@@ -161,5 +171,7 @@ int agent_is_model_daemon(struct process* p);
 int agent_audit_append(int agent_id, uint32_t event_type, const char* detail);
 int agent_charge_tokens(int agent_id, uint32_t tokens);
 int agent_tokens_left(int agent_id);
+int agent_killswitch_toggle(void);
+int agent_killswitch_active(void);
 
 #endif

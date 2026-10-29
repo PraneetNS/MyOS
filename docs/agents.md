@@ -64,6 +64,12 @@ When a process is attached to an agent, its security posture transitions to **de
 | `CAP_WINDOW` | `1 << 4` | Permission to connect to the display server (`/run/display.sock`) and manage windows. |
 | `CAP_SPAWN` | `1 << 5` | Permission to create or delegate child agents via `SYS_AGENT_CREATE`. |
 | `CAP_NET_PROXY` | `1 << 6` | Permission to perform proxy operations across network sockets. |
+| `CAP_BUS_CALL` | `1 << 7` | Permission to call Intent Bus skills matching skill prefix allowlist. |
+| `CAP_BUS_PROVIDE` | `1 << 8` | Permission to register and provide Intent Bus skills matching prefix allowlist. |
+| `CAP_WINDOW_OBSERVE` | `1 << 9` | Permission to inspect and read GUI accessibility trees of allowlisted apps. |
+| `CAP_WINDOW_ACT` | `1 << 10` | Permission to dispatch structured accessibility actions to allowlisted apps. |
+| `CAP_WINDOW_SECRET` | `1 << 11` | Permission to inspect/modify secret or password textboxes. Never inherited implicitly. |
+| `CAP_WINDOW_RAW` | `1 << 12` | Permission to inject unmanaged raw keyboard/mouse events or frame screenshots. |
 
 ### 3.2 Path Canonicalization & Prefix Matching
 

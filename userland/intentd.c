@@ -8,7 +8,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <agent.h>
+#include <fcntl.h>
 #include <intent_protocol.h>
+#include <approval_protocol.h>
 #include <json.h>
 
 #define MAX_CLIENTS    32
@@ -191,6 +193,42 @@ static approval_slot_t s_approvals[MAX_APPROVALS];
 
 static uint32_t s_next_daemon_call_id = 1;
 static uint32_t s_next_approval_id = 1;
+
+static int s_approval_fd = -1;
+static uint64_t s_last_approval_try = 0;
+
+static void try_connect_approval_sock(void) {
+    if (s_approval_fd >= 0) return;
+    uint64_t now = get_now_ms();
+    if (now - s_last_approval_try < 2000) return;
+    s_last_approval_try = now;
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    struct sockaddr_un sun;
+    memset(&sun, 0, sizeof(sun));
+    sun.sun_family = AF_UNIX;
+    strncpy(sun.sun_path, APPROVAL_SOCK_PATH, sizeof(sun.sun_path) - 1);
+    if (connect(fd, (struct sockaddr*)&sun, sizeof(sun)) == 0) {
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        s_approval_fd = fd;
+    } else {
+        close(fd);
+    }
+}
+
+static void notify_wm_cancel_approval(uint32_t app_id) {
+    if (s_approval_fd < 0) return;
+    struct approval_msg_header hdr;
+    hdr.len = sizeof(hdr) + sizeof(struct approval_msg_cancel);
+    hdr.type = APPROVAL_MSG_CANCEL;
+    hdr.flags = 0;
+    hdr.call_id = 0;
+    struct approval_msg_cancel can;
+    can.approval_id = app_id;
+    write(s_approval_fd, &hdr, sizeof(hdr));
+    write(s_approval_fd, &can, sizeof(can));
+}
 
 /* Stats */
 static uint64_t s_stats_total_calls = 0;
@@ -725,6 +763,45 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
         char detail[64];
         snprintf(detail, sizeof(detail), "appr id:%u %s c:%u p:%u pending", (unsigned int)as->id, skill_name, (unsigned int)cli->agent_id, (unsigned int)sk->provider_agent_id);
         audit_append((int)cli->agent_id, AUDIT_EVENT_BUS_APPROVAL, detail);
+
+        try_connect_approval_sock();
+        if (s_approval_fd >= 0) {
+            struct approval_msg_header a_hdr;
+            a_hdr.len = sizeof(a_hdr) + sizeof(struct approval_msg_request);
+            a_hdr.type = APPROVAL_MSG_REQUEST;
+            a_hdr.flags = 0;
+            a_hdr.call_id = 0;
+
+            struct approval_msg_request a_req;
+            memset(&a_req, 0, sizeof(a_req));
+            a_req.approval_id = as->id;
+            a_req.agent_id = cli->agent_id;
+
+            char proc_path[64];
+            snprintf(proc_path, sizeof(proc_path), "/proc/agents/%u/name", (unsigned int)cli->agent_id);
+            int pfd = open(proc_path, O_RDONLY);
+            if (pfd >= 0) {
+                int rn = read(pfd, a_req.agent_name, sizeof(a_req.agent_name) - 1);
+                if (rn > 0) {
+                    while (rn > 0 && (a_req.agent_name[rn-1] == '\n' || a_req.agent_name[rn-1] == ' ' || a_req.agent_name[rn-1] == '\r')) {
+                        a_req.agent_name[--rn] = '\0';
+                    }
+                }
+                close(pfd);
+            }
+            if (!a_req.agent_name[0]) {
+                snprintf(a_req.agent_name, sizeof(a_req.agent_name), "Agent #%u", (unsigned int)cli->agent_id);
+            }
+
+            strncpy(a_req.skill, skill_name, sizeof(a_req.skill) - 1);
+            strncpy(a_req.args_summary, cs->pending_body, sizeof(a_req.args_summary) - 1);
+            strncpy(a_req.args_hash, cs->args_hash_hex, sizeof(a_req.args_hash) - 1);
+            a_req.sensitive = 1;
+            a_req.timeout_ms = INTENT_APPROVAL_TIMEOUT;
+
+            write(s_approval_fd, &a_hdr, sizeof(a_hdr));
+            write(s_approval_fd, &a_req, sizeof(a_req));
+        }
     } else {
         cs->pending_approval = false;
         forward_call_to_provider(call_slot);
@@ -808,30 +885,15 @@ static void handle_msg_list_approvals(int cslot, const struct intent_header* hdr
     send_frame(cli->fd, INTENT_MSG_LIST_APPROVALS_ACK, hdr->call_id, out_buf, jb.len);
 }
 
-static void handle_msg_resolve_approval(int cslot, const struct intent_header* hdr, const char* body) {
-    client_slot_t* cli = &s_clients[cslot];
-    json_doc_t doc;
-    if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
-        send_frame(cli->fd, INTENT_MSG_RESOLVE_APPROVAL_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Invalid JSON\"}", 36);
-        return;
-    }
-
-    int app_id = 0;
-    json_obj_get_int(doc.root, "id", &app_id);
-    bool approved = false;
-    json_obj_get_bool(doc.root, "approved", &approved);
-
+static bool resolve_approval_internal(uint32_t app_id, bool approved) {
     int app_slot = -1;
     for (int i = 0; i < MAX_APPROVALS; i++) {
-        if (s_approvals[i].active && s_approvals[i].id == (uint32_t)app_id) {
+        if (s_approvals[i].active && s_approvals[i].id == app_id) {
             app_slot = i;
             break;
         }
     }
-    if (app_slot < 0) {
-        send_frame(cli->fd, INTENT_MSG_RESOLVE_APPROVAL_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Approval ID not found\"}", 45);
-        return;
-    }
+    if (app_slot < 0) return false;
 
     approval_slot_t* as = &s_approvals[app_slot];
 
@@ -874,7 +936,29 @@ static void handle_msg_resolve_approval(int cslot, const struct intent_header* h
         }
     }
 
+    notify_wm_cancel_approval(as->id);
     as->active = false;
+    return true;
+}
+
+static void handle_msg_resolve_approval(int cslot, const struct intent_header* hdr, const char* body) {
+    client_slot_t* cli = &s_clients[cslot];
+    json_doc_t doc;
+    if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
+        send_frame(cli->fd, INTENT_MSG_RESOLVE_APPROVAL_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Invalid JSON\"}", 36);
+        return;
+    }
+
+    int app_id = 0;
+    json_obj_get_int(doc.root, "id", &app_id);
+    bool approved = false;
+    json_obj_get_bool(doc.root, "approved", &approved);
+
+    if (!resolve_approval_internal((uint32_t)app_id, approved)) {
+        send_frame(cli->fd, INTENT_MSG_RESOLVE_APPROVAL_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Approval ID not found\"}", 45);
+        return;
+    }
+
     send_frame(cli->fd, INTENT_MSG_RESOLVE_APPROVAL_ACK, hdr->call_id, "{\"ok\":true}", 11);
 }
 
@@ -981,6 +1065,8 @@ static void check_timeouts(void) {
                          (unsigned int)cs->approval_id, cs->skill, (unsigned int)cs->caller_agent_id);
                 audit_append((int)cs->caller_agent_id, AUDIT_EVENT_BUS_APPROVAL, detail);
 
+                notify_wm_cancel_approval(cs->approval_id);
+
                 for (int a = 0; a < MAX_APPROVALS; a++) {
                     if (s_approvals[a].active && s_approvals[a].id == cs->approval_id) {
                         s_approvals[a].active = false;
@@ -1049,7 +1135,9 @@ int main(int argc, char** argv) {
     printf("intentd: listening on %s (pid=%d)\n", INTENT_SOCK_PATH, getpid());
 
     while (1) {
-        struct pollfd fds[MAX_CLIENTS + 1];
+        try_connect_approval_sock();
+
+        struct pollfd fds[MAX_CLIENTS + 2];
         int num_fds = 0;
 
         fds[0].fd = listen_fd;
@@ -1057,7 +1145,7 @@ int main(int argc, char** argv) {
         fds[0].revents = 0;
         num_fds++;
 
-        int slot_map[MAX_CLIENTS + 1];
+        int slot_map[MAX_CLIENTS + 2];
         slot_map[0] = -1;
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -1070,6 +1158,16 @@ int main(int argc, char** argv) {
             }
         }
 
+        int app_pfd_idx = -1;
+        if (s_approval_fd >= 0) {
+            app_pfd_idx = num_fds;
+            fds[num_fds].fd = s_approval_fd;
+            fds[num_fds].events = POLLIN;
+            fds[num_fds].revents = 0;
+            slot_map[num_fds] = -2;
+            num_fds++;
+        }
+
         int poll_rc = poll(fds, num_fds, 200); /* 200ms tick for timeouts */
         if (poll_rc < 0) {
             if (errno == EINTR) continue;
@@ -1080,6 +1178,24 @@ int main(int argc, char** argv) {
         check_timeouts();
 
         if (poll_rc == 0) continue;
+
+        /* Check approval socket events */
+        if (app_pfd_idx >= 0 && (fds[app_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            struct approval_msg_header a_hdr;
+            int n = read(s_approval_fd, &a_hdr, sizeof(a_hdr));
+            if (n == (int)sizeof(a_hdr)) {
+                if (a_hdr.type == APPROVAL_MSG_RESOLVE) {
+                    struct approval_msg_resolve res;
+                    if (read(s_approval_fd, &res, sizeof(res)) == (int)sizeof(res)) {
+                        bool approved = (res.status == APPROVAL_STATUS_ALLOW || res.status == APPROVAL_STATUS_SESSION);
+                        resolve_approval_internal(res.approval_id, approved);
+                    }
+                }
+            } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
+                close(s_approval_fd);
+                s_approval_fd = -1;
+            }
+        }
 
         /* Accept incoming connection */
         if (fds[0].revents & POLLIN) {

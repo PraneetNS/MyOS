@@ -34,6 +34,7 @@ ui_widget_t* ui_textbox_create(ui_window_t* win, int x, int y, int w, int h, con
     tb->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     tb->x = x; tb->y = y; tb->w = w; tb->h = h;
     tb->win = win;
+    if (win) tb->a11y_id = win->next_a11y_id++;
     tb->on_text_change = on_text;
     tb->textbox.cursor_pos = 0;
     tb->textbox.sel_start = -1;
@@ -68,6 +69,7 @@ ui_widget_t* ui_textarea_create(ui_window_t* win, int x, int y, int w, int h, co
     ta->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     ta->x = x; ta->y = y; ta->w = w; ta->h = h;
     ta->win = win;
+    if (win) ta->a11y_id = win->next_a11y_id++;
 
     ta->textarea.buf_cap = 4096;
     ta->textarea.buffer = (char*) calloc(ta->textarea.buf_cap, 1);

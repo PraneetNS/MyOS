@@ -689,40 +689,41 @@ static const struct fs_ops agents_log_ops = {
     .stat = procfs_file_stat
 };
 
+static agent_info_t s_proc_agent_info;
+static char s_proc_agent_text[1024];
+
 /* /proc/agents/<id>/status read */
 static int proc_agent_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     int slot = (int)(uintptr_t)vn->fs_data;
-    agent_info_t info;
-    if (agent_get_info(slot + 1, &info) != 0) return -ENOENT;
+    if (agent_get_info(slot + 1, &s_proc_agent_info) != 0) return -ENOENT;
 
-    char text[512];
     int pos = 0;
     const char* st_str = "UNUSED";
-    if (info.state == AGENT_STATE_RUNNING) st_str = "RUNNING";
-    else if (info.state == AGENT_STATE_SUSPENDED) st_str = "SUSPENDED";
-    else if (info.state == AGENT_STATE_KILLED) st_str = "KILLED";
+    if (s_proc_agent_info.state == AGENT_STATE_RUNNING) st_str = "RUNNING";
+    else if (s_proc_agent_info.state == AGENT_STATE_SUSPENDED) st_str = "SUSPENDED";
+    else if (s_proc_agent_info.state == AGENT_STATE_KILLED) st_str = "KILLED";
 
-    append_str(text, &pos, sizeof(text), "Id:\t");
-    append_uint(text, &pos, sizeof(text), (uint32_t)info.id);
-    append_str(text, &pos, sizeof(text), "\nName:\t");
-    append_str(text, &pos, sizeof(text), info.name);
-    append_str(text, &pos, sizeof(text), "\nState:\t");
-    append_str(text, &pos, sizeof(text), st_str);
-    append_str(text, &pos, sizeof(text), "\nOwnerPid:\t");
-    append_int(text, &pos, sizeof(text), info.owner_pid);
-    append_str(text, &pos, sizeof(text), "\nParentId:\t");
-    append_int(text, &pos, sizeof(text), info.parent_agent_id);
-    append_str(text, &pos, sizeof(text), "\nProcs:\t");
-    append_uint(text, &pos, sizeof(text), info.usage.procs_count);
-    append_str(text, &pos, sizeof(text), "\nCpuTicks:\t");
-    append_uint(text, &pos, sizeof(text), info.usage.cpu_ticks);
-    append_str(text, &pos, sizeof(text), "\nMemPages:\t");
-    append_uint(text, &pos, sizeof(text), info.usage.mem_pages);
-    append_str(text, &pos, sizeof(text), "\nTokens:\t");
-    append_uint(text, &pos, sizeof(text), info.usage.tokens_used);
-    append_str(text, &pos, sizeof(text), "\n");
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "Id:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (uint32_t)s_proc_agent_info.id);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nName:\t");
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.name);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nState:\t");
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), st_str);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nOwnerPid:\t");
+    append_int(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.owner_pid);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nParentId:\t");
+    append_int(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.parent_agent_id);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nProcs:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.procs_count);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nCpuTicks:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.cpu_ticks);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMemPages:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.mem_pages);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nTokens:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.tokens_used);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\n");
 
-    return procfs_read_helper(text, pos, offset, buf, count);
+    return procfs_read_helper(s_proc_agent_text, pos, offset, buf, count);
 }
 
 static const struct fs_ops agent_status_ops = {
@@ -733,57 +734,69 @@ static const struct fs_ops agent_status_ops = {
 /* /proc/agents/<id>/caps read */
 static int proc_agent_caps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     int slot = (int)(uintptr_t)vn->fs_data;
-    agent_info_t info;
-    if (agent_get_info(slot + 1, &info) != 0) return -ENOENT;
+    if (agent_get_info(slot + 1, &s_proc_agent_info) != 0) return -ENOENT;
 
-    char text[1024];
     int pos = 0;
-    append_str(text, &pos, sizeof(text), "Mask:\t0x");
-    append_hex(text, &pos, sizeof(text), info.caps.mask, 8);
-    append_str(text, &pos, sizeof(text), "\nFsRead:\t");
-    for (uint32_t i = 0; i < info.caps.num_fs_read && i < MAX_PATH_RULES; i++) {
-        if (i > 0) append_char(text, &pos, sizeof(text), ',');
-        append_str(text, &pos, sizeof(text), info.caps.fs_read[i].prefix);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "Mask:\t0x");
+    append_hex(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.mask, 8);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nFsRead:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_fs_read && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.fs_read[i].prefix);
     }
-    append_str(text, &pos, sizeof(text), "\nFsWrite:\t");
-    for (uint32_t i = 0; i < info.caps.num_fs_write && i < MAX_PATH_RULES; i++) {
-        if (i > 0) append_char(text, &pos, sizeof(text), ',');
-        append_str(text, &pos, sizeof(text), info.caps.fs_write[i].prefix);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nFsWrite:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_fs_write && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.fs_write[i].prefix);
     }
-    append_str(text, &pos, sizeof(text), "\nExec:\t");
-    for (uint32_t i = 0; i < info.caps.num_exec && i < MAX_PATH_RULES; i++) {
-        if (i > 0) append_char(text, &pos, sizeof(text), ',');
-        append_str(text, &pos, sizeof(text), info.caps.exec[i].prefix);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nExec:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_exec && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.exec[i].prefix);
     }
-    append_str(text, &pos, sizeof(text), "\nConnect:\t");
-    for (uint32_t i = 0; i < info.caps.num_connect && i < MAX_PATH_RULES; i++) {
-        if (i > 0) append_char(text, &pos, sizeof(text), ',');
-        append_str(text, &pos, sizeof(text), info.caps.connect[i].prefix);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nConnect:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_connect && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.connect[i].prefix);
     }
-    append_str(text, &pos, sizeof(text), "\nBusCall:\t");
-    for (uint32_t i = 0; i < info.caps.num_bus_call && i < MAX_PATH_RULES; i++) {
-        if (i > 0) append_char(text, &pos, sizeof(text), ',');
-        append_str(text, &pos, sizeof(text), info.caps.bus_call[i].prefix);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nBusCall:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_bus_call && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.bus_call[i].prefix);
     }
-    append_str(text, &pos, sizeof(text), "\nBusProvide:\t");
-    for (uint32_t i = 0; i < info.caps.num_bus_provide && i < MAX_PATH_RULES; i++) {
-        if (i > 0) append_char(text, &pos, sizeof(text), ',');
-        append_str(text, &pos, sizeof(text), info.caps.bus_provide[i].prefix);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nBusProvide:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_bus_provide && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.bus_provide[i].prefix);
     }
-    append_str(text, &pos, sizeof(text), "\nModelBackends:\t");
-    uint32_t mb = info.caps.model_backends;
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowObserve:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_window_observe && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.window_observe[i].prefix);
+    }
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowAct:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_window_act && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.window_act[i].prefix);
+    }
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowSecret:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (s_proc_agent_info.caps.mask & CAP_WINDOW_SECRET) ? 1 : 0);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowRaw:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (s_proc_agent_info.caps.mask & CAP_WINDOW_RAW) ? 1 : 0);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nModelBackends:\t");
+    uint32_t mb = s_proc_agent_info.caps.model_backends;
     if (mb == 0 || mb == MODEL_BACKEND_ALL) {
-        append_str(text, &pos, sizeof(text), "local,host");
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "local,host");
     } else if (mb == MODEL_BACKEND_LOCAL) {
-        append_str(text, &pos, sizeof(text), "local");
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "local");
     } else if (mb == MODEL_BACKEND_HOST) {
-        append_str(text, &pos, sizeof(text), "host");
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "host");
     } else {
-        append_str(text, &pos, sizeof(text), "none");
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "none");
     }
-    append_str(text, &pos, sizeof(text), "\n");
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\n");
 
-    return procfs_read_helper(text, pos, offset, buf, count);
+    return procfs_read_helper(s_proc_agent_text, pos, offset, buf, count);
 }
 
 static const struct fs_ops agent_caps_ops = {
@@ -794,24 +807,22 @@ static const struct fs_ops agent_caps_ops = {
 /* /proc/agents/<id>/budget read */
 static int proc_agent_budget_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     int slot = (int)(uintptr_t)vn->fs_data;
-    agent_info_t info;
-    if (agent_get_info(slot + 1, &info) != 0) return -ENOENT;
+    if (agent_get_info(slot + 1, &s_proc_agent_info) != 0) return -ENOENT;
 
-    char text[512];
     int pos = 0;
-    append_str(text, &pos, sizeof(text), "MaxCpuTicks:\t");
-    append_uint(text, &pos, sizeof(text), info.budget.max_cpu_ticks);
-    append_str(text, &pos, sizeof(text), "\nMaxMemPages:\t");
-    append_uint(text, &pos, sizeof(text), info.budget.max_mem_pages);
-    append_str(text, &pos, sizeof(text), "\nMaxProcs:\t");
-    append_uint(text, &pos, sizeof(text), info.budget.max_procs);
-    append_str(text, &pos, sizeof(text), "\nMaxTokens:\t");
-    append_uint(text, &pos, sizeof(text), info.budget.max_tokens);
-    append_str(text, &pos, sizeof(text), "\nTokensUsed:\t");
-    append_uint(text, &pos, sizeof(text), info.usage.tokens_used);
-    append_str(text, &pos, sizeof(text), "\n");
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "MaxCpuTicks:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.budget.max_cpu_ticks);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMaxMemPages:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.budget.max_mem_pages);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMaxProcs:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.budget.max_procs);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMaxTokens:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.budget.max_tokens);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nTokensUsed:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.tokens_used);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\n");
 
-    return procfs_read_helper(text, pos, offset, buf, count);
+    return procfs_read_helper(s_proc_agent_text, pos, offset, buf, count);
 }
 
 static const struct fs_ops agent_budget_ops = {

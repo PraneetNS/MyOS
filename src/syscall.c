@@ -113,6 +113,7 @@
 #define SYS_AGENT_CHARGE_TOKENS  179
 #define SYS_AGENT_TOKENS_LEFT    180
 #define SYS_MODEL_DAEMON_REGISTER 181
+#define SYS_AGENT_KILLSWITCH_STATE 182
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -147,6 +148,20 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
     if (start < 0x1000 || end > 0xC0000000) return -EFAULT;
 
     if (me->vma_list) {
+        /* Auto-expand stack VMA downward if buffer is within valid user stack range */
+        if (start >= USER_STACK_BOTTOM && end <= USER_STACK_TOP) {
+            vma_t* sv = me->vma_list;
+            while (sv) {
+                if (sv->flags & VMA_FLAG_STACK) {
+                    if (start < sv->start) {
+                        sv->start = start & ~0xFFFu;
+                    }
+                    break;
+                }
+                sv = sv->next;
+            }
+        }
+
         uint32_t cur = start;
         while (cur < end) {
             vma_t* vma = vma_find(me, cur);
@@ -2444,14 +2459,14 @@ static void syscall_handler(struct registers* regs) {
             }
             kname[i] = '\0';
 
-            agent_caps_t kcaps;
-            memcpy(&kcaps, ucaps, sizeof(agent_caps_t));
+            static agent_caps_t s_kcaps;
+            memcpy(&s_kcaps, ucaps, sizeof(agent_caps_t));
 
-            agent_budget_t kbudget;
-            memcpy(&kbudget, ubudget, sizeof(agent_budget_t));
+            static agent_budget_t s_kbudget;
+            memcpy(&s_kbudget, ubudget, sizeof(agent_budget_t));
 
             process_t* me = scheduler_current();
-            int ret = agent_create_kernel(kname, &kcaps, &kbudget, me->pid, me->agent_id);
+            int ret = agent_create_kernel(kname, &s_kcaps, &s_kbudget, me->pid, me->agent_id);
             regs->eax = (uint32_t) ret;
             break;
         }
@@ -2490,12 +2505,15 @@ static void syscall_handler(struct registers* regs) {
             agent_info_t* uinfo = (agent_info_t*) regs->ecx;
 
             int err = validate_user_buffer(uinfo, sizeof(agent_info_t), 1);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            if (err != 0) {
+                regs->eax = (uint32_t) err;
+                break;
+            }
 
-            agent_info_t kinfo;
-            int ret = agent_get_info(agent_id, &kinfo);
+            static agent_info_t s_kinfo;
+            int ret = agent_get_info(agent_id, &s_kinfo);
             if (ret == 0) {
-                memcpy(uinfo, &kinfo, sizeof(agent_info_t));
+                memcpy(uinfo, &s_kinfo, sizeof(agent_info_t));
             }
             regs->eax = (uint32_t) ret;
             break;
@@ -2576,6 +2594,17 @@ static void syscall_handler(struct registers* regs) {
         case SYS_MODEL_DAEMON_REGISTER: {
             process_t* me = scheduler_current();
             int ret = agent_model_daemon_register(me);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_KILLSWITCH_STATE: {
+            int ret;
+            if (regs->ebx == 1) {
+                ret = agent_killswitch_toggle();
+            } else {
+                ret = agent_killswitch_active();
+            }
             regs->eax = (uint32_t) ret;
             break;
         }

@@ -1123,4 +1123,14 @@ int model_daemon_register(void) {
     return __check_syscall_err(ret);
 }
 
+int agent_killswitch_state(void) {
+    int ret = __syscall1(SYS_AGENT_KILLSWITCH_STATE, 0);
+    return __check_syscall_err(ret);
+}
+
+int agent_killswitch_toggle(void) {
+    int ret = __syscall1(SYS_AGENT_KILLSWITCH_STATE, 1);
+    return __check_syscall_err(ret);
+}
+
 

@@ -71,6 +71,8 @@ typedef struct {
 struct ui_widget {
     ui_widget_type_t type;
     uint32_t flags;
+    uint32_t a11y_id;
+    int is_secret;
     int x, y, w, h;            /* Relative to parent */
     ui_window_t* win;
     ui_widget_t* parent;
@@ -215,6 +217,11 @@ const char*   ui_textarea_get_text(ui_widget_t* w);
 
 /* Dialog Helpers */
 void          ui_dialog_message_box(ui_window_t* parent, const char* title, const char* message);
+
+/* Accessibility Helpers */
+void          ui_widget_set_secret(ui_widget_t* w, int is_secret);
+uint32_t      ui_widget_get_a11y_id(ui_widget_t* w);
+ui_widget_t*  ui_window_find_by_a11y_id(ui_window_t* win, uint32_t a11y_id);
 
 #ifdef __cplusplus
 }

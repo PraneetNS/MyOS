@@ -5,8 +5,8 @@ CC = $(PREFIX)/bin/$(TARGET)-gcc
 AR = $(PREFIX)/bin/$(TARGET)-ar
 RANLIB = $(PREFIX)/bin/$(TARGET)-ranlib
 
-CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -I. -I../../libmyos/include -I../libgfx -I../libwin -isystem $(PREFIX)/$(TARGET)/include
-OBJS = ui_core.o ui_widgets.o ui_text.o ui_advanced.o
+CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -I. -I../../libmyos/include -I../libgfx -I../libwin -I../libjson -isystem $(PREFIX)/$(TARGET)/include
+OBJS = ui_core.o ui_widgets.o ui_text.o ui_advanced.o ui_a11y.o
 
 all: libui.a install
 

@@ -60,7 +60,9 @@ static const char* const s_event_names[] = {
     "BUS_REGISTER",
     "BUS_CALL",
     "BUS_DENIED",
-    "BUS_APPROVAL"
+    "BUS_APPROVAL",
+    "KILLSWITCH",
+    "WINDOW_ACTION"
 };
 
 const char* agent_event_name(uint32_t event_type) {
@@ -269,6 +271,36 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
                 kmutex_unlock(&s_agent_lock);
                 agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: bus_provide widening attempted");
                 kprintf("[agent %d] DENIED: bus_provide prefix '%s' widening attempted\n", parent_agent_id, caps->bus_provide[i].prefix);
+                return -EACCES;
+            }
+        }
+
+        for (uint32_t i = 0; i < caps->num_window_observe && i < MAX_PATH_RULES; i++) {
+            int ok = 0;
+            for (uint32_t j = 0; j < parent->caps.num_window_observe && j < MAX_PATH_RULES; j++) {
+                if (path_matches_prefix(caps->window_observe[i].prefix, parent->caps.window_observe[j].prefix)) {
+                    ok = 1; break;
+                }
+            }
+            if (!ok) {
+                kmutex_unlock(&s_agent_lock);
+                agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: window_observe widening attempted");
+                kprintf("[agent %d] DENIED: window_observe prefix '%s' widening attempted\n", parent_agent_id, caps->window_observe[i].prefix);
+                return -EACCES;
+            }
+        }
+
+        for (uint32_t i = 0; i < caps->num_window_act && i < MAX_PATH_RULES; i++) {
+            int ok = 0;
+            for (uint32_t j = 0; j < parent->caps.num_window_act && j < MAX_PATH_RULES; j++) {
+                if (path_matches_prefix(caps->window_act[i].prefix, parent->caps.window_act[j].prefix)) {
+                    ok = 1; break;
+                }
+            }
+            if (!ok) {
+                kmutex_unlock(&s_agent_lock);
+                agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: window_act widening attempted");
+                kprintf("[agent %d] DENIED: window_act prefix '%s' widening attempted\n", parent_agent_id, caps->window_act[i].prefix);
                 return -EACCES;
             }
         }
@@ -786,4 +818,36 @@ int agent_tokens_left(int agent_id) {
     }
     kmutex_unlock(&s_agent_lock);
     return left;
+}
+
+static int s_killswitch_active = 0;
+
+int agent_killswitch_active(void) {
+    return s_killswitch_active;
+}
+
+int agent_killswitch_toggle(void) {
+    kmutex_lock(&s_agent_lock);
+    s_killswitch_active = !s_killswitch_active;
+    int state = s_killswitch_active;
+    if (state) {
+        for (int i = 0; i < MAX_AGENTS; i++) {
+            if (s_agents[i].in_use && s_agents[i].state == AGENT_STATE_RUNNING) {
+                s_agents[i].state = AGENT_STATE_SUSPENDED;
+            }
+        }
+        kmutex_unlock(&s_agent_lock);
+        agent_audit_log(0, AUDIT_EVENT_KILLSWITCH, "KILLSWITCH: all agents suspended");
+        kprintf("\n[KILLSWITCH] Agents paused, press Ctrl+Alt+Esc again to resume\n");
+    } else {
+        for (int i = 0; i < MAX_AGENTS; i++) {
+            if (s_agents[i].in_use && s_agents[i].state == AGENT_STATE_SUSPENDED) {
+                s_agents[i].state = AGENT_STATE_RUNNING;
+            }
+        }
+        kmutex_unlock(&s_agent_lock);
+        agent_audit_log(0, AUDIT_EVENT_KILLSWITCH, "KILLSWITCH: agents resumed");
+        kprintf("\n[KILLSWITCH] Agents resumed\n");
+    }
+    return state;
 }
