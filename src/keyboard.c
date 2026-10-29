@@ -6,6 +6,7 @@
 #include "input.h"
 #include "scheduler.h"
 #include "serial.h"
+#include "agent.h"
 
 /* Linux input keycodes */
 #define KEY_RESERVED    0
@@ -267,6 +268,11 @@ static void keyboard_callback(struct registers* regs) {
     if (!is_release && (ctrl_l || ctrl_r) && (alt_l || alt_r) && keycode == KEY_F1) {
         console_set_kbmode(K_XLATE);
         serial_printf("[keyboard] Restored K_XLATE via Ctrl+Alt+F1\n");
+    }
+
+    /* Kernel kill switch: Ctrl + Alt + Esc suspends/resumes all agents */
+    if (!is_release && (ctrl_l || ctrl_r) && (alt_l || alt_r) && keycode == KEY_ESC) {
+        agent_killswitch_toggle();
     }
 
     /* Always deliver raw key event to /dev/input/kbd0 */

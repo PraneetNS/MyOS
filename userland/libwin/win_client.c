@@ -36,6 +36,10 @@ struct win {
     int active_buffer; /* committed front buffer */
     int back_buffer;   /* back buffer for drawing */
 
+    win_a11y_tree_handler_t a11y_tree_fn;
+    win_a11y_action_handler_t a11y_action_fn;
+    void* a11y_udata;
+
     win_t* next;
 };
 
@@ -619,6 +623,26 @@ static int parse_next_message(win_conn_t* conn, win_event_t* event) {
             break;
         }
 
+        case WIN_MSG_A11Y_GET_TREE: {
+            win_t* w = find_window(conn, hdr.window_id);
+            if (w && w->a11y_tree_fn && payload_len >= sizeof(struct win_msg_a11y_get_tree)) {
+                struct win_msg_a11y_get_tree req;
+                memcpy(&req, payload, sizeof(req));
+                w->a11y_tree_fn(w, req.root_node_id, req.max_depth, w->a11y_udata);
+            }
+            break;
+        }
+
+        case WIN_MSG_A11Y_ACTION: {
+            win_t* w = find_window(conn, hdr.window_id);
+            if (w && w->a11y_action_fn && payload_len >= sizeof(struct win_msg_a11y_action)) {
+                struct win_msg_a11y_action req;
+                memcpy(&req, payload, sizeof(req));
+                w->a11y_action_fn(w, req.node_id, req.action, req.args, w->a11y_udata);
+            }
+            break;
+        }
+
         default:
             /* Ignore unrecognized / server-internal messages */
             break;
@@ -713,4 +737,36 @@ int win_clipboard_get(win_conn_t* conn, const char* mime, void* buf, uint32_t ma
     uint32_t to_copy = (conn->clip_len < max_len) ? conn->clip_len : max_len;
     memcpy(buf, conn->clip_data, to_copy);
     return (int) to_copy;
+}
+
+void win_set_a11y_handlers(win_t* win, win_a11y_tree_handler_t tree_fn, win_a11y_action_handler_t act_fn, void* udata) {
+    if (!win) return;
+    win->a11y_tree_fn = tree_fn;
+    win->a11y_action_fn = act_fn;
+    win->a11y_udata = udata;
+}
+
+void win_send_a11y_tree(win_t* win, const char* json_tree, int truncated) {
+    if (!win || !win->conn) return;
+    size_t len = json_tree ? strlen(json_tree) : 0;
+    struct win_msg_header hdr;
+    hdr.len = sizeof(hdr) + len;
+    hdr.type = WIN_MSG_A11Y_TREE;
+    hdr.flags = truncated ? WIN_A11Y_FLAG_TRUNCATED : 0;
+    hdr.window_id = win->id;
+
+    send(win->conn->sock_fd, &hdr, sizeof(hdr), 0);
+    if (len > 0) {
+        send(win->conn->sock_fd, json_tree, len, 0);
+    }
+}
+
+void win_send_a11y_result(win_t* win, int ok, const char* error, const char* new_state) {
+    if (!win || !win->conn) return;
+    struct win_msg_a11y_result res;
+    memset(&res, 0, sizeof(res));
+    res.ok = ok ? 1 : 0;
+    if (error) strncpy(res.error, error, sizeof(res.error) - 1);
+    if (new_state) strncpy(res.new_state, new_state, sizeof(res.new_state) - 1);
+    send_msg(win->conn->sock_fd, WIN_MSG_A11Y_RESULT, win->id, &res, sizeof(res));
 }

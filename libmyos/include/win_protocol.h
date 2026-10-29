@@ -39,6 +39,15 @@ enum {
     WIN_MSG_CTRL_STATS       = 53,
     WIN_MSG_CTRL_SCREENSHOT  = 54,
 
+    /* Accessibility & Agent Bus Messages */
+    WIN_MSG_A11Y_GET_TREE       = 60,
+    WIN_MSG_A11Y_TREE           = 61,
+    WIN_MSG_A11Y_ACTION         = 62,
+    WIN_MSG_A11Y_RESULT         = 63,
+    WIN_MSG_PRIVILEGED_REGISTER = 64,
+    WIN_MSG_PRIVILEGED_ACK      = 65,
+    WIN_MSG_AGENT_INDICATOR     = 66,
+
     /* Server -> Client */
     WIN_MSG_HELLO_ACK        = 100,
     WIN_MSG_CONFIGURE        = 101,
@@ -235,6 +244,44 @@ struct win_msg_ctrl_stats_data {
     uint32_t bytes_flushed_kb;
     uint32_t active_clients;
     uint32_t active_windows;
+};
+
+#define WIN_A11Y_FLAG_TRUNCATED (1 << 0)
+
+struct win_msg_a11y_get_tree {
+    uint32_t root_node_id;
+    uint32_t max_depth;
+    uint32_t caller_agent_id;
+};
+
+struct win_msg_a11y_action {
+    uint32_t node_id;
+    uint32_t caller_agent_id;
+    char action[32];
+    char args[256];
+};
+
+struct win_msg_a11y_result {
+    uint32_t ok;
+    char error[64];
+    char new_state[128];
+};
+
+struct win_msg_privileged_register {
+    uint32_t role; /* 1 = uibridge */
+};
+
+struct win_msg_privileged_ack {
+    uint32_t ok;
+};
+
+struct win_msg_agent_indicator {
+    uint32_t agent_id;
+    char agent_name[32];
+    uint32_t target_x;
+    uint32_t target_y;
+    uint32_t target_w;
+    uint32_t target_h;
 };
 
 #endif /* _WIN_PROTOCOL_H */

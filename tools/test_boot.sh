@@ -13,7 +13,8 @@ LOGFILE16=$(mktemp)
 LOGFILE17=$(mktemp)
 LOGFILE18=$(mktemp)
 LOGFILE18_LOWMEM=$(mktemp)
-trap 'kill -9 "$HB_PID" 2>/dev/null || true; rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15" "$LOGFILE16" "$LOGFILE17" "$LOGFILE18" "$LOGFILE18_LOWMEM"' EXIT
+LOGFILE19=$(mktemp)
+trap 'kill -9 "$HB_PID" 2>/dev/null || true; rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15" "$LOGFILE16" "$LOGFILE17" "$LOGFILE18" "$LOGFILE18_LOWMEM" "$LOGFILE19"' EXIT
 
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
@@ -83,7 +84,9 @@ echo "[TEST] Session 1: Booting and testing commands, VFS, utilities, and regres
     printf "memtest\n"
     sleep 45
     printf "exit\n"
-) | timeout 420s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
+    sleep 1
+    printf "poweroff\n"
+) | timeout 240s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE1" 2>&1 || true
 
 cat "$LOGFILE1"
 
@@ -376,7 +379,7 @@ sleep 1
 echo "[TEST] Session 6: Live job control and interactive TTY signals over COM1..."
 
 (
-    sleep 2
+    sleep 4
     # Baseline
     printf "shinfo\n"
     sleep 0.3
@@ -463,7 +466,7 @@ echo "[TEST] Session 6: Live job control and interactive TTY signals over COM1..
     printf "shinfo\n"
     sleep 0.3
     printf "exit\n"
-) | timeout 18s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE6" 2>&1 || true
+) | timeout 22s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE6" 2>&1 || true
 
 cat "$LOGFILE6"
 
@@ -525,7 +528,7 @@ echo "[PASS] Case 8: Shell is healthy, prompt works, zero leaks verified"
 echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, scheduler, and responsiveness..."
 
 (
-    sleep 2
+    sleep 4
     printf "shinfo\n"
     sleep 0.3
     printf "date\n"
@@ -575,7 +578,7 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     printf "shinfo\n"
     sleep 0.3
     printf "exit\n"
-) | timeout 30s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
+) | timeout 35s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE7" > "${LOGFILE7}.tmp" && mv "${LOGFILE7}.tmp" "$LOGFILE7"
 cat "$LOGFILE7"
@@ -956,7 +959,7 @@ echo "[TEST] Session 15: Model-Based LFN Stress Test (500 ops) & Host fsck.fat/m
 
 LOGFILE15=$(mktemp)
 (
-    sleep 2
+    sleep 4
     printf "shinfo\n"
     sleep 0.5
     printf "lfnstress\n"
@@ -964,7 +967,7 @@ LOGFILE15=$(mktemp)
     printf "shinfo\n"
     sleep 0.5
     printf "exit\n"
-) | timeout 50s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE15" 2>&1 || true
+) | timeout 55s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE15" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE15" > "${LOGFILE15}.tmp" && mv "${LOGFILE15}.tmp" "$LOGFILE15"
 cat "$LOGFILE15"
@@ -1182,6 +1185,47 @@ strings disk.img | grep -q "MOCK_SECRET_KEY_NOT_IN_GUEST_998877" && { echo "FAIL
 
 echo "[PASS] Session 18: Model daemon, host bridge, token budgets, and agent loop verified!"
 rm -f "$LOGFILE18"
+
+echo "[TEST] Session 19: The Agent Desktop, accessibility tree, window capabilities, trusted approval UI, and killswitch..."
+
+# Part A: Low-memory -m 64 text-mode boot: desktest.elf and agentctl window caps
+(
+    sleep 2
+    printf "shinfo\n"
+    sleep 0.5
+    printf "agentctl create winagent --window-observe uidemo --window-act uidemo\n"
+    sleep 0.5
+    printf "cat /proc/agents/1/caps\n"
+    sleep 0.5
+    printf "desktest.elf\n"
+    sleep 2
+    printf "poweroff\n"
+) | timeout 35s qemu-system-i386 -vga std -m 64 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE19" 2>&1 || true
+
+tr -d '\r' < "$LOGFILE19" > "${LOGFILE19}.tmp" && mv "${LOGFILE19}.tmp" "$LOGFILE19"
+cat "$LOGFILE19"
+
+echo "[TEST] Asserting Session 19 low-memory results..."
+grep -q "ALL AGENT DESKTOP TESTS PASSED!" "$LOGFILE19" || { echo "FAIL: desktest suite failed"; rm -f "$LOGFILE19"; exit 1; }
+grep -q "PASSED: Killswitch state transitions and audit logging verified" "$LOGFILE19" || { echo "FAIL: Killswitch test failed"; rm -f "$LOGFILE19"; exit 1; }
+grep -q "PASSED: Window capabilities and delegation narrowing verified" "$LOGFILE19" || { echo "FAIL: Window caps test failed"; rm -f "$LOGFILE19"; exit 1; }
+grep -q "PASSED: Accessibility tree and action protocol round-trip verified" "$LOGFILE19" || { echo "FAIL: A11y protocol test failed"; rm -f "$LOGFILE19"; exit 1; }
+grep -q "PASSED: Zero physical frame leaks after agent desktop operations" "$LOGFILE19" || { echo "FAIL: Frame leaks test failed"; rm -f "$LOGFILE19"; exit 1; }
+grep -q "WindowObserve:	uidemo" "$LOGFILE19" || { echo "FAIL: WindowObserve cap missing in /proc/agents/1/caps"; rm -f "$LOGFILE19"; exit 1; }
+grep -q "WindowAct:	uidemo" "$LOGFILE19" || { echo "FAIL: WindowAct cap missing in /proc/agents/1/caps"; rm -f "$LOGFILE19"; exit 1; }
+
+# Part B: Preset configuration files on disk image
+echo "[TEST] Verifying preset configuration files on disk image..."
+mdir -i disk.img ::/etc/agents.d | grep -qi "organizer.conf" || { echo "FAIL: organizer.conf missing in /etc/agents.d"; rm -f "$LOGFILE19"; exit 1; }
+mdir -i disk.img ::/etc/agents.d | grep -qi "explainer.conf" || { echo "FAIL: explainer.conf missing in /etc/agents.d"; rm -f "$LOGFILE19"; exit 1; }
+mdir -i disk.img ::/etc/agents.d | grep -qi "terminal.*conf" || { echo "FAIL: terminal-helper.conf missing in /etc/agents.d"; rm -f "$LOGFILE19"; exit 1; }
+
+# Part C: Full GUI compositor & visual killswitch verification via test_step6.py
+echo "[TEST] Running Phase 4 graphical integration test (test_step6.py)..."
+python3 tools/test_step6.py || { echo "FAIL: test_step6.py failed"; rm -f "$LOGFILE19"; exit 1; }
+
+echo "[PASS] Session 19: The Agent Desktop, accessibility tree, window capabilities, trusted approval UI, and killswitch verified!"
+rm -f "$LOGFILE19"
 
 echo "==============================="
 echo "ALL TESTS PASSED!"

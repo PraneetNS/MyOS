@@ -90,6 +90,14 @@ int win_event_poll(win_conn_t* conn, win_event_t* event);
 void win_clipboard_set(win_conn_t* conn, const char* mime, const void* data, uint32_t len);
 int  win_clipboard_get(win_conn_t* conn, const char* mime, void* buf, uint32_t max_len);
 
+/* Accessibility Integration */
+typedef void (*win_a11y_tree_handler_t)(win_t* win, uint32_t root_id, uint32_t max_depth, void* udata);
+typedef void (*win_a11y_action_handler_t)(win_t* win, uint32_t node_id, const char* action, const char* args, void* udata);
+
+void win_set_a11y_handlers(win_t* win, win_a11y_tree_handler_t tree_fn, win_a11y_action_handler_t act_fn, void* udata);
+void win_send_a11y_tree(win_t* win, const char* json_tree, int truncated);
+void win_send_a11y_result(win_t* win, int ok, const char* error, const char* new_state);
+
 #ifdef __cplusplus
 }
 #endif

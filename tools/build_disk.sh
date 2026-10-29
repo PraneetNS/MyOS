@@ -41,10 +41,21 @@ cat << 'EOF' > /tmp/myos_init_conf
 # /etc/init.conf - MyOS init configuration
 respawn /dev/null /bin/intentd.elf
 respawn /dev/null /bin/modeld.elf
+respawn /dev/null /bin/uibridge.elf
 respawn /dev/console /bin/sh.elf
 EOF
 mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
 rm -f /tmp/myos_init_conf
+
+mmd -i "$IMAGE" "::/etc/agents.d" || true
+if [ -d "userland/data/agents.d" ]; then
+    echo "Copying /etc/agents.d/*.conf..."
+    for f in userland/data/agents.d/*.conf; do
+        if [ -f "$f" ]; then
+            mcopy -o -i "$IMAGE" "$f" "::/etc/agents.d/$(basename "$f")"
+        fi
+    done
+fi
 
 if [ -f "userland/data/desktop.conf" ]; then
     echo "Copying /etc/myos/desktop.conf..."

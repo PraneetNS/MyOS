@@ -115,9 +115,13 @@ ui_window_t* ui_window_create(ui_app_t* app, int width, int height, const char* 
     strncpy(win->title, title ? title : "MyOS Window", sizeof(win->title) - 1);
     win->dirty = 1;
     win->running = 1;
+    win->next_a11y_id = 1;
 
     /* Create root container widget */
     win->root = ui_container_create(win, 0, 0, width, height);
+
+    /* Hook accessibility callbacks */
+    win_set_a11y_handlers(raw, ui_a11y_on_get_tree, ui_a11y_on_action, win);
 
     if (app->num_windows >= app->cap_windows) {
         app->cap_windows *= 2;
@@ -150,6 +154,9 @@ void ui_widget_add_child(ui_widget_t* parent, ui_widget_t* child) {
     parent->children[parent->num_children++] = child;
     child->parent = parent;
     child->win = parent->win;
+    if (child->a11y_id == 0 && parent->win) {
+        child->a11y_id = parent->win->next_a11y_id++;
+    }
 }
 
 void ui_widget_set_focus(ui_widget_t* w) {

@@ -42,14 +42,201 @@
 #include <linux/input.h>
 
 #include <sigsetjmp.h>
+#include <time.h>
 #include <gfx.h>
 #include <win_protocol.h>
+#include <agent.h>
+#include <approval_protocol.h>
 
 #define WM_CTRL_SOCK_PATH "/run/wm.sock"
 #define MAX_CLIENTS 32
 #define MAX_CTRL_CLIENTS 8
 #define MAX_WINDOWS 64
 #define MAX_DIRTY_RECTS 64
+
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+
+static uint64_t get_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+/* SHA-256 for audit logging */
+typedef struct {
+    uint32_t state[8];
+    uint64_t count;
+    uint8_t buffer[64];
+} wm_sha256_ctx_t;
+
+#define CH(x,y,z)  (((x) & (y)) ^ (~(x) & (z)))
+#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define EP0(x)     ((x >> 2 | x << 30) ^ (x >> 13 | x << 19) ^ (x >> 22 | x << 10))
+#define EP1(x)     ((x >> 6 | x << 26) ^ (x >> 11 | x << 21) ^ (x >> 25 | x << 7))
+#define SIG0(x)    ((x >> 7 | x << 25) ^ (x >> 18 | x << 14) ^ (x >> 3))
+#define SIG1(x)    ((x >> 17 | x << 15) ^ (x >> 19 | x << 13) ^ (x >> 10))
+
+static const uint32_t s_sha256_k[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+static void wm_sha256_transform(wm_sha256_ctx_t* ctx, const uint8_t* data) {
+    uint32_t a, b, c, d, e, f, g, h, t1, t2, m[64];
+    for (int i = 0, j = 0; i < 16; ++i, j += 4)
+        m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | (data[j + 3]);
+    for (int i = 16; i < 64; ++i)
+        m[i] = SIG1(m[i - 2]) + m[i - 7] + SIG0(m[i - 15]) + m[i - 16];
+    a = ctx->state[0]; b = ctx->state[1]; c = ctx->state[2]; d = ctx->state[3];
+    e = ctx->state[4]; f = ctx->state[5]; g = ctx->state[6]; h = ctx->state[7];
+    for (int i = 0; i < 64; ++i) {
+        t1 = h + EP1(e) + CH(e, f, g) + s_sha256_k[i] + m[i];
+        t2 = EP0(a) + MAJ(a, b, c);
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
+    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
+}
+
+static void wm_sha256_init(wm_sha256_ctx_t* ctx) {
+    ctx->count = 0;
+    ctx->state[0] = 0x6a09e667; ctx->state[1] = 0xbb67ae85;
+    ctx->state[2] = 0x3c6ef372; ctx->state[3] = 0xa54ff53a;
+    ctx->state[4] = 0x510e527f; ctx->state[5] = 0x9b05688c;
+    ctx->state[6] = 0x1f83d9ab; ctx->state[7] = 0x5be0cd19;
+}
+
+static void wm_sha256_update(wm_sha256_ctx_t* ctx, const uint8_t* data, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        ctx->buffer[ctx->count % 64] = data[i];
+        ctx->count++;
+        if ((ctx->count % 64) == 0)
+            wm_sha256_transform(ctx, ctx->buffer);
+    }
+}
+
+static void wm_sha256_final(wm_sha256_ctx_t* ctx, uint8_t* hash) {
+    uint8_t pad = 0x80;
+    uint64_t total_bits = ctx->count * 8;
+    wm_sha256_update(ctx, &pad, 1);
+    while ((ctx->count % 64) != 56) {
+        pad = 0x00;
+        wm_sha256_update(ctx, &pad, 1);
+    }
+    uint8_t len_bytes[8];
+    for (int i = 7; i >= 0; --i) {
+        len_bytes[i] = (uint8_t)(total_bits & 0xff);
+        total_bits >>= 8;
+    }
+    wm_sha256_update(ctx, len_bytes, 8);
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 8; ++j) {
+            hash[i + (j * 4)] = (uint8_t)((ctx->state[j] >> (24 - i * 8)) & 0x000000ff);
+        }
+    }
+}
+
+static void wm_hash_to_hex(const uint8_t* hash, char* out, size_t out_cap) {
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 16 && (size_t)(i * 2 + 2) < out_cap; i++) {
+        out[i * 2]     = hex[(hash[i] >> 4) & 0xF];
+        out[i * 2 + 1] = hex[hash[i] & 0xF];
+    }
+    out[32 < out_cap ? 32 : out_cap - 1] = '\0';
+}
+
+static const uint32_t s_agent_colors[] = {
+    0xFF3B82F6, /* 1: Blue */
+    0xFF10B981, /* 2: Emerald */
+    0xFFF59E0B, /* 3: Amber */
+    0xFF8B5CF6, /* 4: Purple */
+    0xFFEC4899, /* 5: Pink */
+    0xFF06B6D4  /* 6: Cyan */
+};
+
+static void detect_client_app_name(pid_t pid, char* out_name, size_t cap) {
+    out_name[0] = '\0';
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", (int)pid);
+    int fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        char buf[128];
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0) {
+            buf[n] = '\0';
+            char* nl = strchr(buf, '\n');
+            if (nl) *nl = '\0';
+            char* p = strrchr(buf, '/');
+            const char* base = p ? p + 1 : buf;
+            char* dot = strstr(base, ".elf");
+            if (dot) *dot = '\0';
+            strncpy(out_name, base, cap - 1);
+            out_name[cap - 1] = '\0';
+            return;
+        }
+    }
+    snprintf(out_name, cap, "proc-%d", (int)pid);
+}
+
+static int check_agent_window_cap(uint32_t agent_id, uint32_t cap_flag, const char* app_name) {
+    if (agent_id == 0) return 1; /* Unconfined non-agent process */
+
+    agent_info_t info;
+    if (agent_info((int)agent_id, &info) != 0) return 0;
+
+    if (!(info.caps.mask & cap_flag)) return 0;
+
+    if (cap_flag == CAP_WINDOW_OBSERVE) {
+        if (info.caps.num_window_observe == 0) return 1;
+        for (uint32_t i = 0; i < info.caps.num_window_observe && i < MAX_PATH_RULES; i++) {
+            const char* pfx = info.caps.window_observe[i].prefix;
+            if (strcmp(pfx, "*") == 0 || strcmp(pfx, app_name) == 0 || strstr(app_name, pfx) != NULL) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    if (cap_flag == CAP_WINDOW_ACT) {
+        if (info.caps.num_window_act == 0) return 1;
+        for (uint32_t i = 0; i < info.caps.num_window_act && i < MAX_PATH_RULES; i++) {
+            const char* pfx = info.caps.window_act[i].prefix;
+            if (strcmp(pfx, "*") == 0 || strcmp(pfx, app_name) == 0 || strstr(app_name, pfx) != NULL) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    return 1;
+}
+
+struct approval_state {
+    int active;
+    uint32_t approval_id;
+    uint32_t agent_id;
+    char agent_name[32];
+    char skill[64];
+    char args_summary[128];
+    char args_hash[64];
+    uint64_t expires_ms;
+    int focused_btn; /* 0 = Deny, 1 = Allow Once, 2 = Allow Session */
+    int intentd_fd;
+};
+static struct approval_state g_approval;
+static int g_approval_srv_fd = -1;
+static int g_approval_cl_fd = -1;
+static void wm_resolve_approval(int status);
 
 /* Drag Modes */
 enum {
@@ -125,6 +312,23 @@ struct server_window {
     uint32_t state;
     char title[128];
 
+    pid_t pid;
+    uint32_t agent_id;
+    char app_name[64];
+
+    /* Agent control indicators */
+    uint32_t agent_control_id;
+    char agent_control_name[32];
+    uint64_t agent_control_expire_ms;
+    int target_indicator_active;
+    int target_x, target_y, target_w, target_h;
+
+    /* Collision detection with real hardware input */
+    uint64_t last_hardware_input_time;
+
+    /* A11Y request routing: client slot waiting for reply */
+    int a11y_requester_client_idx;
+
     /* Saved geometry for maximize / restore */
     int32_t saved_x;
     int32_t saved_y;
@@ -143,6 +347,9 @@ struct server_window {
 struct client {
     int fd;
     pid_t pid;
+    uint32_t agent_id;
+    int is_privileged;
+    char app_name[64];
     int active;
 
     uint8_t rx_buf[WIN_MAX_MSG_LEN * 2];
@@ -798,6 +1005,10 @@ static void handle_client_message(int c_idx, const struct win_msg_header* hdr, c
             win->max_h = 2048;
             win->flags = cw.flags;
             win->state = WIN_STATE_NORMAL;
+            win->pid = clients[c_idx].pid;
+            win->agent_id = clients[c_idx].agent_id;
+            strncpy(win->app_name, clients[c_idx].app_name, sizeof(win->app_name) - 1);
+            win->a11y_requester_client_idx = -1;
             memcpy(win->title, cw.title, sizeof(win->title) - 1);
             win->title[sizeof(win->title) - 1] = '\0';
 
@@ -1016,6 +1227,155 @@ static void handle_client_message(int c_idx, const struct win_msg_header* hdr, c
         case WIN_MSG_CONFIGURE_ACK:
             break;
 
+        case WIN_MSG_PRIVILEGED_REGISTER: {
+            struct win_msg_privileged_ack ack;
+            memset(&ack, 0, sizeof(ack));
+            if (c->agent_id == 0) {
+                c->is_privileged = 1;
+                ack.ok = 1;
+            } else {
+                ack.ok = 0;
+            }
+            send_client_msg(c->fd, WIN_MSG_PRIVILEGED_ACK, 0, &ack, sizeof(ack));
+            break;
+        }
+
+        case WIN_MSG_AGENT_INDICATOR: {
+            if (payload_len < sizeof(struct win_msg_agent_indicator)) return;
+            struct win_msg_agent_indicator ind;
+            memcpy(&ind, payload, sizeof(ind));
+            struct server_window* win = find_window_by_id(hdr->window_id);
+            if (win) {
+                win->agent_control_id = ind.agent_id;
+                strncpy(win->agent_control_name, ind.agent_name, sizeof(win->agent_control_name) - 1);
+                win->agent_control_expire_ms = get_now_ms() + 1500;
+                win->target_indicator_active = 1;
+                win->target_x = ind.target_x;
+                win->target_y = ind.target_y;
+                win->target_w = ind.target_w;
+                win->target_h = ind.target_h;
+                invalidate_window_frame(win);
+                add_dirty_rect(win->x + ind.target_x - 4, win->y + ind.target_y - 4, ind.target_w + 8, ind.target_h + 8);
+            }
+            break;
+        }
+
+        case WIN_MSG_A11Y_GET_TREE: {
+            if (payload_len < sizeof(struct win_msg_a11y_get_tree)) return;
+            struct win_msg_a11y_get_tree req;
+            memcpy(&req, payload, sizeof(req));
+
+            struct server_window* target_win = find_window_by_id(hdr->window_id);
+            if (!target_win) {
+                struct win_msg_a11y_result res;
+                memset(&res, 0, sizeof(res));
+                res.ok = 0;
+                snprintf(res.error, sizeof(res.error), "Target window not found");
+                send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
+                break;
+            }
+
+            uint32_t caller_agent = c->is_privileged ? req.caller_agent_id : c->agent_id;
+
+            /* Check CAP_WINDOW_OBSERVE against target window app allowlist */
+            if (caller_agent > 0) {
+                if (!check_agent_window_cap(caller_agent, CAP_WINDOW_OBSERVE, target_win->app_name)) {
+                    struct win_msg_a11y_result res;
+                    memset(&res, 0, sizeof(res));
+                    res.ok = 0;
+                    snprintf(res.error, sizeof(res.error), "Permission denied: lacks CAP_WINDOW_OBSERVE for %s", target_win->app_name);
+                    send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
+                    break;
+                }
+            }
+
+            target_win->a11y_requester_client_idx = c_idx;
+            send_client_msg(clients[target_win->client_idx].fd, WIN_MSG_A11Y_GET_TREE, target_win->id, &req, sizeof(req));
+            break;
+        }
+
+        case WIN_MSG_A11Y_TREE: {
+            struct server_window* win = find_window_by_id(hdr->window_id);
+            if (win && win->a11y_requester_client_idx >= 0 && win->a11y_requester_client_idx < MAX_CLIENTS && clients[win->a11y_requester_client_idx].active) {
+                send_client_msg(clients[win->a11y_requester_client_idx].fd, WIN_MSG_A11Y_TREE, hdr->window_id, payload, payload_len);
+                win->a11y_requester_client_idx = -1;
+            }
+            break;
+        }
+
+        case WIN_MSG_A11Y_ACTION: {
+            if (payload_len < sizeof(struct win_msg_a11y_action)) return;
+            struct win_msg_a11y_action act;
+            memcpy(&act, payload, sizeof(act));
+
+            struct server_window* target_win = find_window_by_id(hdr->window_id);
+            if (!target_win) {
+                struct win_msg_a11y_result res;
+                memset(&res, 0, sizeof(res));
+                res.ok = 0;
+                snprintf(res.error, sizeof(res.error), "Target window not found");
+                send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
+                break;
+            }
+
+            uint32_t caller_agent = c->is_privileged ? act.caller_agent_id : c->agent_id;
+
+            /* Capability check: CAP_WINDOW_ACT */
+            if (caller_agent > 0) {
+                if (!check_agent_window_cap(caller_agent, CAP_WINDOW_ACT, target_win->app_name)) {
+                    struct win_msg_a11y_result res;
+                    memset(&res, 0, sizeof(res));
+                    res.ok = 0;
+                    snprintf(res.error, sizeof(res.error), "Permission denied: lacks CAP_WINDOW_ACT for %s", target_win->app_name);
+                    send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
+                    break;
+                }
+            }
+
+            /* Human input always wins: abort if hardware input within 500ms */
+            uint64_t now = get_now_ms();
+            if (now >= target_win->last_hardware_input_time && (now - target_win->last_hardware_input_time) < 500) {
+                struct win_msg_a11y_result res;
+                memset(&res, 0, sizeof(res));
+                res.ok = 0;
+                snprintf(res.error, sizeof(res.error), "Aborted: human input takes precedence");
+                send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
+                break;
+            }
+
+            /* Visible control indicators */
+            target_win->agent_control_id = caller_agent;
+            target_win->agent_control_expire_ms = now + 1500;
+            invalidate_window_frame(target_win);
+
+            /* Audit log entry with hash of args */
+            uint8_t ahash[32];
+            wm_sha256_ctx_t hctx;
+            wm_sha256_init(&hctx);
+            wm_sha256_update(&hctx, (const uint8_t*)act.args, strlen(act.args));
+            wm_sha256_final(&hctx, ahash);
+            char hex_hash[33];
+            wm_hash_to_hex(ahash, hex_hash, sizeof(hex_hash));
+
+            char audit_detail[96];
+            snprintf(audit_detail, sizeof(audit_detail), "agent:%u win:%s act:%s hash:%.16s",
+                     (unsigned int)caller_agent, target_win->app_name, act.action, hex_hash);
+            audit_append((int)caller_agent, AUDIT_EVENT_WINDOW_ACTION, audit_detail);
+
+            target_win->a11y_requester_client_idx = c_idx;
+            send_client_msg(clients[target_win->client_idx].fd, WIN_MSG_A11Y_ACTION, target_win->id, &act, sizeof(act));
+            break;
+        }
+
+        case WIN_MSG_A11Y_RESULT: {
+            struct server_window* win = find_window_by_id(hdr->window_id);
+            if (win && win->a11y_requester_client_idx >= 0 && win->a11y_requester_client_idx < MAX_CLIENTS && clients[win->a11y_requester_client_idx].active) {
+                send_client_msg(clients[win->a11y_requester_client_idx].fd, WIN_MSG_A11Y_RESULT, hdr->window_id, payload, payload_len);
+                win->a11y_requester_client_idx = -1;
+            }
+            break;
+        }
+
         default:
             break;
     }
@@ -1079,10 +1439,12 @@ static void handle_ctrl_command(int c_idx, const char* cmd) {
                 else if (windows[i].state == WIN_STATE_MINIMIZED) st_str = "minimized";
                 int foc = (windows[i].id == focused_window_id);
                 off += snprintf(resp + off, sizeof(resp) - off,
-                                "ID %u PID %d TITLE \"%s\" X %d Y %d W %u H %u STATE %s FOCUS %d\n",
+                                "ID %u PID %d TITLE \"%s\" APP \"%s\" AGENT %u X %d Y %d W %u H %u STATE %s FOCUS %d\n",
                                 (unsigned int)windows[i].id,
                                 (int)clients[windows[i].client_idx].pid,
                                 windows[i].title,
+                                windows[i].app_name[0] ? windows[i].app_name : "app",
+                                (unsigned int)windows[i].agent_id,
                                 (int)windows[i].x, (int)windows[i].y,
                                 (unsigned int)windows[i].width, (unsigned int)windows[i].height,
                                 st_str, foc);
@@ -1257,6 +1619,29 @@ static int hit_test_window(const struct server_window* win, int px, int py) {
 /* Mouse Routing & Interactions */
 static void route_mouse_event(int x, int y, int dx, int dy, int btn, int btn_state, int buttons, int wheel) {
     (void) dx; (void) dy;
+
+    if (g_approval.active) {
+        if (btn == 1 && btn_state == 1) {
+            int dw = 460; int dh = 240;
+            int dx = (screen_w - dw) / 2;
+            int dy = (screen_h - dh) / 2;
+            int by = dy + 180;
+            int bh = 34;
+            if (y >= by && y < by + bh) {
+                if (x >= dx + 20 && x < dx + 130) {
+                    wm_resolve_approval(APPROVAL_STATUS_DENY);
+                    return;
+                } else if (x >= dx + 150 && x < dx + 280) {
+                    wm_resolve_approval(APPROVAL_STATUS_ALLOW);
+                    return;
+                } else if (x >= dx + 300 && x < dx + 440) {
+                    wm_resolve_approval(APPROVAL_STATUS_SESSION);
+                    return;
+                }
+            }
+        }
+        return;
+    }
 
     /* 1. Handle Active Dragging / Resizing */
     if (g_drag_state != DRAG_NONE) {
@@ -1516,8 +1901,54 @@ static void route_mouse_event(int x, int y, int dx, int dy, int btn, int btn_sta
 
 /* Keyboard Event Routing & Global Shortcuts */
 static void route_keyboard_event(uint32_t keycode, uint32_t action, uint32_t mods) {
+    if (g_approval.active) {
+        if (action == WIN_KEY_PRESS) {
+            if (keycode == KEY_ESC) {
+                wm_resolve_approval(APPROVAL_STATUS_DENY);
+            } else if (keycode == 15 || keycode == 106) { /* Tab or Right Arrow */
+                g_approval.focused_btn = (g_approval.focused_btn + 1) % 3;
+                add_dirty_rect(0, 0, screen_w, screen_h);
+            } else if (keycode == 105) { /* Left Arrow */
+                g_approval.focused_btn = (g_approval.focused_btn + 2) % 3;
+                add_dirty_rect(0, 0, screen_w, screen_h);
+            } else if (keycode == 28 || keycode == 57) { /* Enter or Space */
+                if (g_approval.focused_btn == 0) wm_resolve_approval(APPROVAL_STATUS_DENY);
+                else if (g_approval.focused_btn == 1) wm_resolve_approval(APPROVAL_STATUS_ALLOW);
+                else if (g_approval.focused_btn == 2) wm_resolve_approval(APPROVAL_STATUS_SESSION);
+            }
+        }
+        return;
+    }
+
     g_last_mods = mods;
     int alt_down = (mods & (KBD_MOD_LALT | KBD_MOD_RALT)) != 0;
+    static int s_super_down = 0;
+    if (keycode == 125 || keycode == 126) {
+        s_super_down = (action == WIN_KEY_PRESS);
+    }
+
+    /* Global Shortcut: Super+Space (Agent Panel) */
+    if (s_super_down && keycode == 57 && action == WIN_KEY_PRESS) {
+        int found = 0;
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            if (windows[i].alive && strcmp(windows[i].app_name, "agentpanel") == 0) {
+                set_focused_window(windows[i].id);
+                raise_window(windows[i].id);
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            pid_t p = fork();
+            if (p == 0) {
+                char* argv[] = { "/bin/agentpanel.elf", NULL };
+                execv("/bin/agentpanel.elf", argv);
+                execv("agentpanel.elf", argv);
+                _exit(1);
+            }
+        }
+        return;
+    }
 
     /* Global Shortcut: Alt+Tab (Window Switcher) */
     if (alt_down && keycode == KEY_TAB && action == WIN_KEY_PRESS) {
@@ -1633,6 +2064,10 @@ static void draw_window_decorations(gfx_surface_t* s, struct server_window* win)
     uint32_t border_col = is_active ? g_theme.active_border : g_theme.inactive_border;
     uint32_t tb_col     = is_active ? g_theme.active_titlebar : g_theme.inactive_titlebar;
 
+    if (win->agent_control_id > 0 && get_now_ms() < win->agent_control_expire_ms) {
+        border_col = s_agent_colors[(win->agent_control_id - 1) % 6];
+    }
+
     /* 1. Outer Border */
     gfx_fill_rect(s, fx, fy, fw, bw, border_col);
     gfx_fill_rect(s, fx, fy + fh - bw, fw, bw, border_col);
@@ -1695,6 +2130,13 @@ static void draw_window_decorations(gfx_surface_t* s, struct server_window* win)
             strncpy(title_buf, win->title, sizeof(title_buf) - 1);
             title_buf[sizeof(title_buf) - 1] = '\0';
         }
+
+        if (win->agent_control_id > 0 && get_now_ms() < win->agent_control_expire_ms) {
+            char badge[48];
+            snprintf(badge, sizeof(badge), " [Agent: %s]", win->agent_control_name[0] ? win->agent_control_name : "active");
+            strncat(title_buf, badge, sizeof(title_buf) - strlen(title_buf) - 1);
+        }
+
         gfx_draw_text_transparent(s, text_x, text_y, title_buf, g_theme.titlebar_text);
     }
 }
@@ -1795,8 +2237,35 @@ static void draw_custom_cursor(gfx_surface_t* s, int x, int y, int type) {
     }
 }
 
+static void wm_resolve_approval(int status) {
+    if (!g_approval.active) return;
+    if (g_approval.intentd_fd >= 0) {
+        struct approval_msg_header hdr;
+        hdr.len = sizeof(hdr) + sizeof(struct approval_msg_resolve);
+        hdr.type = APPROVAL_MSG_RESOLVE;
+        hdr.flags = 0;
+        hdr.call_id = 0;
+
+        struct approval_msg_resolve res;
+        res.approval_id = g_approval.approval_id;
+        res.status = status;
+        write(g_approval.intentd_fd, &hdr, sizeof(hdr));
+        write(g_approval.intentd_fd, &res, sizeof(res));
+    }
+    g_approval.active = 0;
+    add_dirty_rect(0, 0, screen_w, screen_h);
+}
+
 /* Compositing Engine */
 static void composite_screen(void) {
+    static int s_last_ks_state = 0;
+    int cur_ks = agent_killswitch_state();
+    if (cur_ks != s_last_ks_state) {
+        printf("[wm] Killswitch changed: cur_ks=%d, was %d\n", cur_ks, s_last_ks_state);
+        s_last_ks_state = cur_ks;
+        add_dirty_rect(0, 0, screen_w, 24);
+    }
+
     if (num_dirty_rects == 0) return;
 
     for (int d = 0; d < num_dirty_rects; d++) {
@@ -1861,11 +2330,92 @@ static void composite_screen(void) {
             }
 
             g_in_client_blit = 0;
+
+            /* Target widget bounding box indicator */
+            if (win->target_indicator_active && win->agent_control_id > 0 && get_now_ms() < win->agent_control_expire_ms) {
+                int hx = win->x + win->target_x;
+                int hy = win->y + win->target_y;
+                int hw = win->target_w;
+                int hh = win->target_h;
+                uint32_t col = s_agent_colors[(win->agent_control_id - 1) % 6];
+                gfx_draw_rect(ctx->backbuffer, hx, hy, hw, hh, col);
+                gfx_draw_rect(ctx->backbuffer, hx + 1, hy + 1, hw - 2, hh - 2, col);
+            }
         }
 
         /* 3. Switcher overlay */
         if (g_switcher_active) {
             draw_window_switcher(ctx->backbuffer);
+        }
+
+        /* 3b. Trusted Approval Dialog */
+        if (g_approval.active) {
+            uint64_t now = get_now_ms();
+            if (now >= g_approval.expires_ms) {
+                wm_resolve_approval(APPROVAL_STATUS_DENY);
+            } else {
+                int dw = 460;
+                int dh = 240;
+                int dx = (screen_w - dw) / 2;
+                int dy = (screen_h - dh) / 2;
+
+                /* Modal dialog card */
+                gfx_fill_rect(ctx->backbuffer, dx, dy, dw, dh, 0xFF1E293B);
+                gfx_draw_rect(ctx->backbuffer, dx, dy, dw, dh, 0xFFEF4444);
+                gfx_draw_rect(ctx->backbuffer, dx + 1, dy + 1, dw - 2, dh - 2, 0xFFEF4444);
+
+                /* Title header */
+                gfx_fill_rect(ctx->backbuffer, dx, dy, dw, 32, 0xFFDC2626);
+                gfx_draw_text_transparent(ctx->backbuffer, dx + 12, dy + 8, "[!] AGENT APPROVAL REQUIRED", 0xFFFFFFFF);
+
+                /* Details */
+                char line[128];
+                snprintf(line, sizeof(line), "Agent: %s (ID %u)", g_approval.agent_name, (unsigned int)g_approval.agent_id);
+                gfx_draw_text_transparent(ctx->backbuffer, dx + 20, dy + 48, line, 0xFFF8FAFC);
+
+                snprintf(line, sizeof(line), "Skill: %s", g_approval.skill);
+                gfx_draw_text_transparent(ctx->backbuffer, dx + 20, dy + 72, line, 0xFF38BDF8);
+
+                char sum_line[128];
+                snprintf(sum_line, sizeof(sum_line), "Args: %.45s%s", g_approval.args_summary, strlen(g_approval.args_summary) > 45 ? "..." : "");
+                gfx_draw_text_transparent(ctx->backbuffer, dx + 20, dy + 96, sum_line, 0xFFCBD5E1);
+
+                int sec_left = (int)((g_approval.expires_ms - now) / 1000);
+                snprintf(line, sizeof(line), "Auto-deny in: %ds", sec_left > 0 ? sec_left : 0);
+                gfx_draw_text_transparent(ctx->backbuffer, dx + 20, dy + 124, line, 0xFFF59E0B);
+
+                /* Buttons: Deny (0), Allow Once (1), Allow Session (2) */
+                int by = dy + 180;
+                int bh = 34;
+
+                /* Button 0: Deny */
+                int b0_x = dx + 20; int b0_w = 110;
+                uint32_t b0_bg = (g_approval.focused_btn == 0) ? 0xFFDC2626 : 0xFF991B1B;
+                gfx_fill_rect(ctx->backbuffer, b0_x, by, b0_w, bh, b0_bg);
+                gfx_draw_rect(ctx->backbuffer, b0_x, by, b0_w, bh, (g_approval.focused_btn == 0) ? 0xFFFFFFFF : 0xFFEF4444);
+                gfx_draw_text_transparent(ctx->backbuffer, b0_x + 30, by + 10, "Deny", 0xFFFFFFFF);
+
+                /* Button 1: Allow Once */
+                int b1_x = dx + 150; int b1_w = 130;
+                uint32_t b1_bg = (g_approval.focused_btn == 1) ? 0xFF2563EB : 0xFF1E3A8A;
+                gfx_fill_rect(ctx->backbuffer, b1_x, by, b1_w, bh, b1_bg);
+                gfx_draw_rect(ctx->backbuffer, b1_x, by, b1_w, bh, (g_approval.focused_btn == 1) ? 0xFFFFFFFF : 0xFF3B82F6);
+                gfx_draw_text_transparent(ctx->backbuffer, b1_x + 18, by + 10, "Allow Once", 0xFFFFFFFF);
+
+                /* Button 2: Allow Session */
+                int b2_x = dx + 300; int b2_w = 140;
+                uint32_t b2_bg = (g_approval.focused_btn == 2) ? 0xFF059669 : 0xFF065F46;
+                gfx_fill_rect(ctx->backbuffer, b2_x, by, b2_w, bh, b2_bg);
+                gfx_draw_rect(ctx->backbuffer, b2_x, by, b2_w, bh, (g_approval.focused_btn == 2) ? 0xFFFFFFFF : 0xFF10B981);
+                gfx_draw_text_transparent(ctx->backbuffer, b2_x + 14, by + 10, "Allow Session", 0xFFFFFFFF);
+            }
+        }
+
+        /* 3c. Killswitch Emergency Banner */
+        if (agent_killswitch_state()) {
+            gfx_fill_rect(ctx->backbuffer, 0, 0, screen_w, 22, 0xFFEF4444);
+            gfx_draw_text_transparent(ctx->backbuffer, (screen_w - 530) / 2, 3,
+                          "[EMERGENCY STOP: ALL AGENTS SUSPENDED - Press Ctrl+Alt+Esc to resume]", 0xFFFFFFFF);
         }
 
         /* 4. Mouse cursor */
@@ -1979,13 +2529,31 @@ int main(int argc, char** argv) {
     printf("[wm] Control server listening on %s\n", WM_CTRL_SOCK_PATH);
     fflush(stdout);
 
+    /* Approval Server Socket (/run/approval.sock) */
+    unlink(APPROVAL_SOCK_PATH);
+    int app_srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (app_srv_fd >= 0) {
+        fcntl(app_srv_fd, F_SETFL, fcntl(app_srv_fd, F_GETFL, 0) | O_NONBLOCK);
+        struct sockaddr_un app_sun;
+        memset(&app_sun, 0, sizeof(app_sun));
+        app_sun.sun_family = AF_UNIX;
+        strncpy(app_sun.sun_path, APPROVAL_SOCK_PATH, sizeof(app_sun.sun_path) - 1);
+        if (bind(app_srv_fd, (struct sockaddr*)&app_sun, sizeof(app_sun)) == 0) {
+            listen(app_srv_fd, 4);
+            g_approval_srv_fd = app_srv_fd;
+            printf("[wm] Approval server listening on %s\n", APPROVAL_SOCK_PATH);
+        } else {
+            close(app_srv_fd);
+        }
+    }
+
     /* Initial screen repaint */
     add_dirty_rect(0, 0, screen_w, screen_h);
     composite_screen();
 
     /* Main Compositor Loop */
     while (g_running) {
-        struct pollfd pfds[MAX_CLIENTS + MAX_CTRL_CLIENTS + 4];
+        struct pollfd pfds[MAX_CLIENTS + MAX_CTRL_CLIENTS + 8];
         int num_pfds = 0;
 
         int mouse_pfd_idx = -1;
@@ -2017,6 +2585,24 @@ int main(int argc, char** argv) {
         pfds[num_pfds].events = POLLIN;
         pfds[num_pfds].revents = 0;
         num_pfds++;
+
+        int app_srv_pfd_idx = -1;
+        if (g_approval_srv_fd >= 0) {
+            app_srv_pfd_idx = num_pfds;
+            pfds[num_pfds].fd = g_approval_srv_fd;
+            pfds[num_pfds].events = POLLIN;
+            pfds[num_pfds].revents = 0;
+            num_pfds++;
+        }
+
+        int app_cl_pfd_idx = -1;
+        if (g_approval_cl_fd >= 0) {
+            app_cl_pfd_idx = num_pfds;
+            pfds[num_pfds].fd = g_approval_cl_fd;
+            pfds[num_pfds].events = POLLIN;
+            pfds[num_pfds].revents = 0;
+            num_pfds++;
+        }
 
         int client_pfd_map[MAX_CLIENTS];
         for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -2064,6 +2650,16 @@ int main(int argc, char** argv) {
                     clients[c_slot].fd = cl_fd;
                     clients[c_slot].active = 1;
                     clients[c_slot].rx_len = 0;
+                    peerinfo_t peer;
+                    if (sock_peerinfo(cl_fd, &peer) == 0) {
+                        clients[c_slot].pid = peer.pid;
+                        clients[c_slot].agent_id = peer.agent_id;
+                    } else {
+                        clients[c_slot].pid = 0;
+                        clients[c_slot].agent_id = 0;
+                    }
+                    clients[c_slot].is_privileged = 0;
+                    detect_client_app_name(clients[c_slot].pid, clients[c_slot].app_name, sizeof(clients[c_slot].app_name));
                 } else {
                     close(cl_fd);
                 }
@@ -2092,10 +2688,66 @@ int main(int argc, char** argv) {
             }
         }
 
+        /* Accept new approval client (intentd) */
+        if (app_srv_pfd_idx >= 0 && (pfds[app_srv_pfd_idx].revents & POLLIN)) {
+            int cl_fd = accept(g_approval_srv_fd, NULL, NULL);
+            if (cl_fd >= 0) {
+                peerinfo_t peer;
+                if (sock_peerinfo(cl_fd, &peer) == 0 && peer.agent_id == 0) {
+                    if (g_approval_cl_fd >= 0) close(g_approval_cl_fd);
+                    fcntl(cl_fd, F_SETFL, fcntl(cl_fd, F_GETFL, 0) | O_NONBLOCK);
+                    g_approval_cl_fd = cl_fd;
+                } else {
+                    close(cl_fd);
+                }
+            }
+        }
+
+        /* Handle approval messages from intentd */
+        if (app_cl_pfd_idx >= 0 && (pfds[app_cl_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            struct approval_msg_header a_hdr;
+            int n = read(g_approval_cl_fd, &a_hdr, sizeof(a_hdr));
+            if (n == (int)sizeof(a_hdr)) {
+                if (a_hdr.type == APPROVAL_MSG_REQUEST) {
+                    struct approval_msg_request req;
+                    if (read(g_approval_cl_fd, &req, sizeof(req)) == (int)sizeof(req)) {
+                        g_approval.active = 1;
+                        g_approval.approval_id = req.approval_id;
+                        g_approval.agent_id = req.agent_id;
+                        strncpy(g_approval.agent_name, req.agent_name, sizeof(g_approval.agent_name) - 1);
+                        strncpy(g_approval.skill, req.skill, sizeof(g_approval.skill) - 1);
+                        strncpy(g_approval.args_summary, req.args_summary, sizeof(g_approval.args_summary) - 1);
+                        strncpy(g_approval.args_hash, req.args_hash, sizeof(g_approval.args_hash) - 1);
+                        uint32_t t_ms = req.timeout_ms > 0 ? req.timeout_ms : 30000;
+                        g_approval.expires_ms = get_now_ms() + t_ms;
+                        g_approval.focused_btn = 0;
+                        g_approval.intentd_fd = g_approval_cl_fd;
+                        add_dirty_rect(0, 0, screen_w, screen_h);
+                    }
+                } else if (a_hdr.type == APPROVAL_MSG_CANCEL) {
+                    struct approval_msg_cancel can;
+                    if (read(g_approval_cl_fd, &can, sizeof(can)) == (int)sizeof(can)) {
+                        if (g_approval.active && g_approval.approval_id == can.approval_id) {
+                            g_approval.active = 0;
+                            add_dirty_rect(0, 0, screen_w, screen_h);
+                        }
+                    }
+                }
+            } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
+                close(g_approval_cl_fd);
+                g_approval_cl_fd = -1;
+            }
+        }
+
         /* Mouse input */
         if (mouse_pfd_idx >= 0 && (pfds[mouse_pfd_idx].revents & POLLIN)) {
             struct input_event mev;
             while (read(ctx->mouse_fd, &mev, sizeof(mev)) == (int)sizeof(mev)) {
+                uint64_t hw_now = get_now_ms();
+                if (focused_window_id != 0) {
+                    struct server_window* fw = find_window_by_id(focused_window_id);
+                    if (fw) fw->last_hardware_input_time = hw_now;
+                }
                 if (mev.type == EV_REL) {
                     if (mev.code == REL_X) {
                         prev_mouse_x = mouse_x;
@@ -2136,6 +2788,11 @@ int main(int argc, char** argv) {
         if (kbd_pfd_idx >= 0 && (pfds[kbd_pfd_idx].revents & POLLIN)) {
             struct input_event kev;
             while (read(ctx->kbd_fd, &kev, sizeof(kev)) == (int)sizeof(kev)) {
+                uint64_t hw_now = get_now_ms();
+                if (focused_window_id != 0) {
+                    struct server_window* fw = find_window_by_id(focused_window_id);
+                    if (fw) fw->last_hardware_input_time = hw_now;
+                }
                 if (kev.type == EV_KEY) {
                     uint32_t mods = 0;
                     ioctl(ctx->kbd_fd, KBD_IOC_GETMODS, &mods);

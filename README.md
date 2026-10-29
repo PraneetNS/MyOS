@@ -1307,6 +1307,44 @@ Stage 21 introduces Phase 3 of the AI-Native Operating System: turning LLM infer
 
 ---
 
+## Stage 22 (done): AI-Native OS Phase 4 — The Agent Desktop: Accessibility Tree, Window Capabilities, Trusted Approval UI & Killswitch
+
+Stage 22 delivers Phase 4 of the AI-Native Operating System: the **Agent Desktop**. Autonomous agents operate graphical user interface applications through a structured accessibility tree rather than raw pixels, protected by kernel-enforced window capabilities, visible control indicators, a compositor-level trusted approval UI, and an unblockable hardware emergency killswitch.
+
+- **Structured Accessibility Tree (`libui`, `libwin`, `term`)**:
+  - Every `libui` widget automatically exposes a semantic hierarchy: monotonic node ID, role (`window`, `button`, `textbox`, `listbox`, `dialog`, `terminal`, etc.), label/name, current value, screen bounds, state flags (`focused`, `enabled`, `checked`, etc.), and children without per-application code changes.
+  - Secret masking: password and credential inputs mask their value as `"[REDACTED]"` unless the caller holds `CAP_WINDOW_SECRET`.
+  - Terminal emulator (`term.c`) exposes role `terminal` and action `type_text` typing directly into the PTY master.
+  - Callback-driven action dispatching: `click`, `set_text`, `select`, `toggle`, `focus` trigger native widget callbacks directly; never fake mouse clicks.
+- **Window Ownership & Capabilities in `wm`**:
+  - Display server authenticates clients using immutable kernel peer identity (`SYS_SOCK_PEERINFO`).
+  - Agent capabilities: `CAP_WINDOW_OBSERVE` (read trees) and `CAP_WINDOW_ACT` (dispatch actions) enforced with per-application executable allowlists (`--window-observe files,uidemo --window-act files`).
+  - Confidentiality flags: `CAP_WINDOW_SECRET` (read secret fields) and `CAP_WINDOW_RAW` (raw key/mouse injection and screendumps) default off and are never inherited.
+  - Full audit logging: every window action emits `AUDIT_EVENT_WINDOW_ACTION` (14) with action name and hashed arguments.
+- **UI Bridge Daemon (`uibridge`, `userland/uibridge.c`)**:
+  - Intent Bus provider daemon (`respawn` in `/etc/init.conf`) registered as a privileged client to `wm`.
+  - Skills provided: `ui.list_windows`, `ui.get_tree` (compact indented format optimized for LLM token budgets), `ui.act`, `ui.launch` (spawns apps inside caller's agent sandbox via `agent_attach`), `ui.wait`, `ui.focus_window`.
+- **Compositor Trusted Approval UI (`/run/approval.sock`)**:
+  - Modal approval card rendered directly into the compositor backbuffer for sensitive Intent Bus invocations.
+  - Interactive choices: Deny (Esc), Allow Once (Enter), Allow Session with 30-second auto-deny timeout.
+  - Headless fallback to CLI approval queue (`intentctl approve`/`deny`) when running in text mode.
+- **Visible Control Indicators & Human Priority**:
+  - Window borders dynamically colored based on active agent ID (`(agent_id - 1) % 6`).
+  - Titlebars display `[Agent: <name>]` badge while an agent interacts with a window.
+  - Target widget bounding box highlight for 500ms on `ui.act`.
+  - Human-wins collision detection: hardware mouse/keyboard events within 500ms immediately abort conflicting in-flight agent actions.
+- **Unblockable Human Killswitch**:
+  - Intercepted directly inside PS/2 keyboard ISR (`src/keyboard.c`) via `Ctrl + Alt + Esc`.
+  - Calls `agent_killswitch_toggle()` to suspend all active agents, halt window actions, and reject new agent tasks.
+  - Compositor renders top high-visibility emergency banner: `[EMERGENCY STOP: ALL AGENTS SUSPENDED - Press Ctrl+Alt+Esc to resume]`.
+  - Queryable/togglable via syscall `SYS_AGENT_KILLSWITCH_STATE` (182).
+- **The Agent Dashboard (`agentpanel`, `userland/agentpanel.c`)**:
+  - GUI desktop application featuring system header statistics, killswitch toggle button, preset launcher cards (`/etc/agents.d/*.conf`), running agents monitor, and Ask bar (`Super+Space` focus shortcut) communicating with `modeld`.
+- **Verification Suite (`desktest`, `tools/test_step6.py`, `tools/test_boot.sh` Session 19)**:
+  - Automated testing of killswitch transitions, audit logging, window capability narrowing, accessibility tree protocol round-tripping, `uibridge` bus skills, compositor emergency banner rendering with pixel-exact RGB assertions, and `-m 64` boot compatibility.
+
+---
+
 ## Complete System Call Reference
 
 MyOS implements a POSIX-compatible system call interface invoked via `int 0x80`:
@@ -1376,6 +1414,7 @@ MyOS implements a POSIX-compatible system call interface invoked via `int 0x80`:
 | `SYS_AGENT_CHARGE_TOKENS` | 179 | `int agent_charge_tokens(int agent_id, uint32_t n)` -- charge token usage to agent |
 | `SYS_AGENT_TOKENS_LEFT`   | 180 | `int agent_tokens_left(int agent_id)` -- query remaining token budget |
 | `SYS_MODEL_DAEMON_REGISTER`| 181 | `int model_daemon_register(void)` -- register caller as privileged model daemon |
+| `SYS_AGENT_KILLSWITCH_STATE`| 182 | `int agent_killswitch_state(void)` / toggle (`ebx=1`) -- emergency agent killswitch |
 
 ---
 
@@ -1403,6 +1442,7 @@ MyOS includes an automated test matrix executed via QEMU serial automation and m
 | **Session 16** | Kernel Agents & Security Subsystem | Default-deny caps, delegation narrowing, CPU/proc budgets, SHA-256 audit chain, zero frame leaks, `-m 64` boot. |
 | **Session 17** | Intent Bus & Agent Skills | Daemon (`intentd`), `libjson`, `libintent`, peer identity, demo skills, approvals, `intentctl`, `-m 64` boot. |
 | **Session 18** | Model Daemon & Agent Loop | COM2 raw framing resilience, `modeld`, token budgets & `-EDQUOT`, delegation narrowing, prompt injection defense, zero leaks, organizer demo, secret key isolation, `-m 64` boot. |
+| **Session 19** | The Agent Desktop & Safety | Accessibility tree, window capabilities, `uibridge` Intent Bus skills, trusted approval UI, visible control indicators, unblockable hardware killswitch (`Ctrl+Alt+Esc`), `-m 64` boot. |
 | **Step 1** | Window Protocol & `libwin` | AF_UNIX handshake, shared memory buffer attachments, damage reporting, `winhello`. |
 | **Step 2** | Window Decorations & `wmctl` | Server-side titlebars, dragging, resizing, focus restacking, `wmctl` control commands. |
 | **Step 3** | `libui` Widget Toolkit & `uidemo` | Complete widget tree validation (buttons, textboxes, textareas, listboxes, menus, dialogs). |

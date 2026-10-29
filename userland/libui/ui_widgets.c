@@ -33,6 +33,7 @@ ui_widget_t* ui_container_create(ui_window_t* win, int x, int y, int w, int h) {
     c->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     c->x = x; c->y = y; c->w = w; c->h = h;
     c->win = win;
+    if (win) c->a11y_id = win->next_a11y_id++;
     return c;
 }
 
@@ -47,6 +48,7 @@ ui_widget_t* ui_label_create(ui_window_t* win, int x, int y, int w, int h, const
     lbl->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     lbl->x = x; lbl->y = y; lbl->w = w; lbl->h = h;
     lbl->win = win;
+    if (win) lbl->a11y_id = win->next_a11y_id++;
     lbl->label.color = 0xFF0F172A;
     lbl->label.align = 0; /* Left */
     if (text) strncpy(lbl->label.text, text, sizeof(lbl->label.text) - 1);
@@ -76,6 +78,7 @@ ui_widget_t* ui_button_create(ui_window_t* win, int x, int y, int w, int h, cons
     btn->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     btn->x = x; btn->y = y; btn->w = w; btn->h = h;
     btn->win = win;
+    if (win) btn->a11y_id = win->next_a11y_id++;
     btn->on_click = on_click;
     if (text) strncpy(btn->button.text, text, sizeof(btn->button.text) - 1);
     return btn;
@@ -103,6 +106,7 @@ ui_widget_t* ui_checkbox_create(ui_window_t* win, int x, int y, int w, int h, co
     if (initial_val) cb->flags |= UI_STATE_CHECKED;
     cb->x = x; cb->y = y; cb->w = w; cb->h = h;
     cb->win = win;
+    if (win) cb->a11y_id = win->next_a11y_id++;
     cb->checkbox.checked = initial_val ? 1 : 0;
     cb->on_change = on_change;
     cb->on_click = checkbox_click;
@@ -147,6 +151,7 @@ ui_widget_t* ui_radio_create(ui_window_t* win, int x, int y, int w, int h, const
     if (initial_val) r->flags |= UI_STATE_CHECKED;
     r->x = x; r->y = y; r->w = w; r->h = h;
     r->win = win;
+    if (win) r->a11y_id = win->next_a11y_id++;
     r->radio.group_id = group_id;
     r->radio.selected = initial_val ? 1 : 0;
     r->on_change = on_change;
@@ -166,6 +171,7 @@ ui_widget_t* ui_progressbar_create(ui_window_t* win, int x, int y, int w, int h,
     p->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     p->x = x; p->y = y; p->w = w; p->h = h;
     p->win = win;
+    if (win) p->a11y_id = win->next_a11y_id++;
     p->progress.min_val = min_val;
     p->progress.max_val = (max_val > min_val) ? max_val : (min_val + 100);
     p->progress.cur_val = initial_val;

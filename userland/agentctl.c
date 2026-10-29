@@ -21,6 +21,10 @@ static void print_usage(const char* prog) {
     printf("    --net-proxy              Allow network proxy capability\n");
     printf("    --bus-call <prefix>      Allow calling intent bus skills with prefix\n");
     printf("    --bus-provide <prefix>   Allow providing intent bus skills with prefix\n");
+    printf("    --window-observe <app>   Allow observing GUI a11y trees for app\n");
+    printf("    --window-act <app>       Allow acting on GUI a11y trees for app\n");
+    printf("    --window-secret          Allow interacting with secret/password fields\n");
+    printf("    --window-raw             Allow raw input injection and screenshots\n");
     printf("    --model-backend <list>   Allow model backends (local, host, local,host)\n");
     printf("    --cpu <ticks>            Set maximum CPU ticks budget\n");
     printf("    --mem <pages>            Set maximum memory pages budget\n");
@@ -101,6 +105,26 @@ static int cmd_create(int argc, char** argv) {
             } else {
                 i++;
             }
+        } else if (strcmp(argv[i], "--window-observe") == 0 && i + 1 < argc) {
+            caps.mask |= CAP_WINDOW_OBSERVE;
+            if (caps.num_window_observe < MAX_PATH_RULES) {
+                strncpy(caps.window_observe[caps.num_window_observe].prefix, argv[++i], MAX_PATH_PREFIX_LEN - 1);
+                caps.num_window_observe++;
+            } else {
+                i++;
+            }
+        } else if (strcmp(argv[i], "--window-act") == 0 && i + 1 < argc) {
+            caps.mask |= CAP_WINDOW_ACT;
+            if (caps.num_window_act < MAX_PATH_RULES) {
+                strncpy(caps.window_act[caps.num_window_act].prefix, argv[++i], MAX_PATH_PREFIX_LEN - 1);
+                caps.num_window_act++;
+            } else {
+                i++;
+            }
+        } else if (strcmp(argv[i], "--window-secret") == 0) {
+            caps.mask |= CAP_WINDOW_SECRET;
+        } else if (strcmp(argv[i], "--window-raw") == 0) {
+            caps.mask |= CAP_WINDOW_RAW;
         } else if (strcmp(argv[i], "--cpu") == 0 && i + 1 < argc) {
             budget.max_cpu_ticks = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--mem") == 0 && i + 1 < argc) {

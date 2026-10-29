@@ -39,6 +39,7 @@ ui_widget_t* ui_listbox_create(ui_window_t* win, int x, int y, int w, int h, ui_
     lb->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     lb->x = x; lb->y = y; lb->w = w; lb->h = h;
     lb->win = win;
+    if (win) lb->a11y_id = win->next_a11y_id++;
     lb->on_change = on_select;
     lb->on_click = listbox_click;
     lb->listbox.cap_items = 16;
@@ -87,6 +88,7 @@ ui_widget_t* ui_scrollbar_create(ui_window_t* win, int x, int y, int w, int h, i
     sb->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     sb->x = x; sb->y = y; sb->w = w; sb->h = h;
     sb->win = win;
+    if (win) sb->a11y_id = win->next_a11y_id++;
     sb->on_change = on_scroll;
     sb->scrollbar.is_vertical = is_vertical;
     sb->scrollbar.min_val = 0;
@@ -112,6 +114,7 @@ ui_widget_t* ui_tabs_create(ui_window_t* win, int x, int y, int w, int h) {
     tb->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     tb->x = x; tb->y = y; tb->w = w; tb->h = h;
     tb->win = win;
+    if (win) tb->a11y_id = win->next_a11y_id++;
     tb->on_click = tabs_click;
     tb->tabs.active_tab = 0;
     return tb;
@@ -142,6 +145,7 @@ ui_widget_t* ui_menubar_create(ui_window_t* win, int x, int y, int w, int h) {
     mb->flags = UI_STATE_VISIBLE | UI_STATE_ENABLED;
     mb->x = x; mb->y = y; mb->w = w; mb->h = h;
     mb->win = win;
+    if (win) mb->a11y_id = win->next_a11y_id++;
     mb->menubar.open_menu = -1;
     return mb;
 }

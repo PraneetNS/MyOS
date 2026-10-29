@@ -24,6 +24,7 @@
 #include <pty.h>
 #include <gfx.h>
 #include <win.h>
+#include <json.h>
 
 #define TERM_COLS 80
 #define TERM_ROWS 25
@@ -356,6 +357,95 @@ static void render_terminal(gfx_surface_t* s) {
     }
 }
 
+static int s_pty_master = -1;
+
+static void term_a11y_get_tree(win_t* win, uint32_t root_id, uint32_t max_depth, void* udata) {
+    (void)root_id; (void)max_depth; (void)udata;
+    int start_row = s_total_lines - TERM_ROWS - s_scroll_offset;
+    if (start_row < 0) start_row = 0;
+
+    char visible_text[TERM_ROWS * (TERM_COLS + 1) + 1];
+    int pos = 0;
+    for (int r = 0; r < TERM_ROWS; r++) {
+        int row_idx = start_row + r;
+        if (row_idx >= SCROLLBACK_MAX) break;
+        int last_non_space = -1;
+        for (int c = 0; c < TERM_COLS; c++) {
+            if (s_grid[row_idx][c].ch != ' ' && s_grid[row_idx][c].ch != '\0') {
+                last_non_space = c;
+            }
+        }
+        for (int c = 0; c <= last_non_space && c < TERM_COLS; c++) {
+            char ch = s_grid[row_idx][c].ch;
+            if (ch >= 32 && ch < 127) {
+                visible_text[pos++] = ch;
+            } else {
+                visible_text[pos++] = ' ';
+            }
+        }
+        if (r < TERM_ROWS - 1) {
+            visible_text[pos++] = '\n';
+        }
+    }
+    visible_text[pos] = '\0';
+
+    char tree_json[3500];
+    json_buf_t jb;
+    json_buf_init(&jb, tree_json, sizeof(tree_json));
+    json_buf_obj_start(&jb);
+    json_buf_obj_key(&jb, "id");
+    json_buf_append_int(&jb, 1);
+    json_buf_obj_key(&jb, "role");
+    json_buf_append_str(&jb, "terminal");
+    json_buf_obj_key(&jb, "name");
+    json_buf_append_str(&jb, "Terminal");
+    json_buf_obj_key(&jb, "value");
+    json_buf_append_str(&jb, visible_text);
+    json_buf_obj_key(&jb, "states");
+    json_buf_arr_start(&jb);
+    json_buf_append_str(&jb, "enabled");
+    json_buf_append_raw(&jb, ",", 1);
+    json_buf_append_str(&jb, "focused");
+    json_buf_arr_end(&jb);
+    json_buf_obj_key(&jb, "bounds");
+    json_buf_arr_start(&jb);
+    json_buf_append_int(&jb, 0);
+    json_buf_append_raw(&jb, ",", 1);
+    json_buf_append_int(&jb, 0);
+    json_buf_append_raw(&jb, ",", 1);
+    json_buf_append_int(&jb, TERM_COLS * CHAR_W);
+    json_buf_append_raw(&jb, ",", 1);
+    json_buf_append_int(&jb, TERM_ROWS * CHAR_H);
+    json_buf_arr_end(&jb);
+    json_buf_obj_key(&jb, "children");
+    json_buf_arr_start(&jb);
+    json_buf_arr_end(&jb);
+    json_buf_obj_end(&jb);
+
+    win_send_a11y_tree(win, tree_json, jb.error ? 1 : 0);
+}
+
+static void term_a11y_action(win_t* win, uint32_t node_id, const char* action, const char* args, void* udata) {
+    (void)node_id; (void)udata;
+    if (!action) {
+        win_send_a11y_result(win, 0, "Action null", "");
+        return;
+    }
+
+    if (strcmp(action, "type_text") == 0 || strcmp(action, "set_text") == 0) {
+        if (s_pty_master >= 0 && args) {
+            write(s_pty_master, args, strlen(args));
+            win_send_a11y_result(win, 1, "", "typed");
+        } else {
+            win_send_a11y_result(win, 0, "No PTY or args", "");
+        }
+    } else if (strcmp(action, "focus") == 0) {
+        win_send_a11y_result(win, 1, "", "focused");
+    } else {
+        win_send_a11y_result(win, 0, "Unsupported action on terminal", "");
+    }
+}
+
 int main(int argc, char** argv) {
     (void) argc; (void) argv;
 
@@ -377,6 +467,8 @@ int main(int argc, char** argv) {
         win_disconnect(conn);
         return 1;
     }
+
+    win_set_a11y_handlers(win, term_a11y_get_tree, term_a11y_action, NULL);
 
     init_grid();
 
@@ -411,6 +503,7 @@ int main(int argc, char** argv) {
 
     /* Set non-blocking on PTY master */
     fcntl(pty_master, F_SETFL, fcntl(pty_master, F_GETFL, 0) | O_NONBLOCK);
+    s_pty_master = pty_master;
 
     printf("[term] Child shell running (PID %d, PTY master %d)\n", (int)child_pid, pty_master);
     fflush(stdout);
