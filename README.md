@@ -1345,6 +1345,37 @@ Stage 22 delivers Phase 4 of the AI-Native Operating System: the **Agent Desktop
 
 ---
 
+## Stage 23 (done): AI-Native OS Phase 5 — Persistent Agent Memory, Semantic File Index & Principals
+
+Stage 23 introduces Phase 5 of the AI-Native Operating System: persistent memory and semantic file indexing for autonomous agents, bound to immutable, kernel-vouched principals.
+
+- **Stable Principals & Identity Model**:
+  - `principal` (up to 32 bytes) attached to `agent_t`, immutable by agents and strictly narrowed to `<parent>/<child>` on delegation.
+  - Vouched directly across UNIX domain sockets via `SYS_SOCK_PEERINFO` and exposed in `/proc/agents/<id>/status`.
+  - All audit entries in `/proc/agents/log` record the acting `principal`.
+- **Memory Daemon (`memd`)**:
+  - Event-driven Intent Bus provider (`respawn` in `/etc/init.conf`) serving skills: `mem.put`, `mem.search`, `mem.get`, `mem.forget`, `mem.list`, `mem.stats`, and `mem.admin`.
+  - Namespaces: default private (`priv`) under `/var/mem/<principal>/records.dat` and shared (`shared:<name>`) governed by `/etc/memory.conf` ACLs.
+  - Capabilities `CAP_MEM_READ` and `CAP_MEM_WRITE` with namespace allowlists.
+  - Binary slot storage format: 512-byte CRC32-validated records resilient against torn writes and ungraceful power loss.
+  - Physical zero-overwrite deletion (`mem.forget`) with immediate synchronous disk flush (`sync`), ensuring zero leftover text on physical media.
+- **Hybrid Search Engine**:
+  - Combines BM25 lexical ranking over FNV-1a query hashes with 64-dimensional float/int8 cosine vector embeddings from `model.embed`.
+  - Automatic fallback to BM25 lexical ranking when `modeld` is busy or offline.
+- **Semantic File Indexer (`indexd`)**:
+  - Low-priority background crawler (`nice 19`) indexing directory trees configured in `/etc/index.conf` into `/var/index/index.dat`.
+  - Query-time security filtering: `fs.search` validates caller `CAP_FS_READ` and filters results against allowed path prefixes, preventing cross-tenant data leakage.
+- **Provenance & Anti-Poisoning Enforcement**:
+  - Tagged provenance: `user`, `agent`, and `untrusted`. Tool outputs stored as `untrusted`.
+  - Agents are blocked from self-promoting untrusted memories; only human administrators (`memctl mark-trusted`) can elevate trust.
+- **CLI & GUI Utilities (`memctl`, `agentpanel`)**:
+  - `memctl` command-line tool for memory manipulation, administration, and verification.
+  - `agentpanel` GUI Memory tab for visual inspection, provenance indicators, and memory search.
+- **Verification Suite (`memdtest` & `tools/test_boot.sh` Session 20)**:
+  - Automated testing of principal inheritance, peerinfo vouchers, cross-principal isolation, ACL enforcement, provenance tracking, torn-write crash recovery, physical zeroing, `indexd` query-time scoping, and `-m 64` boot compatibility.
+
+---
+
 ## Complete System Call Reference
 
 MyOS implements a POSIX-compatible system call interface invoked via `int 0x80`:
@@ -1443,6 +1474,7 @@ MyOS includes an automated test matrix executed via QEMU serial automation and m
 | **Session 17** | Intent Bus & Agent Skills | Daemon (`intentd`), `libjson`, `libintent`, peer identity, demo skills, approvals, `intentctl`, `-m 64` boot. |
 | **Session 18** | Model Daemon & Agent Loop | COM2 raw framing resilience, `modeld`, token budgets & `-EDQUOT`, delegation narrowing, prompt injection defense, zero leaks, organizer demo, secret key isolation, `-m 64` boot. |
 | **Session 19** | The Agent Desktop & Safety | Accessibility tree, window capabilities, `uibridge` Intent Bus skills, trusted approval UI, visible control indicators, unblockable hardware killswitch (`Ctrl+Alt+Esc`), `-m 64` boot. |
+| **Session 20** | Persistent Memory & Semantic Index | Principals, memd namespaces, BM25+embedding hybrid ranking, physical zeroing, indexd query-time CAP_FS_READ filtering, -m 64 boot. |
 | **Step 1** | Window Protocol & `libwin` | AF_UNIX handshake, shared memory buffer attachments, damage reporting, `winhello`. |
 | **Step 2** | Window Decorations & `wmctl` | Server-side titlebars, dragging, resizing, focus restacking, `wmctl` control commands. |
 | **Step 3** | `libui` Widget Toolkit & `uidemo` | Complete widget tree validation (buttons, textboxes, textareas, listboxes, menus, dialogs). |
