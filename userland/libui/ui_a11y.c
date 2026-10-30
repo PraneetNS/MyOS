@@ -80,7 +80,11 @@ static void get_widget_name(ui_widget_t* w, char* buf, size_t cap) {
             snprintf(buf, cap, "%s", w->radio.text);
             break;
         case UI_WIDGET_TEXTBOX:
-            snprintf(buf, cap, "%s", w->textbox.text[0] ? w->textbox.text : "textbox");
+            if (w->is_secret) {
+                snprintf(buf, cap, "%s", "password");
+            } else {
+                snprintf(buf, cap, "%s", w->textbox.text[0] ? w->textbox.text : "textbox");
+            }
             break;
         case UI_WIDGET_TABS:
             if (w->tabs.num_tabs > 0 && w->tabs.active_tab < w->tabs.num_tabs) {
@@ -106,7 +110,7 @@ static void get_widget_value(ui_widget_t* w, char* buf, size_t cap) {
     buf[0] = '\0';
 
     if (w->is_secret) {
-        snprintf(buf, cap, "%s", "********");
+        snprintf(buf, cap, "%s", "[REDACTED]");
         return;
     }
 
@@ -374,7 +378,7 @@ void ui_a11y_on_action(win_t* win, uint32_t node_id, const char* action, const c
         if (target->type == UI_WIDGET_TEXTBOX) {
             ui_textbox_set_text(target, text_val);
             if (target->on_text_change) target->on_text_change(target, text_val, target->user_data);
-            snprintf(new_state, sizeof(new_state), "text=%s", target->is_secret ? "********" : text_val);
+            snprintf(new_state, sizeof(new_state), "text=%s", target->is_secret ? "[REDACTED]" : text_val);
         } else if (target->type == UI_WIDGET_TEXTAREA) {
             ui_textarea_set_text(target, text_val);
             strncpy(new_state, "text_updated", sizeof(new_state) - 1);
