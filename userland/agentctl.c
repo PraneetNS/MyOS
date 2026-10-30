@@ -21,6 +21,9 @@ static void print_usage(const char* prog) {
     printf("    --net-proxy              Allow network proxy capability\n");
     printf("    --bus-call <prefix>      Allow calling intent bus skills with prefix\n");
     printf("    --bus-provide <prefix>   Allow providing intent bus skills with prefix\n");
+    printf("    --principal <name>       Set stable principal string (<=31 chars)\n");
+    printf("    --mem-read <prefix>      Allow reading memory namespaces with prefix\n");
+    printf("    --mem-write <prefix>     Allow writing memory namespaces with prefix\n");
     printf("    --window-observe <app>   Allow observing GUI a11y trees for app\n");
     printf("    --window-act <app>       Allow acting on GUI a11y trees for app\n");
     printf("    --window-secret          Allow interacting with secret/password fields\n");
@@ -31,6 +34,7 @@ static void print_usage(const char* prog) {
     printf("    --procs <count>          Set maximum active processes budget\n");
     printf("    --tokens <count>         Set maximum tokens budget\n\n");
     printf("  list                       List active kernel agents\n");
+    printf("  status <id>                Show status of an agent\n");
     printf("  log [-f]                   Show kernel agent audit log\n");
     printf("  kill <id>                  Kill an agent and all its processes\n");
     printf("  suspend <id>               Suspend an agent\n");
@@ -105,6 +109,24 @@ static int cmd_create(int argc, char** argv) {
             } else {
                 i++;
             }
+        } else if (strcmp(argv[i], "--principal") == 0 && i + 1 < argc) {
+            strncpy(caps.principal, argv[++i], sizeof(caps.principal) - 1);
+        } else if (strcmp(argv[i], "--mem-read") == 0 && i + 1 < argc) {
+            caps.mask |= CAP_MEM_READ;
+            if (caps.num_mem_read < MAX_PATH_RULES) {
+                strncpy(caps.mem_read[caps.num_mem_read].prefix, argv[++i], MAX_PATH_PREFIX_LEN - 1);
+                caps.num_mem_read++;
+            } else {
+                i++;
+            }
+        } else if (strcmp(argv[i], "--mem-write") == 0 && i + 1 < argc) {
+            caps.mask |= CAP_MEM_WRITE;
+            if (caps.num_mem_write < MAX_PATH_RULES) {
+                strncpy(caps.mem_write[caps.num_mem_write].prefix, argv[++i], MAX_PATH_PREFIX_LEN - 1);
+                caps.num_mem_write++;
+            } else {
+                i++;
+            }
         } else if (strcmp(argv[i], "--window-observe") == 0 && i + 1 < argc) {
             caps.mask |= CAP_WINDOW_OBSERVE;
             if (caps.num_window_observe < MAX_PATH_RULES) {
@@ -156,7 +178,7 @@ static int cmd_create(int argc, char** argv) {
 }
 
 static int cmd_list(void) {
-    printf("%-4s %-20s %-10s %-5s %-9s %-9s\n", "ID", "NAME", "STATE", "PROCS", "CPU_TICKS", "MEM_PAGES");
+    printf("%-4s %-16s %-16s %-10s %-5s %-9s %-9s\n", "ID", "NAME", "PRINCIPAL", "STATE", "PROCS", "CPU_TICKS", "MEM_PAGES");
     int count = 0;
     for (int id = 1; id <= MAX_AGENTS; id++) {
         agent_info_t info;
@@ -166,8 +188,8 @@ static int cmd_list(void) {
             else if (info.state == AGENT_STATE_SUSPENDED) st = "SUSPENDED";
             else if (info.state == AGENT_STATE_KILLED) st = "KILLED";
 
-            printf("%-4d %-20s %-10s %-5u %-9u %-9u\n",
-                   info.id, info.name, st,
+            printf("%-4d %-16s %-16s %-10s %-5u %-9u %-9u\n",
+                   info.id, info.name, info.principal[0] ? info.principal : "-", st,
                    (unsigned int)info.usage.procs_count, (unsigned int)info.usage.cpu_ticks, (unsigned int)info.usage.mem_pages);
             count++;
         }
@@ -175,6 +197,35 @@ static int cmd_list(void) {
     if (count == 0) {
         printf("(no active agents)\n");
     }
+    return 0;
+}
+
+static int cmd_status(int argc, char** argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Error: agent id required\n");
+        return 1;
+    }
+    int id = atoi(argv[2]);
+    agent_info_t info;
+    if (agent_info(id, &info) < 0) {
+        perror("agent_info");
+        return 1;
+    }
+    const char* st = "UNKNOWN";
+    if (info.state == AGENT_STATE_RUNNING) st = "RUNNING";
+    else if (info.state == AGENT_STATE_SUSPENDED) st = "SUSPENDED";
+    else if (info.state == AGENT_STATE_KILLED) st = "KILLED";
+
+    printf("Id:        %d\n", info.id);
+    printf("Name:      %s\n", info.name);
+    printf("Principal: %s\n", info.principal[0] ? info.principal : "-");
+    printf("State:     %s\n", st);
+    printf("OwnerPid:  %d\n", info.owner_pid);
+    printf("ParentId:  %d\n", info.parent_agent_id);
+    printf("Procs:     %u\n", (unsigned int)info.usage.procs_count);
+    printf("CpuTicks:  %u\n", (unsigned int)info.usage.cpu_ticks);
+    printf("MemPages:  %u\n", (unsigned int)info.usage.mem_pages);
+    printf("Tokens:    %u\n", (unsigned int)info.usage.tokens_used);
     return 0;
 }
 
@@ -306,6 +357,8 @@ int main(int argc, char** argv) {
         return cmd_create(argc, argv);
     } else if (strcmp(argv[1], "list") == 0) {
         return cmd_list();
+    } else if (strcmp(argv[1], "status") == 0) {
+        return cmd_status(argc, argv);
     } else if (strcmp(argv[1], "log") == 0) {
         return cmd_log(argc, argv);
     } else if (strcmp(argv[1], "kill") == 0) {
