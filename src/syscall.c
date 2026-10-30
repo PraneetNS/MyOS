@@ -248,6 +248,7 @@ static int validate_user_string(const char* s) {
 
 
 static void syscall_handler(struct registers* regs) {
+    agent_killswitch_check_deferred();
     switch (regs->eax) {
         case SYS_WRITE: {
             int fd = (int) regs->ebx;
@@ -2539,10 +2540,17 @@ static void syscall_handler(struct registers* regs) {
             }
 
             int pid_val = 0, agent_val = 0;
-            int ret = socket_get_peerinfo(of->sock, &pid_val, &agent_val);
+            char princ_val[32];
+            princ_val[0] = '\0';
+            int ret = socket_get_peerinfo(of->sock, &pid_val, &agent_val, princ_val);
             if (ret == 0) {
                 upinfo->pid = pid_val;
                 upinfo->agent_id = agent_val;
+                for (size_t i = 0; i < sizeof(upinfo->principal); i++) {
+                    upinfo->principal[i] = princ_val[i];
+                    if (princ_val[i] == '\0') break;
+                }
+                upinfo->principal[sizeof(upinfo->principal) - 1] = '\0';
             }
             regs->eax = (uint32_t) ret;
             break;
@@ -2614,6 +2622,8 @@ static void syscall_handler(struct registers* regs) {
             regs->eax = (uint32_t) -ENOSYS;
             break;
     }
+
+    agent_killswitch_check_deferred();
 
     /* Lock-sanity assertions: panic if a mutex is held at syscall return
        or if interrupts are disabled on return to user mode */
