@@ -62,7 +62,11 @@ static const char* const s_event_names[] = {
     "BUS_DENIED",
     "BUS_APPROVAL",
     "KILLSWITCH",
-    "WINDOW_ACTION"
+    "WINDOW_ACTION",
+    "MEM_PUT",
+    "MEM_SEARCH",
+    "MEM_FORGET",
+    "MEM_ADMIN"
 };
 
 const char* agent_event_name(uint32_t event_type) {
@@ -305,6 +309,52 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
             }
         }
 
+        for (uint32_t i = 0; i < caps->num_mem_read && i < MAX_PATH_RULES; i++) {
+            int ok = 0;
+            for (uint32_t j = 0; j < parent->caps.num_mem_read && j < MAX_PATH_RULES; j++) {
+                if (path_matches_prefix(caps->mem_read[i].prefix, parent->caps.mem_read[j].prefix)) {
+                    ok = 1; break;
+                }
+            }
+            if (!ok) {
+                kmutex_unlock(&s_agent_lock);
+                agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: mem_read widening attempted");
+                kprintf("[agent %d] DENIED: mem_read prefix '%s' widening attempted\n", parent_agent_id, caps->mem_read[i].prefix);
+                return -EACCES;
+            }
+        }
+
+        for (uint32_t i = 0; i < caps->num_mem_write && i < MAX_PATH_RULES; i++) {
+            int ok = 0;
+            for (uint32_t j = 0; j < parent->caps.num_mem_write && j < MAX_PATH_RULES; j++) {
+                if (path_matches_prefix(caps->mem_write[i].prefix, parent->caps.mem_write[j].prefix)) {
+                    ok = 1; break;
+                }
+            }
+            if (!ok) {
+                kmutex_unlock(&s_agent_lock);
+                agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: mem_write widening attempted");
+                kprintf("[agent %d] DENIED: mem_write prefix '%s' widening attempted\n", parent_agent_id, caps->mem_write[i].prefix);
+                return -EACCES;
+            }
+        }
+
+        /* Check principal: child can only inherit or set <parent>/<subname> */
+        if (caps->principal[0] != '\0') {
+            int plen = 0;
+            while (parent->principal[plen]) plen++;
+            int match = 1;
+            for (int k = 0; k < plen; k++) {
+                if (caps->principal[k] != parent->principal[k]) { match = 0; break; }
+            }
+            if (!match || caps->principal[plen] != '/' || caps->principal[plen + 1] == '\0') {
+                kmutex_unlock(&s_agent_lock);
+                agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: principal widening attempted");
+                kprintf("[agent %d] DENIED: principal '%s' widening from '%s'\n", parent_agent_id, caps->principal, parent->principal);
+                return -EACCES;
+            }
+        }
+
         /* Check model_backends narrowing */
         uint32_t p_mb = parent->caps.model_backends ? parent->caps.model_backends : MODEL_BACKEND_ALL;
         uint32_t c_mb = caps->model_backends ? caps->model_backends : p_mb;
@@ -338,6 +388,15 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
     ag->parent_agent_id = parent_agent_id;
     ag->state = AGENT_STATE_RUNNING;
     ag->caps = *caps;
+    if (caps->principal[0] != '\0') {
+        kstrncpy(ag->principal, caps->principal, 31);
+    } else if (parent_agent_id > 0) {
+        agent_t* parent = agent_get_by_id(parent_agent_id);
+        kstrncpy(ag->principal, parent ? parent->principal : ag->name, 31);
+    } else {
+        kstrncpy(ag->principal, ag->name, 31);
+    }
+    ag->principal[31] = '\0';
     if (ag->caps.model_backends == 0) {
         if (parent_agent_id > 0) {
             agent_t* parent = agent_get_by_id(parent_agent_id);
@@ -461,6 +520,8 @@ int agent_get_info(int agent_id, agent_info_t* info) {
     info->id = ag->id;
     kstrncpy(info->name, ag->name, AGENT_NAME_MAX - 1);
     info->name[AGENT_NAME_MAX - 1] = '\0';
+    kstrncpy(info->principal, ag->principal, 31);
+    info->principal[31] = '\0';
     info->owner_pid = ag->owner_pid;
     info->parent_agent_id = ag->parent_agent_id;
     info->state = ag->state;
@@ -753,7 +814,7 @@ int agent_is_model_daemon(process_t* p) {
 
 int agent_audit_append(int agent_id, uint32_t event_type, const char* detail) {
     process_t* me = scheduler_current();
-    if (!agent_is_bus_daemon(me) && !agent_is_model_daemon(me)) return -EPERM;
+    if (!agent_is_bus_daemon(me) && !agent_is_model_daemon(me) && (!is_init_tree_process(me) || me->agent_id != 0)) return -EPERM;
 
     agent_audit_log(agent_id, event_type, detail);
     kprintf("[bus] AUDIT: agent %d event %u (%s): %s\n",
@@ -821,9 +882,22 @@ int agent_tokens_left(int agent_id) {
 }
 
 static int s_killswitch_active = 0;
+static volatile int s_killswitch_pending = 0;
 
 int agent_killswitch_active(void) {
     return s_killswitch_active;
+}
+
+void agent_killswitch_request(void) {
+    s_killswitch_pending = 1;
+}
+
+void agent_killswitch_check_deferred(void) {
+    if (!s_killswitch_pending) return;
+    process_t* me = scheduler_current();
+    if (me && s_agent_lock.locked && s_agent_lock.owner_pid == me->pid) return;
+    s_killswitch_pending = 0;
+    agent_killswitch_toggle();
 }
 
 int agent_killswitch_toggle(void) {
