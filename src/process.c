@@ -20,6 +20,7 @@ int respawn_shell_needed = 0;
 
 void kernel_idle_task(void) {
     for (;;) {
+        agent_killswitch_check_deferred();
         while (serial_received()) {
             char c = serial_read();
             keyboard_handle_char(c);

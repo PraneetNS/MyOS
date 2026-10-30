@@ -88,6 +88,7 @@ static int time_slice_for(process_t* p) {
 
 void scheduler_yield(void) {
     if (!started || !current) return;
+    agent_killswitch_check_deferred();
     process_t* next = pick_next_from(process_index(current));
     if (!next || next == current) return;
 
