@@ -210,3 +210,4 @@ Unlike conventional search engines that query an index globally:
 
 ### 7.2 Graphical Management (`agentpanel`)
 `agentpanel` provides a dedicated **Memory** tab allowing interactive inspection of private and shared namespaces, visual provenance indicators (green for trusted, orange for untrusted), search testing, and one-click physical deletion.
+

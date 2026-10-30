@@ -380,6 +380,9 @@ echo "[TEST] Session 6: Live job control and interactive TTY signals over COM1..
 
 (
     sleep 4
+    # Warm up binary cache
+    printf "echo echo warm | sh.elf\n"
+    sleep 0.5
     # Baseline
     printf "shinfo\n"
     sleep 0.3
