@@ -238,6 +238,18 @@ static int g_approval_srv_fd = -1;
 static int g_approval_cl_fd = -1;
 static void wm_resolve_approval(int status);
 
+#define MAX_PENDING_A11Y_ACTIONS 8
+struct pending_a11y_action {
+    int active;
+    uint64_t resume_time;
+    int requester_client_idx;
+    uint32_t window_id;
+    uint32_t caller_agent_id;
+    char expected_app_name[32];
+    struct win_msg_a11y_action act;
+};
+static struct pending_a11y_action g_pending_a11y[MAX_PENDING_A11Y_ACTIONS];
+
 /* Drag Modes */
 enum {
     DRAG_NONE = 0,
@@ -948,6 +960,91 @@ static int validate_shm_name(const char* name) {
     return 1;
 }
 
+static void wm_process_pending_a11y_actions(void) {
+    uint64_t now = get_now_ms();
+    for (int p = 0; p < MAX_PENDING_A11Y_ACTIONS; p++) {
+        if (!g_pending_a11y[p].active) continue;
+        if (now < g_pending_a11y[p].resume_time) continue;
+
+        /* Re-resolve target window */
+        struct server_window* win = find_window_by_id(g_pending_a11y[p].window_id);
+        int req_fd = (g_pending_a11y[p].requester_client_idx >= 0 &&
+                      g_pending_a11y[p].requester_client_idx < MAX_CLIENTS &&
+                      clients[g_pending_a11y[p].requester_client_idx].active) ?
+                      clients[g_pending_a11y[p].requester_client_idx].fd : -1;
+
+        if (!win || !win->alive) {
+            if (req_fd >= 0) {
+                struct win_msg_a11y_result res;
+                memset(&res, 0, sizeof(res));
+                res.ok = 0;
+                snprintf(res.error, sizeof(res.error), "Aborted: window closed during human input pause");
+                send_client_msg(req_fd, WIN_MSG_A11Y_RESULT, g_pending_a11y[p].window_id, &res, sizeof(res));
+            }
+            g_pending_a11y[p].active = 0;
+            continue;
+        }
+
+        /* Check if window was replaced / app changed */
+        if (strncmp(win->app_name, g_pending_a11y[p].expected_app_name, sizeof(win->app_name)) != 0) {
+            if (req_fd >= 0) {
+                struct win_msg_a11y_result res;
+                memset(&res, 0, sizeof(res));
+                res.ok = 0;
+                snprintf(res.error, sizeof(res.error), "Aborted: window replaced during human input pause");
+                send_client_msg(req_fd, WIN_MSG_A11Y_RESULT, win->id, &res, sizeof(res));
+            }
+            g_pending_a11y[p].active = 0;
+            continue;
+        }
+
+        /* Re-verify capability */
+        uint32_t caller_agent = g_pending_a11y[p].caller_agent_id;
+        if (caller_agent > 0) {
+            if (!check_agent_window_cap(caller_agent, CAP_WINDOW_ACT, win->app_name)) {
+                if (req_fd >= 0) {
+                    struct win_msg_a11y_result res;
+                    memset(&res, 0, sizeof(res));
+                    res.ok = 0;
+                    snprintf(res.error, sizeof(res.error), "Permission denied: lacks CAP_WINDOW_ACT for %s", win->app_name);
+                    send_client_msg(req_fd, WIN_MSG_A11Y_RESULT, win->id, &res, sizeof(res));
+                }
+                g_pending_a11y[p].active = 0;
+                continue;
+            }
+        }
+
+        /* If more human input occurred, push pause further */
+        if (now >= win->last_hardware_input_time && (now - win->last_hardware_input_time) < 500) {
+            g_pending_a11y[p].resume_time = win->last_hardware_input_time + 500;
+            continue;
+        }
+
+        /* Visible control indicators */
+        win->agent_control_id = caller_agent;
+        win->agent_control_expire_ms = now + 1500;
+        invalidate_window_frame(win);
+
+        /* Audit log entry with hash of args */
+        uint8_t ahash[32];
+        wm_sha256_ctx_t hctx;
+        wm_sha256_init(&hctx);
+        wm_sha256_update(&hctx, (const uint8_t*)g_pending_a11y[p].act.args, strlen(g_pending_a11y[p].act.args));
+        wm_sha256_final(&hctx, ahash);
+        char hex_hash[33];
+        wm_hash_to_hex(ahash, hex_hash, sizeof(hex_hash));
+
+        char audit_detail[96];
+        snprintf(audit_detail, sizeof(audit_detail), "agent:%u win:%s act:%s hash:%.16s",
+                 (unsigned int)caller_agent, win->app_name, g_pending_a11y[p].act.action, hex_hash);
+        audit_append((int)caller_agent, AUDIT_EVENT_WINDOW_ACTION, audit_detail);
+
+        win->a11y_requester_client_idx = g_pending_a11y[p].requester_client_idx;
+        send_client_msg(clients[win->client_idx].fd, WIN_MSG_A11Y_ACTION, win->id, &g_pending_a11y[p].act, sizeof(g_pending_a11y[p].act));
+        g_pending_a11y[p].active = 0;
+    }
+}
+
 static void handle_client_message(int c_idx, const struct win_msg_header* hdr, const uint8_t* payload, uint32_t payload_len) {
     struct client* c = &clients[c_idx];
 
@@ -1307,6 +1404,8 @@ static void handle_client_message(int c_idx, const struct win_msg_header* hdr, c
             if (payload_len < sizeof(struct win_msg_a11y_action)) return;
             struct win_msg_a11y_action act;
             memcpy(&act, payload, sizeof(act));
+            act.action[sizeof(act.action) - 1] = '\0';
+            act.args[sizeof(act.args) - 1] = '\0';
 
             struct server_window* target_win = find_window_by_id(hdr->window_id);
             if (!target_win) {
@@ -1332,15 +1431,30 @@ static void handle_client_message(int c_idx, const struct win_msg_header* hdr, c
                 }
             }
 
-            /* Human input always wins: abort if hardware input within 500ms */
+            /* Human input preemption: pause action if hardware input within 500ms */
             uint64_t now = get_now_ms();
             if (now >= target_win->last_hardware_input_time && (now - target_win->last_hardware_input_time) < 500) {
-                struct win_msg_a11y_result res;
-                memset(&res, 0, sizeof(res));
-                res.ok = 0;
-                snprintf(res.error, sizeof(res.error), "Aborted: human input takes precedence");
-                send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
-                break;
+                int slot = -1;
+                for (int p = 0; p < MAX_PENDING_A11Y_ACTIONS; p++) {
+                    if (!g_pending_a11y[p].active) { slot = p; break; }
+                }
+                if (slot >= 0) {
+                    g_pending_a11y[slot].active = 1;
+                    g_pending_a11y[slot].resume_time = target_win->last_hardware_input_time + 500;
+                    g_pending_a11y[slot].requester_client_idx = c_idx;
+                    g_pending_a11y[slot].window_id = target_win->id;
+                    g_pending_a11y[slot].caller_agent_id = caller_agent;
+                    strncpy(g_pending_a11y[slot].expected_app_name, target_win->app_name, sizeof(g_pending_a11y[slot].expected_app_name) - 1);
+                    memcpy(&g_pending_a11y[slot].act, &act, sizeof(act));
+                    break;
+                } else {
+                    struct win_msg_a11y_result res;
+                    memset(&res, 0, sizeof(res));
+                    res.ok = 0;
+                    snprintf(res.error, sizeof(res.error), "Aborted: human input preemption queue full");
+                    send_client_msg(c->fd, WIN_MSG_A11Y_RESULT, hdr->window_id, &res, sizeof(res));
+                    break;
+                }
             }
 
             /* Visible control indicators */
@@ -2633,6 +2747,8 @@ int main(int argc, char** argv) {
             if (errno == EINTR) continue;
             break;
         }
+
+        wm_process_pending_a11y_actions();
 
         /* Accept new display clients */
         if (pfds[srv_pfd_idx].revents & POLLIN) {
