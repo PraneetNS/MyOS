@@ -690,7 +690,7 @@ static const struct fs_ops agents_log_ops = {
 };
 
 static agent_info_t s_proc_agent_info;
-static char s_proc_agent_text[1024];
+static char s_proc_agent_text[2048];
 
 /* /proc/agents/<id>/status read */
 static int proc_agent_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
@@ -707,6 +707,8 @@ static int proc_agent_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, ui
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (uint32_t)s_proc_agent_info.id);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nName:\t");
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.name);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nPrincipal:\t");
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.principal);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nState:\t");
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), st_str);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nOwnerPid:\t");
@@ -778,6 +780,16 @@ static int proc_agent_caps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint
     for (uint32_t i = 0; i < s_proc_agent_info.caps.num_window_act && i < MAX_PATH_RULES; i++) {
         if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
         append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.window_act[i].prefix);
+    }
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMemRead:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_mem_read && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.mem_read[i].prefix);
+    }
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMemWrite:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_mem_write && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.mem_write[i].prefix);
     }
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowSecret:\t");
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (s_proc_agent_info.caps.mask & CAP_WINDOW_SECRET) ? 1 : 0);
