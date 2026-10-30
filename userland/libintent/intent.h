@@ -38,6 +38,7 @@ int intent_get_stats(int fd, char* out_json, size_t cap);
 
 int intent_get_caller_agent(void);
 int intent_get_caller_pid(void);
+const char* intent_get_caller_principal(void);
 
 #ifdef __cplusplus
 }
