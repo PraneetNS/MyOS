@@ -23,6 +23,8 @@
 #define CAP_WINDOW_ACT      (1 << 10)
 #define CAP_WINDOW_SECRET   (1 << 11)
 #define CAP_WINDOW_RAW      (1 << 12)
+#define CAP_MEM_READ        (1 << 13)
+#define CAP_MEM_WRITE       (1 << 14)
 
 /* Model backend capability flags */
 #define MODEL_BACKEND_LOCAL  (1 << 0)
@@ -52,6 +54,10 @@ typedef enum {
 #define AUDIT_EVENT_BUS_APPROVAL              12
 #define AUDIT_EVENT_KILLSWITCH                13
 #define AUDIT_EVENT_WINDOW_ACTION             14
+#define AUDIT_EVENT_MEM_PUT                   15
+#define AUDIT_EVENT_MEM_SEARCH                16
+#define AUDIT_EVENT_MEM_FORGET                17
+#define AUDIT_EVENT_MEM_ADMIN                 18
 
 typedef struct {
     char prefix[MAX_PATH_PREFIX_LEN];
@@ -59,6 +65,7 @@ typedef struct {
 
 typedef struct {
     uint32_t mask; /* CAP_* bits */
+    char principal[32]; /* Stable principal requested at creation */
     uint32_t num_fs_read;
     agent_path_rule_t fs_read[MAX_PATH_RULES];
     uint32_t num_fs_write;
@@ -75,6 +82,10 @@ typedef struct {
     agent_path_rule_t window_observe[MAX_PATH_RULES];
     uint32_t num_window_act;
     agent_path_rule_t window_act[MAX_PATH_RULES];
+    uint32_t num_mem_read;
+    agent_path_rule_t mem_read[MAX_PATH_RULES];
+    uint32_t num_mem_write;
+    agent_path_rule_t mem_write[MAX_PATH_RULES];
     uint32_t model_backends; /* Bitmask of allowed backends: 0 = MODEL_BACKEND_ALL */
 } agent_caps_t;
 
@@ -96,6 +107,7 @@ typedef struct {
 typedef struct {
     int id;
     char name[AGENT_NAME_MAX];
+    char principal[32];
     int owner_pid;
     int parent_agent_id;
     agent_state_t state;
@@ -129,6 +141,7 @@ struct process;
 typedef struct {
     int id;                    /* 1 to 32 */
     char name[AGENT_NAME_MAX];
+    char principal[32];
     int owner_pid;
     int parent_agent_id;
     agent_state_t state;
@@ -141,6 +154,7 @@ typedef struct {
 typedef struct {
     int pid;
     int agent_id;
+    char principal[32];
 } peerinfo_t;
 
 void agent_init(void);
@@ -173,5 +187,7 @@ int agent_charge_tokens(int agent_id, uint32_t tokens);
 int agent_tokens_left(int agent_id);
 int agent_killswitch_toggle(void);
 int agent_killswitch_active(void);
+void agent_killswitch_request(void);
+void agent_killswitch_check_deferred(void);
 
 #endif
