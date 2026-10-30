@@ -25,6 +25,7 @@ static uint32_t s_next_call_id = 1;
 
 static int s_current_caller_agent = 0;
 static int s_current_caller_pid = 0;
+static char s_current_caller_principal[32] = {0};
 
 int intent_get_caller_agent(void) {
     return s_current_caller_agent;
@@ -32,6 +33,10 @@ int intent_get_caller_agent(void) {
 
 int intent_get_caller_pid(void) {
     return s_current_caller_pid;
+}
+
+const char* intent_get_caller_principal(void) {
+    return s_current_caller_principal;
 }
 
 int intent_connect(void) {
@@ -109,6 +114,7 @@ static void extract_json_value(const char* p, char* out, size_t cap) {
 }
 
 static int send_frame(int fd, uint16_t type, uint32_t call_id, const char* body, size_t body_len) {
+    if (fd < 0) return -1;
     uint32_t total_len = sizeof(struct intent_header) + body_len;
     if (total_len > INTENT_MAX_MSG_LEN) return -1;
 
@@ -118,15 +124,18 @@ static int send_frame(int fd, uint16_t type, uint32_t call_id, const char* body,
     hdr.flags = 0;
     hdr.call_id = call_id;
 
-    uint8_t buf[INTENT_MAX_MSG_LEN];
-    memcpy(buf, &hdr, sizeof(hdr));
-    if (body && body_len > 0) {
-        memcpy(buf + sizeof(hdr), body, body_len);
-    }
-
     size_t written = 0;
-    while (written < total_len) {
-        ssize_t n = write(fd, buf + written, total_len - written);
+    while (written < sizeof(hdr)) {
+        ssize_t n = write(fd, (const char*)&hdr + written, sizeof(hdr) - written);
+        if (n <= 0) {
+            if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+            return -1;
+        }
+        written += (size_t)n;
+    }
+    written = 0;
+    while (written < body_len) {
+        ssize_t n = write(fd, body + written, body_len - written);
         if (n <= 0) {
             if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
             return -1;
@@ -226,11 +235,11 @@ int intent_register_skill(int fd, const char* name, const char* description,
         return -1;
     }
 
+    static json_doc_t s_reg_doc;
     if (rh.type == INTENT_MSG_REGISTER_ACK) {
-        json_doc_t doc;
-        if (json_parse(&doc, resp, strlen(resp)) == JSON_ERR_OK) {
+        if (json_parse(&s_reg_doc, resp, strlen(resp)) == JSON_ERR_OK) {
             bool ok = false;
-            json_obj_get_bool(doc.root, "ok", &ok);
+            json_obj_get_bool(s_reg_doc.root, "ok", &ok);
             if (ok) {
                 strncpy(s_skills[slot].name, name, sizeof(s_skills[slot].name) - 1);
                 s_skills[slot].handler = handler;
@@ -279,7 +288,7 @@ int intent_serve(int fd) {
     if (fd < 0) return -1;
     s_serve_running = 1;
 
-    char body[INTENT_MAX_MSG_LEN];
+    static char body[INTENT_MAX_MSG_LEN];
 
     while (s_serve_running) {
         struct intent_header hdr;
@@ -288,7 +297,7 @@ int intent_serve(int fd) {
         if (rc < 0) return -1;
 
         if (hdr.type == INTENT_MSG_CALL_FORWARD) {
-            json_doc_t doc;
+            static json_doc_t doc;
             if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
                 continue;
             }
@@ -301,6 +310,13 @@ int intent_serve(int fd) {
             json_obj_get_int(doc.root, "caller_pid", &caller_pid);
             s_current_caller_agent = caller_agent;
             s_current_caller_pid = caller_pid;
+            const char* princ = json_obj_get_str(doc.root, "caller_principal");
+            if (princ) {
+                strncpy(s_current_caller_principal, princ, sizeof(s_current_caller_principal) - 1);
+                s_current_caller_principal[sizeof(s_current_caller_principal) - 1] = '\0';
+            } else {
+                s_current_caller_principal[0] = '\0';
+            }
 
             const char* skill_name = json_obj_get_str(doc.root, "skill");
             const json_val_t* args_val = json_obj_get(doc.root, "args");
@@ -316,15 +332,15 @@ int intent_serve(int fd) {
                 }
             }
 
-            char result_buf[8192];
-            char err_buf[256];
+            static char result_buf[8192];
+            static char err_buf[256];
             result_buf[0] = '\0';
             err_buf[0] = '\0';
 
             int handler_rc = -1;
             if (sk && sk->handler) {
                 /* Format args as JSON string */
-                char args_str[4096];
+                static char args_str[4096];
                 if (args_val && args_val->type == JSON_TYPE_STRING) {
                     strncpy(args_str, args_val->u.str.ptr, sizeof(args_str) - 1);
                     args_str[sizeof(args_str) - 1] = '\0';
@@ -348,7 +364,7 @@ int intent_serve(int fd) {
             }
 
             /* Send RESULT back to daemon */
-            char resp_body[INTENT_MAX_MSG_LEN];
+            static char resp_body[INTENT_MAX_MSG_LEN];
             json_buf_t jb;
             json_buf_init(&jb, resp_body, sizeof(resp_body));
             json_buf_obj_start(&jb);
@@ -384,7 +400,7 @@ int intent_call(int fd, const char* skill, const char* json_args,
                 char* json_result, size_t result_cap, int timeout_ms) {
     if (fd < 0 || !skill) return -1;
 
-    char body[INTENT_MAX_MSG_LEN];
+    static char body[INTENT_MAX_MSG_LEN];
     json_buf_t jb;
     json_buf_init(&jb, body, sizeof(body));
     json_buf_obj_start(&jb);
@@ -414,7 +430,7 @@ int intent_call(int fd, const char* skill, const char* json_args,
     if (timeout_ms <= 0) timeout_ms = INTENT_DEFAULT_TIMEOUT;
 
     struct intent_header rh;
-    char resp[INTENT_MAX_MSG_LEN];
+    static char resp[INTENT_MAX_MSG_LEN];
     int rc = recv_frame(fd, &rh, resp, sizeof(resp), timeout_ms);
     if (rc < 0) {
         if (json_result && result_cap > 0) {
@@ -423,8 +439,8 @@ int intent_call(int fd, const char* skill, const char* json_args,
         return -1;
     }
 
+    static json_doc_t doc;
     if (rh.type == INTENT_MSG_RESULT) {
-        json_doc_t doc;
         if (json_parse(&doc, resp, strlen(resp)) == JSON_ERR_OK) {
             bool ok = false;
             json_obj_get_bool(doc.root, "ok", &ok);
@@ -445,7 +461,6 @@ int intent_call(int fd, const char* skill, const char* json_args,
             }
         }
     } else if (rh.type == INTENT_MSG_ERROR) {
-        json_doc_t doc;
         if (json_parse(&doc, resp, strlen(resp)) == JSON_ERR_OK) {
             const char* err = json_obj_get_str(doc.root, "error");
             if (json_result && result_cap > 0) {
@@ -503,7 +518,7 @@ int intent_resolve_approval(int fd, uint32_t approval_id, bool approved, char* e
     int rc = recv_frame(fd, &rh, resp, sizeof(resp), INTENT_DEFAULT_TIMEOUT);
     if (rc < 0 || rh.type != INTENT_MSG_RESOLVE_APPROVAL_ACK) return -1;
 
-    json_doc_t doc;
+    static json_doc_t doc;
     if (json_parse(&doc, resp, strlen(resp)) == JSON_ERR_OK) {
         bool ok = false;
         json_obj_get_bool(doc.root, "ok", &ok);
