@@ -532,6 +532,8 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
 
 (
     sleep 4
+    printf "true\n"
+    sleep 0.3
     printf "shinfo\n"
     sleep 0.3
     printf "date\n"
@@ -571,6 +573,8 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     printf 'kill %%1\n'
     sleep 0.3
     printf 'kill %%2\n'
+    sleep 0.3
+    printf 'kill %%3\n'
     sleep 0.3
     printf "jobs\n"
     sleep 0.3
