@@ -862,7 +862,7 @@ echo "[TEST] Asserting Session 10B results..."
 grep -q "\[concur_test\] PASS: 4 concurrent workers + spinner, no path corruption, zero leaks!" "$LOGFILE10B" || { echo "FAIL: concur_test.elf failed"; rm -f "$LOGFILE10B"; exit 1; }
 echo "[PASS] 4 concurrent processes + spinner filesystem stress test verified"
 
-~/.local/bin/fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions"; rm -f "$LOGFILE10B"; exit 1; }
+fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions"; rm -f "$LOGFILE10B"; exit 1; }
 echo "[PASS] fsck.fat disk consistency verified"
 
 rm -f "$LOGFILE10B"
@@ -944,7 +944,7 @@ cat "$LOGFILE13"
 grep -q "Powering off system" "$LOGFILE13" || { echo "FAIL: 'Powering off system' not found"; rm -f "$LOGFILE13"; exit 1; }
 echo "[PASS] poweroff initiated shutdown and QEMU terminated"
 
-~/.local/bin/fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions after poweroff"; rm -f "$LOGFILE13"; exit 1; }
+fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions after poweroff"; rm -f "$LOGFILE13"; exit 1; }
 echo "[PASS] fsck.fat verified filesystem consistency after sudden poweroff"
 
 rm -f "$LOGFILE13"
