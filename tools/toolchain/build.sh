@@ -9,8 +9,8 @@ PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
 TARGET="i686-elf"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
-SRC_DIR="$SCRIPT_DIR/src"
-BUILD_DIR="$SCRIPT_DIR/build"
+SRC_DIR="/root/toolchain_src"
+BUILD_DIR="/root/toolchain_build"
 
 BINUTILS_VER="2.42"
 BINUTILS_URL="https://ftpmirror.gnu.org/gnu/binutils/binutils-${BINUTILS_VER}.tar.xz"
