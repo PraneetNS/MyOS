@@ -23,6 +23,7 @@ Defined in `src/agent.h` and `libmyos/include/agent.h`:
 typedef struct agent {
     int id;                        /* Unique Agent ID (1..32) */
     char name[AGENT_NAME_MAX];     /* Human-readable label (e.g. "coder", "web_search") */
+    char principal[AGENT_NAME_MAX];/* Stable persistent principal identity */
     int owner_pid;                 /* PID of creator / controller process */
     int parent_agent_id;           /* 0 if root agent, or parent agent ID if delegated */
     int in_use;                    /* Allocation flag */
@@ -70,6 +71,8 @@ When a process is attached to an agent, its security posture transitions to **de
 | `CAP_WINDOW_ACT` | `1 << 10` | Permission to dispatch structured accessibility actions to allowlisted apps. |
 | `CAP_WINDOW_SECRET` | `1 << 11` | Permission to inspect/modify secret or password textboxes. Never inherited implicitly. |
 | `CAP_WINDOW_RAW` | `1 << 12` | Permission to inject unmanaged raw keyboard/mouse events or frame screenshots. |
+| `CAP_MEM_READ` | `1 << 13` | Permission to read memories from allowlisted namespaces (`priv`, `shared:<name>`). |
+| `CAP_MEM_WRITE` | `1 << 14` | Permission to store or forget memories in allowlisted namespaces (`priv`, `shared:<name>`). |
 
 ### 3.2 Path Canonicalization & Prefix Matching
 
