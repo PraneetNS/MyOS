@@ -9,6 +9,7 @@
 #include <sys/un.h>
 #include <agent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <intent_protocol.h>
 #include <approval_protocol.h>
 #include <json.h>
@@ -131,6 +132,7 @@ typedef struct {
     int fd;
     pid_t pid;
     uint32_t agent_id;
+    char principal[32];
     bool active;
     uint8_t rx_buf[INTENT_MAX_MSG_LEN];
     size_t rx_len;
@@ -163,6 +165,7 @@ typedef struct {
     int caller_fd;
     pid_t caller_pid;
     uint32_t caller_agent_id;
+    char caller_principal[32];
     int provider_fd;
     uint32_t provider_agent_id;
     char skill[64];
@@ -247,15 +250,18 @@ static int send_frame(int fd, uint16_t type, uint32_t call_id, const char* body,
     hdr.flags = 0;
     hdr.call_id = call_id;
 
-    uint8_t buf[INTENT_MAX_MSG_LEN];
-    memcpy(buf, &hdr, sizeof(hdr));
-    if (body && body_len > 0) {
-        memcpy(buf + sizeof(hdr), body, body_len);
-    }
-
     size_t written = 0;
-    while (written < total_len) {
-        ssize_t n = write(fd, buf + written, total_len - written);
+    while (written < sizeof(hdr)) {
+        ssize_t n = write(fd, (const char*)&hdr + written, sizeof(hdr) - written);
+        if (n <= 0) {
+            if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+            return -1;
+        }
+        written += (size_t)n;
+    }
+    written = 0;
+    while (written < body_len) {
+        ssize_t n = write(fd, body + written, body_len - written);
         if (n <= 0) {
             if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
             return -1;
@@ -420,7 +426,7 @@ static void close_client(int slot) {
 
 static void handle_msg_register(int cslot, const struct intent_header* hdr, const char* body) {
     client_slot_t* cli = &s_clients[cslot];
-    json_doc_t doc;
+    static json_doc_t doc;
     if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
         send_frame(cli->fd, INTENT_MSG_REGISTER_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Invalid JSON\"}", 36);
         return;
@@ -499,7 +505,7 @@ static void handle_msg_register(int cslot, const struct intent_header* hdr, cons
 
 static void handle_msg_unregister(int cslot, const struct intent_header* hdr, const char* body) {
     client_slot_t* cli = &s_clients[cslot];
-    json_doc_t doc;
+    static json_doc_t doc;
     if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
         send_frame(cli->fd, INTENT_MSG_UNREGISTER_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Invalid JSON\"}", 36);
         return;
@@ -569,6 +575,8 @@ static void forward_call_to_provider(int call_slot) {
     json_buf_append_int(&jb, cs->caller_agent_id);
     json_buf_obj_key(&jb, "caller_pid");
     json_buf_append_int(&jb, cs->caller_pid);
+    json_buf_obj_key(&jb, "caller_principal");
+    json_buf_append_str(&jb, cs->caller_principal);
     json_buf_obj_key(&jb, "args");
     if (cs->pending_body[0]) {
         json_buf_append_raw(&jb, cs->pending_body, strlen(cs->pending_body));
@@ -611,7 +619,7 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
         return;
     }
 
-    json_doc_t doc;
+    static json_doc_t doc;
     if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
         send_frame(cli->fd, INTENT_MSG_RESULT, hdr->call_id,
                    "{\"call_id\":0,\"ok\":false,\"error\":\"Invalid JSON\"}", 48);
@@ -653,7 +661,7 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
     /* Validate args against input_schema */
     const json_val_t* args_val = json_obj_get(doc.root, "args");
     if (sk->input_schema[0]) {
-        json_doc_t sdoc;
+        static json_doc_t sdoc;
         if (json_parse(&sdoc, sk->input_schema, strlen(sk->input_schema)) == JSON_ERR_OK && sdoc.root) {
             char err_buf[128];
             if (json_validate_schema(sdoc.root, args_val, err_buf, sizeof(err_buf)) != 0) {
@@ -710,6 +718,8 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
     cs->caller_fd = cli->fd;
     cs->caller_pid = cli->pid;
     cs->caller_agent_id = cli->agent_id;
+    strncpy(cs->caller_principal, cli->principal, sizeof(cs->caller_principal) - 1);
+    cs->caller_principal[sizeof(cs->caller_principal) - 1] = '\0';
     cs->provider_fd = sk->provider_fd;
     cs->provider_agent_id = sk->provider_agent_id;
     strncpy(cs->skill, skill_name, sizeof(cs->skill) - 1);
@@ -943,7 +953,7 @@ static bool resolve_approval_internal(uint32_t app_id, bool approved) {
 
 static void handle_msg_resolve_approval(int cslot, const struct intent_header* hdr, const char* body) {
     client_slot_t* cli = &s_clients[cslot];
-    json_doc_t doc;
+    static json_doc_t doc;
     if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) {
         send_frame(cli->fd, INTENT_MSG_RESOLVE_APPROVAL_ACK, hdr->call_id, "{\"ok\":false,\"error\":\"Invalid JSON\"}", 36);
         return;
@@ -1002,7 +1012,7 @@ static void process_client_buffer(int slot) {
 
         /* Extract payload */
         size_t payload_len = hdr.len - sizeof(struct intent_header);
-        char body[INTENT_MAX_MSG_LEN];
+        static char body[INTENT_MAX_MSG_LEN];
         if (payload_len > 0) {
             memcpy(body, cli->rx_buf + sizeof(struct intent_header), payload_len);
         }
@@ -1100,6 +1110,7 @@ static void check_timeouts(void) {
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
+    signal(SIGPIPE, SIG_IGN);   /* prevent death on broken provider sockets */
 
     /* Register as privileged bus daemon */
     if (bus_daemon_register() != 0) {
@@ -1216,6 +1227,8 @@ int main(int argc, char** argv) {
                         s_clients[slot].fd = client_fd;
                         s_clients[slot].pid = pinfo.pid;
                         s_clients[slot].agent_id = pinfo.agent_id;
+                        strncpy(s_clients[slot].principal, pinfo.principal, sizeof(s_clients[slot].principal) - 1);
+                        s_clients[slot].principal[sizeof(s_clients[slot].principal) - 1] = '\0';
                         s_clients[slot].active = true;
                         s_clients[slot].rx_len = 0;
                         s_clients[slot].rate_sec_start = get_now_ms();
