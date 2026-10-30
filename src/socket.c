@@ -7,6 +7,7 @@
 #include "serial.h"
 #include "vga.h"
 #include "errno.h"
+#include "agent.h"
 
 static socket_t* all_sockets_head = NULL;
 static uint32_t next_sock_inode = 10001;
@@ -66,6 +67,18 @@ socket_t* socket_alloc(int domain, int type, int protocol) {
     process_t* me = scheduler_current();
     s->creator_pid = me ? me->pid : 0;
     s->creator_agent_id = me ? me->agent_id : 0;
+    if (me && me->agent_id > 0) {
+        agent_t* ag = agent_get_by_id(me->agent_id);
+        if (ag && ag->principal[0]) {
+            kstrncpy(s->creator_principal, ag->principal, 31);
+        } else {
+            kstrncpy(s->creator_principal, "agent", 31);
+        }
+    } else {
+        kstrncpy(s->creator_principal, "system", 31);
+    }
+    s->creator_principal[31] = '\0';
+    s->peer_principal[0] = '\0';
 
     uint32_t f = irq_save();
     s->inode = next_sock_inode++;
@@ -345,8 +358,12 @@ int socket_connect(socket_t* s, const struct sockaddr* addr, uint32_t addrlen) {
 
     s->peer_pid = srv->creator_pid;
     s->peer_agent_id = srv->creator_agent_id;
+    kstrncpy(s->peer_principal, srv->creator_principal, 31);
+    s->peer_principal[31] = '\0';
     srv_conn->peer_pid = me ? me->pid : 0;
     srv_conn->peer_agent_id = me ? me->agent_id : 0;
+    kstrncpy(srv_conn->peer_principal, s->creator_principal, 31);
+    srv_conn->peer_principal[31] = '\0';
 
     s->state = SS_CONNECTED;
     srv_conn->state = SS_CONNECTED;
@@ -539,8 +556,12 @@ int socket_pair(int domain, int type, int protocol, socket_t** s1_out, socket_t*
     process_t* me = scheduler_current();
     s1->peer_pid = me ? me->pid : 0;
     s1->peer_agent_id = me ? me->agent_id : 0;
+    kstrncpy(s1->peer_principal, s2->creator_principal, 31);
+    s1->peer_principal[31] = '\0';
     s2->peer_pid = me ? me->pid : 0;
     s2->peer_agent_id = me ? me->agent_id : 0;
+    kstrncpy(s2->peer_principal, s1->creator_principal, 31);
+    s2->peer_principal[31] = '\0';
 
     s1->state = SS_CONNECTED;
     s2->state = SS_CONNECTED;
@@ -550,7 +571,7 @@ int socket_pair(int domain, int type, int protocol, socket_t** s1_out, socket_t*
     return 0;
 }
 
-int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out) {
+int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out, char* principal_out) {
     if (!s) return -EINVAL;
     kmutex_lock(&s->lock);
     if (s->state != SS_CONNECTED) {
@@ -559,6 +580,10 @@ int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out) {
     }
     if (pid_out) *pid_out = s->peer_pid;
     if (agent_out) *agent_out = s->peer_agent_id;
+    if (principal_out) {
+        kstrncpy(principal_out, s->peer_principal, 31);
+        principal_out[31] = '\0';
+    }
     kmutex_unlock(&s->lock);
     return 0;
 }

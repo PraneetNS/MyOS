@@ -101,8 +101,10 @@ typedef struct socket {
     /* Creator & Peer Identity */
     int creator_pid;
     int creator_agent_id;
+    char creator_principal[32];
     int peer_pid;
     int peer_agent_id;
+    char peer_principal[32];
 
     /* Buffer for incoming data on this socket */
     unix_ring_t rx_ring;
@@ -135,7 +137,7 @@ short socket_poll(socket_t* s, short events, void** chan_out);
 int socket_pair(int domain, int type, int protocol, socket_t** s1_out, socket_t** s2_out);
 int socket_getsockname(socket_t* s, struct sockaddr* addr, uint32_t* addrlen);
 int socket_getpeername(socket_t* s, struct sockaddr* addr, uint32_t* addrlen);
-int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out);
+int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out, char* principal_out);
 int socket_stat(socket_t* s, struct stat* st);
 void socket_close(socket_t* s);
 
