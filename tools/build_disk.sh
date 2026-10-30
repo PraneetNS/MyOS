@@ -4,7 +4,7 @@ export PATH="$HOME/.local/bin:$PATH"
 cd "$(dirname "$0")/.."
 
 IMAGE="disk.img"
-DISK_SIZE_MB="${DISK_SIZE_MB:-128}"
+DISK_SIZE_MB="${DISK_SIZE_MB:-64}"
 echo "Creating ${DISK_SIZE_MB}MB disk image..."
 rm -f "$IMAGE"
 dd if=/dev/zero of="$IMAGE" bs=1M count="$DISK_SIZE_MB" status=none
@@ -30,6 +30,23 @@ mmd -i "$IMAGE" "::/usr/share" || true
 mmd -i "$IMAGE" "::/usr/share/keymaps" || true
 
 mmd -i "$IMAGE" "::/etc/myos" || true
+mmd -i "$IMAGE" "::/var" || true
+mmd -i "$IMAGE" "::/var/mem" || true
+mmd -i "$IMAGE" "::/var/index" || true
+mmd -i "$IMAGE" "::/share/docs" || true
+
+echo "Installing /etc/memory.conf, /etc/index.conf and sample docs..."
+cat << 'EOF' > /tmp/myos_memory_conf
+# /etc/memory.conf - shared memory namespaces
+# shared:<name> read=<principals,*> write=<principals>
+shared:team read=* write=organizer,termhelp
+EOF
+mcopy -o -i "$IMAGE" /tmp/myos_memory_conf "::/etc/memory.conf"
+printf "/home\n/share/docs\n" > /tmp/myos_index_conf
+mcopy -o -i "$IMAGE" /tmp/myos_index_conf "::/etc/index.conf"
+printf "MyOS semantic index sample: the quarterly budget report lives in the finance folder.\n" > /tmp/myos_sample_doc
+mcopy -o -i "$IMAGE" /tmp/myos_sample_doc "::/share/docs/sample.txt"
+rm -f /tmp/myos_memory_conf /tmp/myos_index_conf /tmp/myos_sample_doc
 
 echo "Setting /etc/timezone to 330..."
 printf "330\n" > /tmp/myos_timezone
@@ -42,6 +59,8 @@ cat << 'EOF' > /tmp/myos_init_conf
 respawn /dev/null /bin/intentd.elf
 respawn /dev/null /bin/modeld.elf
 respawn /dev/null /bin/uibridge.elf
+respawn /dev/null /bin/memd.elf
+respawn /dev/null /bin/indexd.elf
 respawn /dev/console /bin/sh.elf
 EOF
 mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
