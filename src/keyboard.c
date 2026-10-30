@@ -270,9 +270,9 @@ static void keyboard_callback(struct registers* regs) {
         serial_printf("[keyboard] Restored K_XLATE via Ctrl+Alt+F1\n");
     }
 
-    /* Kernel kill switch: Ctrl + Alt + Esc suspends/resumes all agents */
+    /* Kernel kill switch: Ctrl + Alt + Esc sets pending flag for deferred execution */
     if (!is_release && (ctrl_l || ctrl_r) && (alt_l || alt_r) && keycode == KEY_ESC) {
-        agent_killswitch_toggle();
+        agent_killswitch_request();
     }
 
     /* Always deliver raw key event to /dev/input/kbd0 */
