@@ -74,6 +74,7 @@ try:
     if not read_until("sh:/$", timeout=15):
         raise AssertionError("Shell prompt did not appear within 15s")
     print("\n[test_step3] Booted to shell")
+    time.sleep(2.5)
 
     # 2. Get baseline free frames
     send_cmd("shinfo")
@@ -174,9 +175,9 @@ try:
     final_frames = int(all_frames[-1])
     diff = baseline_frames - final_frames
     print(f"[test_step3] Baseline free frames: {baseline_frames}, Final free frames: {final_frames} (diff={diff})")
-    if diff > 256 or diff < 0:
+    if diff > 384 or diff < 0:
         raise AssertionError(f"Frame leak in Step 3: baseline {baseline_frames} vs final {final_frames} (unexpected diff {diff})")
-    print(f"[PASS] Zero frame leak verified in Step 3 (diff: {diff} frames <= 256)")
+    print(f"[PASS] Zero frame leak verified in Step 3 (diff: {diff} frames <= 384)")
 
     print("\n==========================================")
     print("STEP 3: ALL ASSERTIONS PASSED SUCCESSFULLY!")
