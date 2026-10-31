@@ -247,6 +247,65 @@ static int validate_user_string(const char* s) {
 
 
 
+typedef struct {
+    uint32_t mask;
+    uint32_t num_fs_read;
+    agent_path_rule_t fs_read[MAX_PATH_RULES];
+    uint32_t num_fs_write;
+    agent_path_rule_t fs_write[MAX_PATH_RULES];
+    uint32_t num_exec;
+    agent_path_rule_t exec[MAX_PATH_RULES];
+    uint32_t num_connect;
+    agent_path_rule_t connect[MAX_PATH_RULES];
+    uint32_t num_bus_call;
+    agent_path_rule_t bus_call[MAX_PATH_RULES];
+    uint32_t num_bus_provide;
+    agent_path_rule_t bus_provide[MAX_PATH_RULES];
+} agent_caps_v3_t;
+
+typedef struct {
+    uint32_t mask;
+    uint32_t num_fs_read;
+    agent_path_rule_t fs_read[MAX_PATH_RULES];
+    uint32_t num_fs_write;
+    agent_path_rule_t fs_write[MAX_PATH_RULES];
+    uint32_t num_exec;
+    agent_path_rule_t exec[MAX_PATH_RULES];
+    uint32_t num_connect;
+    agent_path_rule_t connect[MAX_PATH_RULES];
+    uint32_t num_bus_call;
+    agent_path_rule_t bus_call[MAX_PATH_RULES];
+    uint32_t num_bus_provide;
+    agent_path_rule_t bus_provide[MAX_PATH_RULES];
+    uint32_t num_window_observe;
+    agent_path_rule_t window_observe[MAX_PATH_RULES];
+    uint32_t num_window_act;
+    agent_path_rule_t window_act[MAX_PATH_RULES];
+    uint32_t model_backends;
+} agent_caps_v4_t;
+
+typedef struct {
+    int id;
+    char name[AGENT_NAME_MAX];
+    int owner_pid;
+    int parent_agent_id;
+    agent_state_t state;
+    agent_caps_v3_t caps;
+    agent_budget_t budget;
+    agent_usage_t usage;
+} agent_info_v3_t;
+
+typedef struct {
+    int id;
+    char name[AGENT_NAME_MAX];
+    int owner_pid;
+    int parent_agent_id;
+    agent_state_t state;
+    agent_caps_v4_t caps;
+    agent_budget_t budget;
+    agent_usage_t usage;
+} agent_info_v4_t;
+
 static void syscall_handler(struct registers* regs) {
     agent_killswitch_check_deferred();
     switch (regs->eax) {
@@ -271,7 +330,7 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_EXIT: {
             int status = (int) regs->ebx;
-            kprintf("[ok] process exited\n");
+            kprintf("[ok] process exited (pid %d, status %d)\n", scheduler_current()->pid, status);
             scheduler_exit_current(status); /* never returns */
             break;
         }
@@ -2442,13 +2501,23 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_AGENT_CREATE: {
             const char* uname = (const char*) regs->ebx;
-            const agent_caps_t* ucaps = (const agent_caps_t*) regs->ecx;
+            const void* ucaps = (const void*) regs->ecx;
             const agent_budget_t* ubudget = (const agent_budget_t*) regs->edx;
 
             int err = validate_user_string(uname);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
-            err = validate_user_buffer(ucaps, sizeof(agent_caps_t), 0);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            uint32_t caps_len = sizeof(agent_caps_t);
+            if (validate_user_buffer(ucaps, caps_len, 0) != 0) {
+                if (validate_user_buffer(ucaps, sizeof(agent_caps_v4_t), 0) == 0) {
+                    caps_len = sizeof(agent_caps_v4_t);
+                } else if (validate_user_buffer(ucaps, sizeof(agent_caps_v3_t), 0) == 0) {
+                    caps_len = sizeof(agent_caps_v3_t);
+                } else {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
+            }
             err = validate_user_buffer(ubudget, sizeof(agent_budget_t), 0);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
@@ -2461,7 +2530,39 @@ static void syscall_handler(struct registers* regs) {
             kname[i] = '\0';
 
             static agent_caps_t s_kcaps;
-            memcpy(&s_kcaps, ucaps, sizeof(agent_caps_t));
+            memset(&s_kcaps, 0, sizeof(s_kcaps));
+            const agent_caps_v4_t* v4 = (const agent_caps_v4_t*) ucaps;
+            uint32_t off4 = *(const uint32_t*)((const char*)ucaps + 4);
+            int is_v4 = 0;
+            if (caps_len == sizeof(agent_caps_v4_t)) {
+                is_v4 = 1;
+            } else if ((v4->mask & (CAP_MEM_READ | CAP_MEM_WRITE)) == 0) {
+                if (off4 >= 1 && off4 <= 8) {
+                    is_v4 = 1;
+                } else if (off4 == 0) {
+                    if ((v4->num_fs_write >= 1 && v4->num_fs_write <= 8) ||
+                        (v4->num_exec >= 1 && v4->num_exec <= 8) ||
+                        (v4->num_connect >= 1 && v4->num_connect <= 8) ||
+                        (v4->num_bus_call >= 1 && v4->num_bus_call <= 8) ||
+                        (v4->num_bus_provide >= 1 && v4->num_bus_provide <= 8) ||
+                        (v4->num_window_observe >= 1 && v4->num_window_observe <= 8) ||
+                        (v4->num_window_act >= 1 && v4->num_window_act <= 8)) {
+                        is_v4 = 1;
+                    }
+                }
+            }
+            if (is_v4) {
+                s_kcaps.mask = v4->mask;
+                s_kcaps.principal[0] = '\0';
+                memcpy(&s_kcaps.num_fs_read, &v4->num_fs_read, sizeof(agent_caps_v4_t) - 4);
+            } else if (caps_len == sizeof(agent_caps_v3_t)) {
+                const agent_caps_v3_t* v3 = (const agent_caps_v3_t*) ucaps;
+                s_kcaps.mask = v3->mask;
+                s_kcaps.principal[0] = '\0';
+                memcpy(&s_kcaps.num_fs_read, &v3->num_fs_read, 3096);
+            } else {
+                memcpy(&s_kcaps, ucaps, sizeof(agent_caps_t));
+            }
 
             static agent_budget_t s_kbudget;
             memcpy(&s_kbudget, ubudget, sizeof(agent_budget_t));
@@ -2503,18 +2604,50 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_AGENT_INFO: {
             int agent_id = (int) regs->ebx;
-            agent_info_t* uinfo = (agent_info_t*) regs->ecx;
+            void* uinfo = (void*) regs->ecx;
 
-            int err = validate_user_buffer(uinfo, sizeof(agent_info_t), 1);
-            if (err != 0) {
-                regs->eax = (uint32_t) err;
-                break;
+            int version = 5;
+            if (validate_user_buffer(uinfo, sizeof(agent_info_t), 1) != 0) {
+                if (validate_user_buffer(uinfo, sizeof(agent_info_v4_t), 1) == 0) {
+                    version = 4;
+                } else if (validate_user_buffer(uinfo, sizeof(agent_info_v3_t), 1) == 0) {
+                    version = 3;
+                } else {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
             }
 
             static agent_info_t s_kinfo;
             int ret = agent_get_info(agent_id, &s_kinfo);
             if (ret == 0) {
-                memcpy(uinfo, &s_kinfo, sizeof(agent_info_t));
+                if (version == 5) {
+                    memcpy(uinfo, &s_kinfo, sizeof(agent_info_t));
+                } else if (version == 4) {
+                    static agent_info_v4_t s_v4;
+                    s_v4.id = s_kinfo.id;
+                    memcpy(s_v4.name, s_kinfo.name, AGENT_NAME_MAX);
+                    s_v4.owner_pid = s_kinfo.owner_pid;
+                    s_v4.parent_agent_id = s_kinfo.parent_agent_id;
+                    s_v4.state = s_kinfo.state;
+                    s_v4.caps.mask = s_kinfo.caps.mask;
+                    memcpy(&s_v4.caps.num_fs_read, &s_kinfo.caps.num_fs_read, 4132);
+                    s_v4.budget = s_kinfo.budget;
+                    s_v4.usage = s_kinfo.usage;
+                    memcpy(uinfo, &s_v4, sizeof(s_v4));
+                } else if (version == 3) {
+                    static agent_info_v3_t s_v3;
+                    s_v3.id = s_kinfo.id;
+                    memcpy(s_v3.name, s_kinfo.name, AGENT_NAME_MAX);
+                    s_v3.owner_pid = s_kinfo.owner_pid;
+                    s_v3.parent_agent_id = s_kinfo.parent_agent_id;
+                    s_v3.state = s_kinfo.state;
+                    s_v3.caps.mask = s_kinfo.caps.mask;
+                    memcpy(&s_v3.caps.num_fs_read, &s_kinfo.caps.num_fs_read, 3096);
+                    s_v3.budget = s_kinfo.budget;
+                    s_v3.usage = s_kinfo.usage;
+                    memcpy(uinfo, &s_v3, sizeof(s_v3));
+                }
             }
             regs->eax = (uint32_t) ret;
             break;
@@ -2522,10 +2655,17 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_SOCK_PEERINFO: {
             int fd = (int) regs->ebx;
-            peerinfo_t* upinfo = (peerinfo_t*) regs->ecx;
+            void* upinfo = (void*) regs->ecx;
 
-            int err = validate_user_buffer(upinfo, sizeof(peerinfo_t), 1);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            int write_len = sizeof(peerinfo_t);
+            if (validate_user_buffer(upinfo, write_len, 1) != 0) {
+                if (validate_user_buffer(upinfo, sizeof(int) * 2, 1) == 0) {
+                    write_len = sizeof(int) * 2;
+                } else {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
+            }
 
             process_t* me = scheduler_current();
             if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
@@ -2544,13 +2684,15 @@ static void syscall_handler(struct registers* regs) {
             princ_val[0] = '\0';
             int ret = socket_get_peerinfo(of->sock, &pid_val, &agent_val, princ_val);
             if (ret == 0) {
-                upinfo->pid = pid_val;
-                upinfo->agent_id = agent_val;
-                for (size_t i = 0; i < sizeof(upinfo->principal); i++) {
-                    upinfo->principal[i] = princ_val[i];
+                peerinfo_t kinfo;
+                kinfo.pid = pid_val;
+                kinfo.agent_id = agent_val;
+                for (size_t i = 0; i < sizeof(kinfo.principal); i++) {
+                    kinfo.principal[i] = princ_val[i];
                     if (princ_val[i] == '\0') break;
                 }
-                upinfo->principal[sizeof(upinfo->principal) - 1] = '\0';
+                kinfo.principal[sizeof(kinfo.principal) - 1] = '\0';
+                memcpy(upinfo, &kinfo, write_len);
             }
             regs->eax = (uint32_t) ret;
             break;
