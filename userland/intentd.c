@@ -820,7 +820,7 @@ static void handle_msg_call(int cslot, const struct intent_header* hdr, const ch
 
 static void handle_msg_result(int cslot, const struct intent_header* hdr, const char* body) {
     client_slot_t* cli = &s_clients[cslot];
-    json_doc_t doc;
+    static json_doc_t doc;
     if (json_parse(&doc, body, strlen(body)) != JSON_ERR_OK) return;
 
     int call_id = 0;
