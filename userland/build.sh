@@ -7,24 +7,26 @@ MYOS_GCC="../tools/myos-gcc"
 PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
 STRIP="$PREFIX/bin/i686-elf-strip"
 
-if [ ! -x "$MYOS_GCC" ]; then
-    echo "Error: $MYOS_GCC not found or not executable" >&2
-    exit 1
+if [ -x "$PREFIX/bin/i686-elf-gcc" ]; then
+    make -C ../libmyos all
+    make -C libjson all
+    make -C libintent all
+    make -C llm all
+    make -C libgfx all
+    make -C libwin all
+    make -C libui all
 fi
-
-make -C ../libmyos all
-make -C libjson all
-make -C libintent all
-make -C llm all
-make -C libgfx all
-make -C libwin all
-make -C libui all
 
 for src in *.c; do
     name="${src%.c}"
     if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ]; then
-        "$MYOS_GCC" -O2 "$src" -o "$name.elf"
-        echo "Built userland/$name.elf"
+        if [ -x "$PREFIX/bin/i686-elf-gcc" ]; then
+            "$MYOS_GCC" -O2 "$src" -o "$name.elf"
+            echo "Built userland/$name.elf"
+        elif [ ! -f "$name.elf" ]; then
+            echo "Error: $PREFIX/bin/i686-elf-gcc not found and $name.elf does not exist" >&2
+            exit 1
+        fi
     fi
 done
 
@@ -33,7 +35,7 @@ if [ -f "kilo.elf" ]; then
 fi
 
 # Build Lua if present
-if [ -d "lua/src" ]; then
+if [ -d "lua/src" ] && [ -x "$PREFIX/bin/i686-elf-gcc" ]; then
     make -C lua/src posix CC="../../../tools/myos-gcc" AR="$PREFIX/bin/i686-elf-ar rcu" RANLIB="$PREFIX/bin/i686-elf-ranlib"
     cp lua/src/lua lua.elf
     cp lua/src/luac luac.elf
