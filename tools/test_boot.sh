@@ -1268,13 +1268,13 @@ rm -f "$LOGFILE20_LOW"
 (
     sleep 3
     printf "memdtest\n"
-    sleep 150
+    sleep 60
     printf "memctl list alice\n"
     sleep 2
     printf "sync\n"
     sleep 2
     printf "exit\n"
-) | timeout 200s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE20" 2>&1 || true
+) | timeout 120s qemu-system-i386 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE20" 2>&1 || true
 tr -d '\r' < "$LOGFILE20" > "${LOGFILE20}.tmp" && mv "${LOGFILE20}.tmp" "$LOGFILE20"
 cat "$LOGFILE20"
 
