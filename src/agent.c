@@ -375,6 +375,18 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
     }
 
     if (slot < 0) {
+        static int s_next_reuse_slot = 0;
+        for (int i = 0; i < MAX_AGENTS; i++) {
+            int candidate = (s_next_reuse_slot + i) % MAX_AGENTS;
+            if (s_agents[candidate].state == AGENT_STATE_KILLED && s_agents[candidate].usage.procs_count == 0) {
+                slot = candidate;
+                s_next_reuse_slot = (candidate + 1) % MAX_AGENTS;
+                break;
+            }
+        }
+    }
+
+    if (slot < 0) {
         kmutex_unlock(&s_agent_lock);
         return -ENOMEM;
     }
@@ -735,6 +747,9 @@ int agent_audit_read(uint32_t offset, uint8_t* buf, uint32_t count) {
         append_uint_to_buf(text, &pos, sizeof(text), e->payload.wall_time);
         append_str_to_buf(text, &pos, sizeof(text), " type=");
         append_uint_to_buf(text, &pos, sizeof(text), e->payload.event_type);
+        append_str_to_buf(text, &pos, sizeof(text), "(");
+        append_str_to_buf(text, &pos, sizeof(text), agent_event_name(e->payload.event_type));
+        append_str_to_buf(text, &pos, sizeof(text), ")");
         append_str_to_buf(text, &pos, sizeof(text), " detail=\"");
         append_str_to_buf(text, &pos, sizeof(text), e->payload.detail);
         append_str_to_buf(text, &pos, sizeof(text), "\" prev=");
