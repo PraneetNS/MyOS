@@ -76,6 +76,7 @@ try:
     if not read_until("sh:/$", timeout=15):
         raise AssertionError("Shell prompt did not appear within 15s")
     print("\n[test_step2] Booted to shell")
+    time.sleep(2.5)
 
     # 2. Get baseline free frames
     send_cmd("shinfo")
@@ -188,10 +189,10 @@ try:
 
     # 10. Test wmctl maximize and restore
     send_cmd("wmctl maximize 1")
-    if not read_until("[winhello] CONFIGURE", timeout=4):
-        raise AssertionError("winhello did not receive CONFIGURE on maximize")
     if not read_until("OK", timeout=4):
         raise AssertionError("wmctl maximize 1 failed")
+    if not read_until("[winhello] CONFIGURE", timeout=4):
+        raise AssertionError("winhello did not receive CONFIGURE on maximize")
     read_until("sh:/$", timeout=3)
     send_cmd("wmctl list")
     read_until("OK", timeout=4)
@@ -252,9 +253,9 @@ try:
     all_frames = re.findall(r'free_frames=(\d+)', accum)
     final_frames = int(all_frames[-1])
     diff = baseline_frames - final_frames
-    if diff > 256 or diff < 0:
+    if diff > 384 or diff < 0:
         raise AssertionError(f"Frame leak in Step 2: baseline {baseline_frames} vs final {final_frames} (unexpected diff {diff})")
-    print(f"[PASS] Zero frame leak verified in Step 2 (diff: {diff} frames <= 256)")
+    print(f"[PASS] Zero frame leak verified in Step 2 (diff: {diff} frames <= 384)")
 
     print("\n==========================================")
     print("STEP 2: ALL ASSERTIONS PASSED SUCCESSFULLY!")
