@@ -514,16 +514,27 @@ void json_buf_append_raw(json_buf_t* jb, const char* raw, size_t len) {
     jb->buf[jb->len] = '\0';
 }
 
+static inline void json_buf_maybe_comma(json_buf_t* jb) {
+    if (jb && !jb->error && jb->len > 0 &&
+        jb->buf[jb->len - 1] != '{' && jb->buf[jb->len - 1] != '[' &&
+        jb->buf[jb->len - 1] != ':' && jb->buf[jb->len - 1] != ',') {
+        json_buf_append_raw(jb, ",", 1);
+    }
+}
+
 void json_buf_append_null(json_buf_t* jb) {
+    json_buf_maybe_comma(jb);
     json_buf_append_raw(jb, "null", 4);
 }
 
 void json_buf_append_bool(json_buf_t* jb, bool val) {
+    json_buf_maybe_comma(jb);
     if (val) json_buf_append_raw(jb, "true", 4);
     else json_buf_append_raw(jb, "false", 5);
 }
 
 void json_buf_append_int(json_buf_t* jb, int64_t val) {
+    json_buf_maybe_comma(jb);
     char s[32];
     int n = snprintf(s, sizeof(s), "%lld", (long long)val);
     if (n > 0) json_buf_append_raw(jb, s, (size_t)n);
@@ -531,6 +542,7 @@ void json_buf_append_int(json_buf_t* jb, int64_t val) {
 
 void json_buf_append_str_n(json_buf_t* jb, const char* val, size_t n) {
     if (!jb || jb->error) return;
+    json_buf_maybe_comma(jb);
     json_buf_append_raw(jb, "\"", 1);
     if (val) {
         for (size_t i = 0; i < n; i++) {
@@ -563,12 +575,13 @@ void json_buf_append_str(json_buf_t* jb, const char* val) {
 }
 
 void json_buf_obj_start(json_buf_t* jb) {
+    json_buf_maybe_comma(jb);
     json_buf_append_raw(jb, "{", 1);
 }
 
 void json_buf_obj_key(json_buf_t* jb, const char* key) {
     if (!jb || jb->error) return;
-    if (jb->len > 0 && jb->buf[jb->len - 1] != '{') {
+    if (jb->len > 0 && jb->buf[jb->len - 1] != '{' && jb->buf[jb->len - 1] != ',') {
         json_buf_append_raw(jb, ",", 1);
     }
     json_buf_append_str(jb, key);
@@ -580,6 +593,7 @@ void json_buf_obj_end(json_buf_t* jb) {
 }
 
 void json_buf_arr_start(json_buf_t* jb) {
+    json_buf_maybe_comma(jb);
     json_buf_append_raw(jb, "[", 1);
 }
 
