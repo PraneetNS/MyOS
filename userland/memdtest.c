@@ -313,7 +313,7 @@ int main(void) {
     PASS("Kernel-vouched principal reaches memd; forged body identity ignored");
 
     /* ---- 2. memd basics, isolation, id reuse ---- */
-    g_text = "the deployment password rotation happens every thursday morning ZEBRAXYZ123";
+    g_text = "the deployment password rotation happens every thursday morning ROTATION123";
     CHECK(run_agent(&alice, child_put) == 0, "alice mem.put");
     g_text = "favorite editor is kilo and favorite color is teal";
     CHECK(run_agent(&alice, child_put) == 0, "alice mem.put 2");
@@ -393,11 +393,11 @@ int main(void) {
 
     /* ---- 6. real deletion ---- */
     {
-        CHECK(file_contains("/var/mem/alice/records.dat", "ZEBRAXYZ123"), "marker on disk before forget");
+        CHECK(file_contains("/var/mem/alice/records.dat", "ROTATION123"), "marker on disk before forget");
         CHECK(human_admin("{\"op\":\"delete\",\"principal\":\"alice\",\"id\":1}") == 0, "human delete");
         sync();
-        CHECK(!file_contains("/var/mem/alice/records.dat", "ZEBRAXYZ123"), "deleted text physically gone from records.dat");
-        g_text = "ZEBRAXYZ123";
+        CHECK(!file_contains("/var/mem/alice/records.dat", "ROTATION123"), "deleted text physically gone from records.dat");
+        g_text = "ROTATION123";
         g_id = 0;
         CHECK(run_agent(&alice, child_search_expect) == 0, "deleted memory no longer searchable");
         g_text = "LIVEMARKER_KEEP_7788 control record";
