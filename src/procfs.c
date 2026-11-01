@@ -9,6 +9,14 @@
 
 #include "socket.h"
 #include "agent.h"
+#include "pci.h"
+#include "netdev.h"
+#include "arp.h"
+#include "ipv4.h"
+#include "tcp.h"
+#include "udp.h"
+#include "console.h"
+#include "serial.h"
 
 static vnode_t proc_root_vnode;
 static vnode_t proc_meminfo_vnode;
@@ -17,8 +25,14 @@ static vnode_t proc_version_vnode;
 static vnode_t proc_cpuinfo_vnode;
 static vnode_t proc_mounts_vnode;
 static vnode_t proc_global_cmdline_vnode;
+static vnode_t proc_pci_vnode;
 static vnode_t proc_net_dir_vnode;
 static vnode_t proc_net_unix_vnode;
+static vnode_t proc_net_dev_vnode;
+static vnode_t proc_net_tcp_vnode;
+static vnode_t proc_net_udp_vnode;
+static vnode_t proc_net_arp_vnode;
+static vnode_t proc_net_route_vnode;
 static vnode_t proc_self_dir_vnode;
 static vnode_t proc_self_status_vnode;
 static vnode_t proc_self_cmdline_vnode;
@@ -434,6 +448,221 @@ static const struct fs_ops net_unix_ops = {
     .stat = procfs_file_stat
 };
 
+static int net_dev_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[2048];
+    int pos = 0;
+    append_str(text, &pos, sizeof(text),
+        "Inter-|   Receive                                                |  Transmit\n"
+        " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n");
+    for (netdev_t* d = netdev_get_list(); d && pos < (int)sizeof(text) - 160; d = d->next) {
+        char line[160];
+        ksnprintf(line, sizeof(line),
+            "%6s: %8u %8u %4u %4u    0     0          0         0 %8u %8u %4u %4u    0     0       0          0\n",
+            d->name, d->rx_bytes, d->rx_packets, d->rx_errors, d->rx_dropped,
+            d->tx_bytes, d->tx_packets, d->tx_errors, d->tx_dropped);
+        append_str(text, &pos, sizeof(text), line);
+    }
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops net_dev_ops = {
+    .read = net_dev_read,
+    .stat = procfs_file_stat
+};
+
+static int net_tcp_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[4096];
+    int len = tcp_get_table_text(text, sizeof(text));
+    return procfs_read_helper(text, len, offset, buf, count);
+}
+
+static const struct fs_ops net_tcp_ops = {
+    .read = net_tcp_read,
+    .stat = procfs_file_stat
+};
+
+static int net_udp_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[4096];
+    int len = udp_get_table_text(text, sizeof(text));
+    return procfs_read_helper(text, len, offset, buf, count);
+}
+
+static const struct fs_ops net_udp_ops = {
+    .read = net_udp_read,
+    .stat = procfs_file_stat
+};
+
+static int net_arp_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[2048];
+    int len = arp_get_table_text(text, sizeof(text));
+    return procfs_read_helper(text, len, offset, buf, count);
+}
+
+static const struct fs_ops net_arp_ops = {
+    .read = net_arp_read,
+    .stat = procfs_file_stat
+};
+
+static int net_route_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[2048];
+    int len = route_get_table_text(text, sizeof(text));
+    return procfs_read_helper(text, len, offset, buf, count);
+}
+
+static const struct fs_ops net_route_ops = {
+    .read = net_route_read,
+    .stat = procfs_file_stat
+};
+
+static int proc_pci_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[2048];
+    int pos = 0;
+    int cnt = pci_device_count();
+    for (int i = 0; i < cnt && pos < (int)sizeof(text) - 128; i++) {
+        const pci_device_t* dev = pci_get_device(i);
+        if (!dev) continue;
+        char line[128];
+        ksnprintf(line, sizeof(line),
+            "PCI: %02x:%02x.%x %04x:%04x class=%02x%02x irq=%u bar0=0x%x\n",
+            dev->bus, dev->dev, dev->func, dev->vendor_id, dev->device_id,
+            dev->class_code, dev->subclass, dev->irq_line, dev->bars[0]);
+        append_str(text, &pos, sizeof(text), line);
+    }
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops proc_pci_ops = {
+    .read = proc_pci_read,
+    .stat = procfs_file_stat
+};
+
+static int net_killswitch_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn;
+    char text[8];
+    int len = ksnprintf(text, sizeof(text), "%d\n", net_killswitch_active());
+    return procfs_read_helper(text, len, offset, buf, count);
+}
+
+static int net_killswitch_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
+    (void) vn; (void) offset;
+    if (count > 0) {
+        if (buf[0] == '1') {
+            net_killswitch_set(1);
+        } else if (buf[0] == '0') {
+            net_killswitch_set(0);
+        }
+    }
+    return count;
+}
+
+static const struct fs_ops net_killswitch_ops = {
+    .read = net_killswitch_read,
+    .write = net_killswitch_write,
+    .stat = procfs_file_stat
+};
+
+static vnode_t proc_sys_dir_vnode;
+static vnode_t proc_sys_net_dir_vnode;
+static vnode_t proc_sys_net_killswitch_vnode;
+
+static int proc_sys_net_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    (void) dir;
+    if (streq(name, ".")) {
+        *out = &proc_sys_net_dir_vnode;
+        vnode_ref(&proc_sys_net_dir_vnode);
+        return 0;
+    }
+    if (streq(name, "..")) {
+        *out = &proc_sys_dir_vnode;
+        vnode_ref(&proc_sys_dir_vnode);
+        return 0;
+    }
+    if (streq(name, "killswitch")) {
+        *out = &proc_sys_net_killswitch_vnode;
+        vnode_ref(&proc_sys_net_killswitch_vnode);
+        return 0;
+    }
+    return -ENOENT;
+}
+
+static int proc_sys_net_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+    if (index == 2) {
+        entry->d_ino = 310; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "killswitch");
+        return 1;
+    }
+    return 0;
+}
+
+static const struct fs_ops proc_sys_net_dir_ops = {
+    .lookup = proc_sys_net_dir_lookup,
+    .readdir = proc_sys_net_dir_readdir,
+    .stat = procfs_dir_stat
+};
+
+static int proc_sys_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
+    (void) dir;
+    if (streq(name, ".")) {
+        *out = &proc_sys_dir_vnode;
+        vnode_ref(&proc_sys_dir_vnode);
+        return 0;
+    }
+    if (streq(name, "..")) {
+        *out = &proc_root_vnode;
+        vnode_ref(&proc_root_vnode);
+        return 0;
+    }
+    if (streq(name, "net")) {
+        *out = &proc_sys_net_dir_vnode;
+        vnode_ref(&proc_sys_net_dir_vnode);
+        return 0;
+    }
+    return -ENOENT;
+}
+
+static int proc_sys_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
+    (void) dir;
+    if (index == 0) {
+        entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '\0';
+        return 1;
+    }
+    if (index == 1) {
+        entry->d_ino = 2; entry->d_type = 2; entry->d_size = 0;
+        entry->d_name[0] = '.'; entry->d_name[1] = '.'; entry->d_name[2] = '\0';
+        return 1;
+    }
+    if (index == 2) {
+        entry->d_ino = 309; entry->d_type = 2; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "net");
+        return 1;
+    }
+    return 0;
+}
+
+static const struct fs_ops proc_sys_dir_ops = {
+    .lookup = proc_sys_dir_lookup,
+    .readdir = proc_sys_dir_readdir,
+    .stat = procfs_dir_stat
+};
+
 static int proc_net_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     (void) dir;
     if (streq(name, ".")) {
@@ -449,6 +678,36 @@ static int proc_net_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (streq(name, "unix")) {
         *out = &proc_net_unix_vnode;
         vnode_ref(&proc_net_unix_vnode);
+        return 0;
+    }
+    if (streq(name, "dev")) {
+        *out = &proc_net_dev_vnode;
+        vnode_ref(&proc_net_dev_vnode);
+        return 0;
+    }
+    if (streq(name, "tcp")) {
+        *out = &proc_net_tcp_vnode;
+        vnode_ref(&proc_net_tcp_vnode);
+        return 0;
+    }
+    if (streq(name, "udp")) {
+        *out = &proc_net_udp_vnode;
+        vnode_ref(&proc_net_udp_vnode);
+        return 0;
+    }
+    if (streq(name, "arp")) {
+        *out = &proc_net_arp_vnode;
+        vnode_ref(&proc_net_arp_vnode);
+        return 0;
+    }
+    if (streq(name, "route")) {
+        *out = &proc_net_route_vnode;
+        vnode_ref(&proc_net_route_vnode);
+        return 0;
+    }
+    if (streq(name, "killswitch")) {
+        *out = &proc_sys_net_killswitch_vnode;
+        vnode_ref(&proc_sys_net_killswitch_vnode);
         return 0;
     }
     return -ENOENT;
@@ -469,6 +728,36 @@ static int proc_net_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* ent
     if (index == 2) {
         entry->d_ino = 300; entry->d_type = 1; entry->d_size = 0;
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "unix");
+        return 1;
+    }
+    if (index == 3) {
+        entry->d_ino = 301; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "dev");
+        return 1;
+    }
+    if (index == 4) {
+        entry->d_ino = 302; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "tcp");
+        return 1;
+    }
+    if (index == 5) {
+        entry->d_ino = 303; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "udp");
+        return 1;
+    }
+    if (index == 6) {
+        entry->d_ino = 304; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "arp");
+        return 1;
+    }
+    if (index == 7) {
+        entry->d_ino = 305; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "route");
+        return 1;
+    }
+    if (index == 8) {
+        entry->d_ino = 306; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "killswitch");
         return 1;
     }
     return 0;
@@ -791,6 +1080,13 @@ static int proc_agent_caps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint
         if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
         append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.mem_write[i].prefix);
     }
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nNetRawInet:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (s_proc_agent_info.caps.mask & CAP_NET_RAW_INET) ? 1 : 0);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nNetHttp:\t");
+    for (uint32_t i = 0; i < s_proc_agent_info.caps.num_net_http && i < MAX_PATH_RULES; i++) {
+        if (i > 0) append_char(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), ',');
+        append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.caps.net_http[i].prefix);
+    }
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowSecret:\t");
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), (s_proc_agent_info.caps.mask & CAP_WINDOW_SECRET) ? 1 : 0);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nWindowRaw:\t");
@@ -1033,6 +1329,16 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         vnode_ref(&proc_agents_dir_vnode);
         return 0;
     }
+    if (streq(name, "pci")) {
+        *out = &proc_pci_vnode;
+        vnode_ref(&proc_pci_vnode);
+        return 0;
+    }
+    if (streq(name, "sys")) {
+        *out = &proc_sys_dir_vnode;
+        vnode_ref(&proc_sys_dir_vnode);
+        return 0;
+    }
     if (is_all_digits(name)) {
         int pid = parse_int(name);
         for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -1104,9 +1410,19 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "agents");
         return 1;
     }
+    if (index == 11) {
+        entry->d_ino = 19; entry->d_type = 1; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "pci");
+        return 1;
+    }
+    if (index == 12) {
+        entry->d_ino = 20; entry->d_type = 2; entry->d_size = 0;
+        int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "sys");
+        return 1;
+    }
 
-    /* index >= 11 corresponds to active processes */
-    uint32_t target_idx = index - 11;
+    /* index >= 13 corresponds to active processes */
+    uint32_t target_idx = index - 13;
     uint32_t active_count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
@@ -1182,6 +1498,13 @@ void procfs_init(void) {
     proc_global_cmdline_vnode.refcount = 1000;
     proc_global_cmdline_vnode.parent = &proc_root_vnode;
 
+    proc_pci_vnode.type = VNODE_FILE;
+    proc_pci_vnode.size = 0;
+    proc_pci_vnode.fs_data = 0;
+    proc_pci_vnode.ops = &proc_pci_ops;
+    proc_pci_vnode.refcount = 1000;
+    proc_pci_vnode.parent = &proc_root_vnode;
+
     proc_net_dir_vnode.type = VNODE_DIR;
     proc_net_dir_vnode.size = 0;
     proc_net_dir_vnode.fs_data = 0;
@@ -1195,6 +1518,62 @@ void procfs_init(void) {
     proc_net_unix_vnode.ops = &net_unix_ops;
     proc_net_unix_vnode.refcount = 1000;
     proc_net_unix_vnode.parent = &proc_net_dir_vnode;
+
+    proc_net_dev_vnode.type = VNODE_FILE;
+    proc_net_dev_vnode.size = 0;
+    proc_net_dev_vnode.fs_data = 0;
+    proc_net_dev_vnode.ops = &net_dev_ops;
+    proc_net_dev_vnode.refcount = 1000;
+    proc_net_dev_vnode.parent = &proc_net_dir_vnode;
+
+    proc_net_tcp_vnode.type = VNODE_FILE;
+    proc_net_tcp_vnode.size = 0;
+    proc_net_tcp_vnode.fs_data = 0;
+    proc_net_tcp_vnode.ops = &net_tcp_ops;
+    proc_net_tcp_vnode.refcount = 1000;
+    proc_net_tcp_vnode.parent = &proc_net_dir_vnode;
+
+    proc_net_udp_vnode.type = VNODE_FILE;
+    proc_net_udp_vnode.size = 0;
+    proc_net_udp_vnode.fs_data = 0;
+    proc_net_udp_vnode.ops = &net_udp_ops;
+    proc_net_udp_vnode.refcount = 1000;
+    proc_net_udp_vnode.parent = &proc_net_dir_vnode;
+
+    proc_net_arp_vnode.type = VNODE_FILE;
+    proc_net_arp_vnode.size = 0;
+    proc_net_arp_vnode.fs_data = 0;
+    proc_net_arp_vnode.ops = &net_arp_ops;
+    proc_net_arp_vnode.refcount = 1000;
+    proc_net_arp_vnode.parent = &proc_net_dir_vnode;
+
+    proc_net_route_vnode.type = VNODE_FILE;
+    proc_net_route_vnode.size = 0;
+    proc_net_route_vnode.fs_data = 0;
+    proc_net_route_vnode.ops = &net_route_ops;
+    proc_net_route_vnode.refcount = 1000;
+    proc_net_route_vnode.parent = &proc_net_dir_vnode;
+
+    proc_sys_dir_vnode.type = VNODE_DIR;
+    proc_sys_dir_vnode.size = 0;
+    proc_sys_dir_vnode.fs_data = 0;
+    proc_sys_dir_vnode.ops = &proc_sys_dir_ops;
+    proc_sys_dir_vnode.refcount = 1000;
+    proc_sys_dir_vnode.parent = &proc_root_vnode;
+
+    proc_sys_net_dir_vnode.type = VNODE_DIR;
+    proc_sys_net_dir_vnode.size = 0;
+    proc_sys_net_dir_vnode.fs_data = 0;
+    proc_sys_net_dir_vnode.ops = &proc_sys_net_dir_ops;
+    proc_sys_net_dir_vnode.refcount = 1000;
+    proc_sys_net_dir_vnode.parent = &proc_sys_dir_vnode;
+
+    proc_sys_net_killswitch_vnode.type = VNODE_FILE;
+    proc_sys_net_killswitch_vnode.size = 0;
+    proc_sys_net_killswitch_vnode.fs_data = 0;
+    proc_sys_net_killswitch_vnode.ops = &net_killswitch_ops;
+    proc_sys_net_killswitch_vnode.refcount = 1000;
+    proc_sys_net_killswitch_vnode.parent = &proc_sys_net_dir_vnode;
 
     proc_self_dir_vnode.type = VNODE_DIR;
     proc_self_dir_vnode.size = 0;
