@@ -3,7 +3,7 @@
 [![CI](https://github.com/PraneetNS/MyOS/actions/workflows/ci.yml/badge.svg)](https://github.com/PraneetNS/MyOS/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **One-line pitch**: A preemptive 32-bit x86 Unix-like operating system built from scratch in C and assembly, featuring kernel-enforced agent capability sandboxing, hardware killswitches, an in-kernel network stack with mediated TLS gateway, intent-driven IPC, and a cryptographically chained SHA-256 audit log.
+> **One-line pitch**: A preemptive 64-bit x86-64 Unix-like operating system built from scratch in C and assembly, featuring kernel-enforced agent capability sandboxing, hardware killswitches, an in-kernel network stack with mediated TLS gateway, intent-driven IPC, and a cryptographically chained SHA-256 audit log.
 
 ---
 
@@ -18,7 +18,7 @@ sha256sum -c SHA256SUMS
 
 ### 2. Boot under QEMU (Linux, macOS, WSL)
 ```bash
-qemu-system-i386 -m 128 -cdrom myos.iso -drive file=disk.img,format=raw \
+qemu-system-x86_64 -m 256 -cdrom myos.iso -drive file=disk.img,format=raw \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 ```
 
@@ -36,7 +36,7 @@ flowchart TD
     subgraph Host ["Host System and Hypervisor"]
         Bridge["Host Bridge (tools/hostbridge.py)"]
         Keys["API Keys (Host Environment Isolated)"]
-        QEMU["QEMU x86-32 Emulator"]
+        QEMU["QEMU x86-64 Emulator (BIOS + UEFI)"]
     end
 
     subgraph Kernel ["MyOS Kernel (Ring 0)"]
@@ -159,22 +159,23 @@ MyOS includes three comprehensive, runnable, and recordable demonstration scenar
 
 ---
 
-## 🔒 Security Model & Known Limitations
+## 🔒 Security Model & Modern Hardening
 
-For our comprehensive threat analysis, trust boundaries, and complete list of known limitations (32-bit single-core, no ASLR/NX, local model constraints), please read:
+For our comprehensive threat analysis, trust boundaries, CPU hardening details (NX, SMEP, SMAP, ASLR), and known limitations, please read:
 👉 **[Security Model & Known Limitations](docs/security_model.md)**
 
 ---
 
 ## 📜 Development History & Architectural Phases
 
-MyOS was developed across six distinct architectural phases:
+MyOS was developed across eight distinct architectural phases:
 - **Phase 1: Kernel Core & POSIX Base** (GDT/IDT, PMM, Higher-half VMM, FAT16 LFN, Scheduler, Signals, Pipes, SHM, PTYs, Newlib Libc, Lua 5.4).
 - **Phase 2: GUI & Windowing System** (Framebuffer PAT, Compositing WM, `libwin`, `libui`, `term`, `files`, accessibility tree).
 - **Phase 3: The Model Daemon & Autonomous Loop** (COM2 serial framing, `modeld`, token budgets, `libllm` local engine, prompt injection defenses).
 - **Phase 4: The Agent Desktop & Safety** (UI bridge, server-side approval dialogs, visible status indicators, hardware killswitch).
 - **Phase 5: Persistent Memory & Semantic File Index** (Principals, `memd`, BM25 + embedding hybrid search, memory zeroing, `indexd`).
 - **Phase 6 & 6.5: Hardened Networking, TLS & Net Gateway** (VirtIO-Net, in-kernel TCP/UDP, BearSSL TLS 1.2, `netd` gateway, DNS rebinding prevention, secret scrubbing, packet fuzzing).
+- **Phase 8: x86-64 Long Mode, UEFI Boot & Modern CPU Hardening** (4-level paging, 64-bit GDT/IDT/TSS, PhysMap direct mapping up to 64GB+, UEFI OVMF + BIOS hybrid ISO, SMEP, SMAP, NX bit enforcement, mmap ASLR).
 
 ---
 

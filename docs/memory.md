@@ -276,7 +276,39 @@ Any physical frame allocated by `pmm_alloc_frame()` (e.g. `frame_phys`) is acces
 
 ---
 
-## 6. Known Limitations
-1. **PAE / NX bit**: 32-bit non-PAE paging does not provide a hardware No-Execute bit in page table entries; `PROT_NONE` and unmapped accesses fault in hardware, and instruction fetches on non-executable areas fault on CPUs with NX or on unmapped pages.
-2. **Page Swapping / Eviction**: Physical pages are frame-backed or lazy-loaded from files; an on-disk swap partition for paging anonymous memory to disk under heavy memory pressure is not yet implemented.
-3. **Direct Map Ceiling**: Direct map covers physical memory up to 768MB (`0xC0000000 - 0xEFFFFFFF`). Machines with >768MB RAM use the first 768MB as logged during PMM initialization.
+## 6. Historical Stage 15 Limitations (Resolved in Phase 8)
+1. **PAE / NX bit**: Previously, 32-bit non-PAE paging lacked an NX bit. In Phase 8 (x86-64), long mode with `EFER.NXE` enforces bit 63 on all page table entries, guaranteeing hardware W^X execution protection across stack, heap, and data pages.
+2. **Direct Map Ceiling**: Previously capped at 768MB. In Phase 8, the PhysMap covers up to 64GB+ at `0xFFFF800000000000`, and the dynamic physical frame refcount table scales to multi-gigabyte RAM configurations.
+3. **Page Swapping / Eviction**: Physical pages are frame-backed or lazy-loaded from files; an on-disk swap partition for paging anonymous memory to disk under heavy memory pressure remains a future extension.
+
+---
+
+## 7. Phase 8: x86-64 Long Mode & 64-Bit Memory Architecture
+
+### 7.1 48-bit Canonical Address Space Layout
+```
++---------------------------------------------------------------------------------+
+| Range                                  Size      Description                    |
++---------------------------------------------------------------------------------+
+| 0x0000000000000000 - 0x00007FFFFFFFFFFF 128 TB    User Canonical Half            |
+|   0x0000000000400000                   --        User ELF Executable Base       |
+|   0x0000000010000000                   --        User Dynamic Heap (sbrk)       |
+|   0x0000700000000000                   --        User MMAP Base (ASLR randomized)|
+|   0x00007FFFFFFFE000                   --        User Initial Stack Top         |
+| 0x0000800000000000 - 0xFFFF7FFFFFFFFFFF 16.7 M TB Non-Canonical Address Space (Trap)|
+| 0xFFFF800000000000 - 0xFFFF8000FFFFFFFF 64 GB+   Direct Physical Map (PhysMap)  |
+| 0xFFFFFFFF80000000 - 0xFFFFFFFFFFFFFFFF 2 GB     Kernel Canonical Half (-2GB)   |
+|   0xFFFFFFFF80100000                   --        Kernel ELF Code, Data & BSS    |
+|   0xFFFFFFFF90000000 - 0xFFFFFFFFB0000000 512 MB Kernel Heap (kheap dynamic)    |
+|   0xFFFFFFFFA0000000                   --        Kernel MMIO (ioremap / fb0)    |
++---------------------------------------------------------------------------------+
+```
+
+### 7.2 Scalable Physical Memory Allocation
+- **Dynamic Refcounts**: Rather than a static array, `pmm_refcount` is allocated dynamically during early boot from available physical frames immediately above the kernel image and mapped through PhysMap.
+- **Support for >4GB RAM**: Fully tested and verified with 6GB (`-m 6144`) and 8GB (`-m 8192`) RAM configurations.
+- **Hardware Protections**:
+  - `EFER.NXE` + Page Table bit 63: Enforces Non-Executable stacks and data pages.
+  - `CR4.SMEP`: Prevents supervisor execution from user space.
+  - `CR4.SMAP`: Blocks supervisor data access to user space without explicit `stac` / `clac` (`user_access_begin()` / `user_access_end()`).
+  - `ASLR`: Randomizes userspace `mmap` allocations with 17 bits of CSPRNG page entropy.

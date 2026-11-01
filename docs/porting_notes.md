@@ -59,5 +59,32 @@ Because standard Multiboot2 loaders (like GRUB) jump to the 32-bit entry point i
   - User stack, heap, and writable memory pages are explicitly marked NX.
   - Kernel text is read-only; kernel data and stack are NX (W^X strictly enforced).
 - **SMEP (Supervisor Mode Execution Prevention)**: `CR4.SMEP` (bit 20) enabled when detected via `CPUID.(EAX=7, ECX=0):EBX[bit 7]`. Prevents the kernel from executing code in user-space pages.
-- **SMAP (Supervisor Mode Access Prevention)**: `CR4.SMAP` (bit 21) enabled when detected via `CPUID.(EAX=7, ECX=0):EBX[bit 20]`. Prevents accidental kernel access to user memory; `copy_to_user` and `copy_from_user` use `stac` / `clac` instructions.
-- **ASLR**: Randomizes user base addresses (stack base, mmap base, heap brk) using entropy from the hardware/CSPRNG seed.
+- **SMAP (Supervisor Mode Access Prevention)**: `CR4.SMAP` (bit 21) enabled when detected via `CPUID.(EAX=7, ECX=0):EBX[bit 20]`. Prevents accidental kernel access to user memory; user access is strictly bracketed with `user_access_begin()` (`stac`) and `user_access_end()` (`clac`) during syscall execution.
+- **ASLR**: Randomizes user base addresses (stack base, mmap base, heap brk) using entropy from the hardware/CSPRNG seed (`random_u32() & 0x1FFFFULL << 12`).
+
+---
+
+## 5. UEFI & BIOS Hybrid Boot Support
+
+MyOS produces a hybrid bootable ISO (`myos.iso`) compatible with both legacy BIOS (Multiboot2 via GRUB) and modern UEFI (x86_64 GRUB-EFI via OVMF).
+- **UEFI Boot Image**: The ISO filesystem embeds an EFI System Partition image (`/boot/efi.img` formatted FAT12) containing `EFI/BOOT/BOOTX64.EFI` generated with `grub-mkstandalone` (x86_64-efi format, modules: `part_gpt part_msdos fat ext2 iso9660 multiboot2 normal`).
+- **El Torito Platform IDs**: `xorriso` configures El Torito boot catalogs for both BIOS (MBR/El Torito default boot catalog) and UEFI (`-eltorito-alt-boot -e boot/efi.img -no-emul-boot -isohybrid-gpt-basdat`).
+- **Tested Environment**: Verified under QEMU with Tianocore OVMF (`-bios /usr/share/ovmf/OVMF.fd`).
+
+---
+
+## 6. Dynamic Physical Memory Management (>4GB RAM)
+
+- **Scalable Frame Reference Tracking**: In 32-bit mode, `pmm_refcount` was a static array limited to 512MB RAM. In 64-bit mode, the PMM dynamically sizes the refcount array at boot based on the highest usable physical address reported by Multiboot2.
+- **Placement**: Located immediately above the kernel image in early physical RAM, mapped into PhysMap (`0xFFFF800000000000`).
+- **Scale Verification**: Tested and verified under QEMU with `-m 6144` (6GB, 1,572,735 frames) and `-m 8192` (8GB, 2,097,023 frames).
+
+---
+
+## 7. Resolved Architectural Caveats & Bugs
+
+1. **SMAP Access in Syscall Dispatch**: Under `CR4.SMAP=1`, reading user-space arguments in `validate_user_string` or copying buffers to/from userspace faults unless `EFLAGS.AC=1`. Added `user_access_begin()` (`stac`) and `user_access_end()` (`clac`) around `syscall_dispatch()` and user memory probes.
+2. **PhysMap Upper 32-Bit Carry**: In 32-bit boot trampoline assembly, mapping 64GB requires calculating upper 32-bits as `ecx >> 2` (`0x40000000` = 1GB per entry) to prevent 32-bit register overflow at 4GB.
+3. **Red Zone Violation**: Kernel code compiled with `-mno-red-zone` prevents interrupt handlers from clobbering caller stack frames below `%rsp`. Userland code runs with standard System V AMD64 ABI.
+4. **ELF String Literals vs Raw Disk Scratches**: Verification tests probing disk sectors for deleted text (e.g. `ROTATION123`) must not contain the target pattern as an ELF static string literal on disk; dynamically constructed strings at runtime prevent false-positive literal matches.
+

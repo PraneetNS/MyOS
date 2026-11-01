@@ -1,7 +1,7 @@
 # MyOS: Operating System Security Model & Threat Boundary
 
-**Revision**: Phase 6.5 Closeout / Launch Readiness  
-**Target Architecture**: x86-32 Protected Mode (Ring 0 / Ring 3)  
+**Revision**: Phase 8 Port & Modern CPU Hardening  
+**Target Architecture**: x86-64 Long Mode (Ring 0 / Ring 3) with UEFI & BIOS Boot  
 **Status**: Consolidated Architectural Specification & Threat Analysis
 
 ---
@@ -106,10 +106,10 @@ Every security-relevant decision is recorded to `/proc/agents/log`:
 
 To maintain complete transparency, the following design constraints and known limitations exist in the current MyOS release:
 
-1. **Single-Core x86-32 Architecture**: MyOS runs on single-core 32-bit x86 protected mode. It does not utilize SMP or hardware hypervisor virtualization extensions (VT-x).
-2. **No Hardware ASLR / NX Bit**: As a lightweight educational and demonstration OS, address space layout randomization (ASLR) and No-Execute (NX) page table protections are not implemented; spatial memory safety relies on C bounds checking and kernel heap canaries.
+1. **Single-Core x86-64 Architecture**: MyOS runs on single-core 64-bit x86-64 long mode. It does not yet utilize SMP (multi-core scheduling via APIC) or hardware hypervisor virtualization extensions (VT-x / AMD-V).
+2. **CPU Hardening Scope**: Hardware No-Execute (NX), SMEP, SMAP (with `stac`/`clac` bracketing), and userland mmap ASLR are enforced. Kernel base ASLR (KASLR) and user stack-canary instrumentation remain optional or future work.
 3. **Allowed-Domain Exfiltration**: If an agent is granted network access to an allowlisted external domain (e.g., `api.github.com`), malicious payloads can potentially exfiltrate data via standard HTTP query parameters or POST bodies within that domain.
-4. **Bootstrapped Entropy in QEMU**: In virtualized environments lacking the `RDRAND` instruction, initial seed entropy relies on PIT timer jitter and RTC CMOS readings, which may possess lower cryptographic entropy during the initial 100ms of boot.
+4. **Bootstrapped Entropy in QEMU**: In virtualized environments lacking the `RDRAND` instruction, initial seed entropy relies on PIT timer jitter, RTC CMOS readings, and saved `/var/lib/random-seed`.
 5. **Local Model Incompetence**: 15M parameter local language models are toy demonstrators. They cannot be trusted to follow JSON output schemas or obey complex instructions. Production agent autonomy requires the Host Bridge or direct API backend.
 6. **FAT16 Filesystem Durability**: The underlying file storage uses FAT16 with a 64-entry LRU buffer cache. While consistent across clean shutdowns, sudden power loss during an active write may require `fsck.fat`.
 

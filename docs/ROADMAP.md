@@ -13,9 +13,17 @@ Welcome to the MyOS project roadmap! This document outlines upcoming milestones 
 
 ---
 
-## 🚀 Long-Term Milestones (Phase 8: Hardware Realism & SMP)
+## 🚀 Completed: Phase 8 (x86-64 Long Mode & Modern Hardening)
 
-- **x86-64 Transition**: Long mode kernel bootstrapping, 64-bit page table structures, and expanded memory addressability beyond 4GB.
+- **x86-64 Transition**: Booted in 64-bit long mode with 4-level paging, fast `syscall` path, 64-bit GDT/IDT/TSS, and unified SysV AMD64 ABI.
+- **UEFI Boot**: Hybrid ISO with GRUB-EFI and El Torito boot images running seamlessly with Tianocore OVMF and legacy BIOS.
+- **>4GB Memory Support**: Dynamic physical memory manager supporting up to 64GB+ RAM with early memory-mapped refcount arrays (verified at 6GB and 8GB).
+- **Modern CPU Hardening**: Hardware NX enforcement, SMEP, SMAP with strict `stac`/`clac` bracketing, and userland mmap ASLR.
+
+---
+
+## 🔮 Future Milestones (Phase 9: Hardware Realism & SMP)
+
 - **Symmetric Multiprocessing (SMP)**: Multi-core scheduling with APIC and spinlock-protected scheduler queues.
 - **NVMe / AHCI Storage**: Native PCIe NVMe block storage driver replacing legacy ATA PIO.
 - **Hardware Virtualization Hypervisor Support**: Hardware-assisted ring virtualization (VT-x / AMD-V) for strict agent isolation.
