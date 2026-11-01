@@ -22,7 +22,6 @@ typedef struct {
 } dns_cache_entry_t;
 
 static dns_cache_entry_t s_dns_cache[DNS_CACHE_SIZE];
-static uint16_t s_txid = 0x1234;
 
 int inet_pton(int af, const char* src, void* dst) {
     if (af != AF_INET) {
@@ -115,15 +114,41 @@ static int dns_query_udp(const char* name, uint32_t* out_ip) {
     if (!name || !out_ip) return -1;
 
     /* Check DNS cache */
+    uint32_t now = (uint32_t)time(NULL);
     for (int i = 0; i < DNS_CACHE_SIZE; i++) {
         if (s_dns_cache[i].valid && strcmp(s_dns_cache[i].host, name) == 0) {
-            *out_ip = s_dns_cache[i].ip;
-            return 0;
+            if (s_dns_cache[i].expire_ticks > now) {
+                *out_ip = s_dns_cache[i].ip;
+                return 0;
+            } else {
+                s_dns_cache[i].valid = 0;
+            }
         }
     }
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) return -1;
+
+    /* Bind to random ephemeral source port (RFC 5452 anti-spoofing) */
+    uint16_t query_id = 0;
+    uint16_t src_port = 0;
+    int rfd = open("/dev/urandom", O_RDONLY);
+    if (rfd >= 0) {
+        read(rfd, &query_id, sizeof(query_id));
+        read(rfd, &src_port, sizeof(src_port));
+        close(rfd);
+    } else {
+        query_id = (uint16_t)(time(NULL) ^ 0xA5A5);
+        src_port = 49152 + (query_id % 16000);
+    }
+    src_port = 49152 + (src_port % 16000);
+
+    struct sockaddr_in lsin;
+    memset(&lsin, 0, sizeof(lsin));
+    lsin.sin_family = AF_INET;
+    lsin.sin_port = htons(src_port);
+    lsin.sin_addr.s_addr = 0;
+    bind(sock, (struct sockaddr*)&lsin, sizeof(lsin));
 
     /* Set 2-second timeout */
     struct timeval tv;
@@ -141,7 +166,6 @@ static int dns_query_udp(const char* name, uint32_t* out_ip) {
     uint8_t pkt[512];
     memset(pkt, 0, sizeof(pkt));
 
-    uint16_t query_id = ++s_txid;
     pkt[0] = (uint8_t)(query_id >> 8);
     pkt[1] = (uint8_t)(query_id & 0xFF);
     pkt[2] = 0x01; /* Standard query, recursion desired */
@@ -180,7 +204,9 @@ static int dns_query_udp(const char* name, uint32_t* out_ip) {
         resp_len = recvfrom(sock, resp, sizeof(resp), 0, (struct sockaddr*)&sin, &slen);
         if (resp_len >= 12) {
             uint16_t resp_id = ((uint16_t)resp[0] << 8) | resp[1];
-            if (resp_id == query_id) break;
+            uint8_t qr = (resp[2] >> 7) & 1;
+            uint8_t rcode = resp[3] & 0x0F;
+            if (resp_id == query_id && qr == 1 && rcode == 0) break;
         }
     }
     close(sock);
@@ -236,7 +262,7 @@ static int dns_query_udp(const char* name, uint32_t* out_ip) {
             strncpy(s_dns_cache[slot].host, name, DNS_MAX_NAME - 1);
             s_dns_cache[slot].host[DNS_MAX_NAME - 1] = '\0';
             s_dns_cache[slot].ip = resolved;
-            s_dns_cache[slot].expire_ticks = attl;
+            s_dns_cache[slot].expire_ticks = (uint32_t)time(NULL) + (attl > 0 && attl < 86400 ? attl : 300);
             s_dns_cache[slot].valid = 1;
             return 0;
         }
