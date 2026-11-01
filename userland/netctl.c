@@ -7,6 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <sys/wait.h>
 #include <intent.h>
 #include <json.h>
 
@@ -53,27 +55,28 @@ int main(int argc, char** argv) {
                 active = false;
             }
         }
-        int ifd = intent_connect();
-        if (ifd < 0) {
-            fprintf(stderr, "netctl: failed to connect to intent bus\n");
+        int kfd = open("/proc/sys/net/killswitch", O_WRONLY);
+        if (kfd < 0) {
+            fprintf(stderr, "netctl: cannot open /proc/sys/net/killswitch: %s\n", strerror(errno));
             return 1;
         }
-        char args[64];
-        snprintf(args, sizeof(args), "{\"active\":%s}", active ? "true" : "false");
-        char res[256];
-        int r = intent_call(ifd, "net.killswitch", args, res, sizeof(res), 2000);
-        intent_close(ifd);
-        if (r < 0) {
-            fprintf(stderr, "netctl: killswitch call failed: %s\n", res);
-            return 1;
-        }
+        const char* val = active ? "1\n" : "0\n";
+        write(kfd, val, strlen(val));
+        close(kfd);
         printf("Network killswitch is now %s\n", active ? "ACTIVE (traffic severed)" : "INACTIVE (traffic restored)");
         return 0;
     }
 
     if (strcmp(argv[1], "dhcp") == 0) {
-        printf("DHCP lease requested on eth0... 10.0.2.15 assigned.\n");
-        return 0;
+        printf("Requesting DHCP lease on eth0...\n");
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("/bin/dhcp", "dhcp", NULL);
+            exit(1);
+        }
+        int status = 0;
+        waitpid(pid, &status, 0);
+        return WEXITSTATUS(status);
     }
 
     if (strcmp(argv[1], "static") == 0) {
