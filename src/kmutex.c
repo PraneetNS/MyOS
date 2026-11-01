@@ -111,6 +111,21 @@ void kmutex_lock(kmutex_t* m) {
     }
 }
 
+int kmutex_trylock(kmutex_t* m) {
+    if (!m) return 0;
+    uint32_t flags;
+    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    if (m->locked) {
+        asm volatile ("push %0; popf" : : "r"(flags));
+        return 0;
+    }
+    process_t* me = scheduler_current();
+    m->locked = 1;
+    m->owner_pid = me ? me->pid : 0;
+    asm volatile ("push %0; popf" : : "r"(flags));
+    return 1;
+}
+
 void kmutex_unlock(kmutex_t* m) {
     if (!m) return;
 

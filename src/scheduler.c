@@ -103,6 +103,8 @@ void scheduler_yield(void) {
 void scheduler_tick(void) {
     if (!started) return;
 
+    agent_killswitch_check_deferred();
+
     while (serial_received()) {
         char c = serial_read();
         tty_input_char(global_tty, c);

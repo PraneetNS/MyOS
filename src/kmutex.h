@@ -18,6 +18,7 @@ typedef struct kmutex {
 
 void kmutex_init(kmutex_t* m, const char* name);
 void kmutex_lock(kmutex_t* m);
+int kmutex_trylock(kmutex_t* m);
 void kmutex_unlock(kmutex_t* m);
 int kmutex_is_locked(const kmutex_t* m);
 int kmutex_owner(const kmutex_t* m);
