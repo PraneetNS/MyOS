@@ -16,7 +16,7 @@ for p in [SOCK_PATH, PPM_BOOT, PPM_STILL, PPM_RESTORED]:
         except OSError: pass
 
 cmd = [
-    "qemu-system-i386", "-vga", "std", "-m", "256",
+    "qemu-system-x86_64", "-vga", "std", "-m", "256",
     "-hda", "disk.img", "-cdrom", "myos.iso", "-boot", "d",
     "-serial", "stdio", "-display", "none",
     "-monitor", f"unix:{SOCK_PATH},server,nowait",
@@ -158,7 +158,7 @@ except Exception as e:
 # 8. VGA fallback boot test
 print("\n--- Running VGA text fallback boot test (-vga none) ---")
 fallback_cmd = [
-    "qemu-system-i386", "-vga", "none", "-m", "256",
+    "qemu-system-x86_64", "-vga", "none", "-m", "256",
     "-hda", "disk.img", "-cdrom", "myos.iso", "-boot", "d",
     "-serial", "stdio", "-display", "none",
     "-no-reboot"

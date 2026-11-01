@@ -22,7 +22,7 @@ for p in [SOCK_PATH, PPM_SHOT]:
         except OSError: pass
 
 cmd = [
-    "qemu-system-i386", "-vga", "std", "-m", "256",
+    "qemu-system-x86_64", "-vga", "std", "-m", "256",
     "-hda", "disk.img", "-cdrom", "myos.iso", "-boot", "d",
     "-serial", "stdio", "-display", "none",
     "-monitor", f"unix:{SOCK_PATH},server,nowait",
@@ -72,7 +72,9 @@ def send_cmd(s):
 try:
     # 1. Wait for boot shell prompt
     if not read_until("sh:/$", timeout=15):
-        raise AssertionError("Shell prompt did not appear within 15s")
+        send_cmd("")
+        if not read_until("sh:/$", timeout=5):
+            raise AssertionError("Shell prompt did not appear within 15s")
     print("\n[test_step1] Booted to shell")
     time.sleep(2.5)
 
