@@ -1,0 +1,31 @@
+name: Bug Report
+description: Create a report to help us fix an issue
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting an issue in MyOS!
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe what bug occurred.
+    validations:
+      required: true
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Reproduction Steps
+      description: What commands or actions trigger this bug?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: QEMU version, host OS, RAM allocated (-m flag).
+      value: |
+        - Host OS:
+        - QEMU Version:
+        - Memory allocated (-m): 64M / 128M
+
