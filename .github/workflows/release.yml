@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build Release Artifacts
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib mtools dosfstools grub-pc-bin grub-common xorriso
+
+      - name: Build Userland & Release
+        run: |
+          make clean
+          userland/build.sh
+          ./tools/build_disk.sh
+          make release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/myos.iso
+            dist/disk.img
+            dist/SHA256SUMS
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
