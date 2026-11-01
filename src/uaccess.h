@@ -3,6 +3,16 @@
 
 #include <stdint.h>
 
+extern int smap_enabled;
+
+static inline void user_access_begin(void) {
+    if (smap_enabled) __asm__ volatile ("stac" ::: "cc");
+}
+
+static inline void user_access_end(void) {
+    if (smap_enabled) __asm__ volatile ("clac" ::: "cc");
+}
+
 int copy_to_user(void* user_dest, const void* kernel_src, uint32_t len);
 int copy_from_user(void* kernel_dest, const void* user_src, uint32_t len);
 
