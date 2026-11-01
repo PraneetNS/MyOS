@@ -794,6 +794,7 @@ uint32_t agent_audit_size(void) {
 
 static int s_bus_daemon_pid = -1;
 static int s_model_daemon_pid = -1;
+static int s_net_daemon_pid = -1;
 
 static int is_init_tree_process(process_t* p) {
     if (!p) return 0;
@@ -844,9 +845,27 @@ int agent_is_model_daemon(process_t* p) {
     return (s_model_daemon_pid > 0 && p->pid == s_model_daemon_pid);
 }
 
+int agent_net_daemon_register(process_t* p) {
+    if (!p) return -EINVAL;
+    if (p->agent_id != 0) return -EPERM; /* must be non-agent */
+    if (!is_init_tree_process(p)) return -EPERM; /* must be in init tree */
+
+    kmutex_lock(&s_agent_lock);
+    s_net_daemon_pid = p->pid;
+    kmutex_unlock(&s_agent_lock);
+
+    kprintf("[net] Registered PID %d as net daemon\n", p->pid);
+    return 0;
+}
+
+int agent_is_net_daemon(process_t* p) {
+    if (!p) return 0;
+    return (s_net_daemon_pid > 0 && p->pid == s_net_daemon_pid);
+}
+
 int agent_audit_append(int agent_id, uint32_t event_type, const char* detail) {
     process_t* me = scheduler_current();
-    if (!agent_is_bus_daemon(me) && !agent_is_model_daemon(me) && (!is_init_tree_process(me) || me->agent_id != 0)) return -EPERM;
+    if (!agent_is_bus_daemon(me) && !agent_is_model_daemon(me) && !agent_is_net_daemon(me) && (!is_init_tree_process(me) || me->agent_id != 0)) return -EPERM;
 
     agent_audit_log(agent_id, event_type, detail);
     kprintf("[bus] AUDIT: agent %d event %u (%s): %s\n",
@@ -908,6 +927,65 @@ int agent_tokens_left(int agent_id) {
         left = 0;
     } else {
         left = (int)(ag->budget.max_tokens - ag->usage.tokens_used);
+    }
+    kmutex_unlock(&s_agent_lock);
+    return left;
+}
+
+int agent_charge_net(int agent_id, uint32_t bytes) {
+    process_t* me = scheduler_current();
+    if (!agent_is_bus_daemon(me) && !agent_is_net_daemon(me) && (!is_init_tree_process(me) || me->agent_id != 0)) {
+        return -EPERM;
+    }
+
+    if (agent_id <= 0) return 0; /* unconfined */
+
+    kmutex_lock(&s_agent_lock);
+    agent_t* ag = agent_get_by_id(agent_id);
+    if (!ag) {
+        kmutex_unlock(&s_agent_lock);
+        return -ENOENT;
+    }
+
+    ag->usage.net_bytes_used += bytes;
+    int exceeded = (ag->budget.max_net_bytes > 0 && ag->usage.net_bytes_used > ag->budget.max_net_bytes);
+    uint32_t used = ag->usage.net_bytes_used;
+    uint32_t max = ag->budget.max_net_bytes;
+    kmutex_unlock(&s_agent_lock);
+
+    if (exceeded) {
+        char detail[64];
+        detail[0] = '\0';
+        int pos = 0;
+        append_str_to_buf(detail, &pos, sizeof(detail), "net quota exceeded: ");
+        append_uint_to_buf(detail, &pos, sizeof(detail), used);
+        append_str_to_buf(detail, &pos, sizeof(detail), " > ");
+        append_uint_to_buf(detail, &pos, sizeof(detail), max);
+        agent_audit_log(agent_id, AUDIT_EVENT_BUDGET_EXCEEDED, detail);
+        kprintf("[agent %d] BUDGET EXCEEDED: %s\n", agent_id, detail);
+        return -EDQUOT;
+    }
+
+    return 0;
+}
+
+int agent_net_left(int agent_id) {
+    if (agent_id <= 0) return 0x7FFFFFFF;
+
+    kmutex_lock(&s_agent_lock);
+    agent_t* ag = agent_get_by_id(agent_id);
+    if (!ag) {
+        kmutex_unlock(&s_agent_lock);
+        return -ENOENT;
+    }
+
+    int left;
+    if (ag->budget.max_net_bytes == 0) {
+        left = 0x7FFFFFFF;
+    } else if (ag->usage.net_bytes_used >= ag->budget.max_net_bytes) {
+        left = 0;
+    } else {
+        left = (int)(ag->budget.max_net_bytes - ag->usage.net_bytes_used);
     }
     kmutex_unlock(&s_agent_lock);
     return left;

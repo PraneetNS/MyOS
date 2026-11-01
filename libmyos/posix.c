@@ -1121,6 +1121,21 @@ int model_daemon_register(void) {
     return __check_syscall_err(ret);
 }
 
+int net_daemon_register(void) {
+    int ret = __syscall0(SYS_NET_DAEMON_REGISTER);
+    return __check_syscall_err(ret);
+}
+
+int agent_charge_net(int agent_id, uint32_t bytes) {
+    int ret = __syscall2(SYS_AGENT_CHARGE_NET, (long)agent_id, (long)bytes);
+    return __check_syscall_err(ret);
+}
+
+int agent_net_left(int agent_id) {
+    int ret = __syscall1(SYS_AGENT_NET_LEFT, (long)agent_id);
+    return __check_syscall_err(ret);
+}
+
 int agent_killswitch_state(void) {
     int ret = __syscall1(SYS_AGENT_KILLSWITCH_STATE, 0);
     return __check_syscall_err(ret);

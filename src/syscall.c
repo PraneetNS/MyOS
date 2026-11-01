@@ -114,6 +114,9 @@
 #define SYS_AGENT_TOKENS_LEFT    180
 #define SYS_MODEL_DAEMON_REGISTER 181
 #define SYS_AGENT_KILLSWITCH_STATE 182
+#define SYS_AGENT_CHARGE_NET     183
+#define SYS_AGENT_NET_LEFT       184
+#define SYS_NET_DAEMON_REGISTER  185
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -2842,6 +2845,28 @@ static void syscall_handler(struct registers* regs) {
             } else {
                 ret = agent_killswitch_active();
             }
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_CHARGE_NET: {
+            int agent_id = (int) regs->ebx;
+            uint32_t bytes = (uint32_t) regs->ecx;
+            int ret = agent_charge_net(agent_id, bytes);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_AGENT_NET_LEFT: {
+            int agent_id = (int) regs->ebx;
+            int ret = agent_net_left(agent_id);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_NET_DAEMON_REGISTER: {
+            process_t* me = scheduler_current();
+            int ret = agent_net_daemon_register(me);
             regs->eax = (uint32_t) ret;
             break;
         }

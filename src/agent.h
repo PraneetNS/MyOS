@@ -100,6 +100,7 @@ typedef struct {
     uint32_t max_mem_pages;    /* 0 = unlimited */
     uint32_t max_procs;        /* 0 = unlimited */
     uint32_t max_tokens;       /* 0 = unlimited */
+    uint32_t max_net_bytes;    /* 0 = unlimited */
 } agent_budget_t;
 
 typedef struct {
@@ -107,6 +108,7 @@ typedef struct {
     uint32_t mem_pages;        /* Allocated memory pages */
     uint32_t procs_count;      /* Active processes in this agent */
     uint32_t tokens_used;      /* Counter charged by model daemon */
+    uint32_t net_bytes_used;   /* Counter charged by net daemon */
 } agent_usage_t;
 
 /* For SYS_AGENT_INFO query */
@@ -188,9 +190,13 @@ int agent_bus_daemon_register(struct process* p);
 int agent_is_bus_daemon(struct process* p);
 int agent_model_daemon_register(struct process* p);
 int agent_is_model_daemon(struct process* p);
+int agent_net_daemon_register(struct process* p);
+int agent_is_net_daemon(struct process* p);
 int agent_audit_append(int agent_id, uint32_t event_type, const char* detail);
 int agent_charge_tokens(int agent_id, uint32_t tokens);
 int agent_tokens_left(int agent_id);
+int agent_charge_net(int agent_id, uint32_t bytes);
+int agent_net_left(int agent_id);
 int agent_killswitch_toggle(void);
 int agent_killswitch_active(void);
 void agent_killswitch_request(void);

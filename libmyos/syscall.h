@@ -87,6 +87,9 @@
 #define SYS_AGENT_TOKENS_LEFT    180
 #define SYS_MODEL_DAEMON_REGISTER 181
 #define SYS_AGENT_KILLSWITCH_STATE 182
+#define SYS_AGENT_CHARGE_NET     183
+#define SYS_AGENT_NET_LEFT       184
+#define SYS_NET_DAEMON_REGISTER  185
 
 static inline int __syscall0(int num) {
     int ret;
