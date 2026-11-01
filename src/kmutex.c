@@ -2,24 +2,24 @@
 #include "vga.h"
 #include "serial.h"
 #include "scheduler.h"
+#include "io.h"
 
 #define MAX_REGISTERED_MUTEXES 16
 static kmutex_t* registered_mutexes[MAX_REGISTERED_MUTEXES];
 static int registered_count = 0;
 
 static void kmutex_register(kmutex_t* m) {
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    uint64_t flags = irq_save();
     for (int i = 0; i < registered_count; i++) {
         if (registered_mutexes[i] == m) {
-            asm volatile ("push %0; popf" : : "r"(flags));
+            irq_restore(flags);
             return;
         }
     }
     if (registered_count < MAX_REGISTERED_MUTEXES) {
         registered_mutexes[registered_count++] = m;
     }
-    asm volatile ("push %0; popf" : : "r"(flags));
+    irq_restore(flags);
 }
 
 static void kmutex_panic(const char* msg, kmutex_t* m) {
@@ -61,27 +61,26 @@ void kmutex_lock(kmutex_t* m) {
     int my_pid = me ? me->pid : 0;
 
     for (;;) {
-        uint32_t flags;
-        asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+        uint64_t flags = irq_save();
 
         /* If unlocked or directly handed off to us, claim lock */
         if (!m->locked || (m->owner_pid == my_pid && me != 0)) {
             m->locked = 1;
             m->owner_pid = my_pid;
-            asm volatile ("push %0; popf" : : "r"(flags));
+            irq_restore(flags);
             return;
         }
 
         /* Detect recursive lock deadlock */
         if (m->owner_pid == my_pid && me != 0) {
-            asm volatile ("push %0; popf" : : "r"(flags));
+            irq_restore(flags);
             kmutex_panic("recursive lock attempt on non-recursive mutex", m);
             return;
         }
 
         /* Enqueue calling process onto wait queue */
         if (m->wait_count >= KMUTEX_MAX_WAITERS) {
-            asm volatile ("push %0; popf" : : "r"(flags));
+            irq_restore(flags);
             kmutex_panic("wait queue capacity exceeded", m);
             return;
         }
@@ -102,7 +101,7 @@ void kmutex_lock(kmutex_t* m) {
             me->wait_channel = 0;
         }
 
-        asm volatile ("push %0; popf" : : "r"(flags));
+        irq_restore(flags);
 
         /* If direct handoff assigned lock to us while sleeping, return */
         if (m->locked && m->owner_pid == my_pid && me != 0) {
@@ -113,36 +112,34 @@ void kmutex_lock(kmutex_t* m) {
 
 int kmutex_trylock(kmutex_t* m) {
     if (!m) return 0;
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    uint64_t flags = irq_save();
     if (m->locked) {
-        asm volatile ("push %0; popf" : : "r"(flags));
+        irq_restore(flags);
         return 0;
     }
     process_t* me = scheduler_current();
     m->locked = 1;
     m->owner_pid = me ? me->pid : 0;
-    asm volatile ("push %0; popf" : : "r"(flags));
+    irq_restore(flags);
     return 1;
 }
 
 void kmutex_unlock(kmutex_t* m) {
     if (!m) return;
 
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    uint64_t flags = irq_save();
 
     process_t* me = scheduler_current();
     int my_pid = me ? me->pid : 0;
 
     if (!m->locked) {
-        asm volatile ("push %0; popf" : : "r"(flags));
+        irq_restore(flags);
         kmutex_panic("attempt to unlock unlocked mutex", m);
         return;
     }
 
     if (me != 0 && m->owner_pid != my_pid) {
-        asm volatile ("push %0; popf" : : "r"(flags));
+        irq_restore(flags);
         kmutex_panic("attempt to unlock mutex owned by different PID", m);
         return;
     }
@@ -159,7 +156,7 @@ void kmutex_unlock(kmutex_t* m) {
             m->owner_pid = waiter->pid;
             waiter->state = PROC_READY;
             waiter->wait_channel = 0;
-            asm volatile ("push %0; popf" : : "r"(flags));
+            irq_restore(flags);
             return;
         }
     }
@@ -167,7 +164,7 @@ void kmutex_unlock(kmutex_t* m) {
     /* No waiting processes: release lock */
     m->locked = 0;
     m->owner_pid = 0;
-    asm volatile ("push %0; popf" : : "r"(flags));
+    irq_restore(flags);
 }
 
 int kmutex_is_locked(const kmutex_t* m) {
