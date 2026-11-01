@@ -247,6 +247,15 @@ int getdents(int fd, void *dirp, size_t count) {
 
 /* Signals */
 int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    struct sigaction real_act;
+    if (act) {
+        real_act = *act;
+        if (!(real_act.sa_flags & 0x04000000) || !real_act.sa_restorer) {
+            real_act.sa_flags |= 0x04000000; /* SA_RESTORER */
+            real_act.sa_restorer = __sigreturn_restorer;
+        }
+        act = &real_act;
+    }
     int ret = __syscall3(SYS_SIGACTION, signum, (long)act, (long)oldact);
     return __check_syscall_err(ret);
 }
@@ -417,21 +426,21 @@ int ioctl(int fd, unsigned long request, ...) {
 
 /* Memory management */
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
-    int ret = __syscall6(SYS_MMAP, (long)addr, length, prot, flags, fd, offset);
-    if ((unsigned long)ret > 0xFFFFF000u) {
-        errno = -ret;
+    long ret = __syscall6(SYS_MMAP, (long)addr, (long)length, prot, flags, fd, (long)offset);
+    if ((unsigned long)ret > (unsigned long)-4096L) {
+        errno = (int)(-ret);
         return MAP_FAILED;
     }
-    return (void*)(uintptr_t)ret;
+    return (void*)ret;
 }
 
 int munmap(void *addr, size_t length) {
-    int ret = __syscall2(SYS_MUNMAP, (long)addr, length);
+    long ret = __syscall2(SYS_MUNMAP, (long)addr, (long)length);
     return __check_syscall_err(ret);
 }
 
 int mprotect(void *addr, size_t length, int prot) {
-    int ret = __syscall3(SYS_MPROTECT, (long)addr, length, prot);
+    long ret = __syscall3(SYS_MPROTECT, (long)addr, (long)length, prot);
     return __check_syscall_err(ret);
 }
 
@@ -537,7 +546,11 @@ int uname(struct utsname *buf) {
     strncpy(buf->nodename, "myos", sizeof(buf->nodename) - 1);
     strncpy(buf->release, "1.0.0", sizeof(buf->release) - 1);
     strncpy(buf->version, "Stage 17", sizeof(buf->version) - 1);
+#if defined(__x86_64__)
+    strncpy(buf->machine, "x86_64", sizeof(buf->machine) - 1);
+#else
     strncpy(buf->machine, "i686", sizeof(buf->machine) - 1);
+#endif
     buf->sysname[sizeof(buf->sysname) - 1] = '\0';
     buf->nodename[sizeof(buf->nodename) - 1] = '\0';
     buf->release[sizeof(buf->release) - 1] = '\0';

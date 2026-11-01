@@ -31,13 +31,11 @@ _start:
     /* Store envp into environ */
     movq %rax, environ(%rip)
 
-    /* Ensure 16-byte stack alignment before calls:
-       Current rsp has popped argc (8 bytes removed from initial 16-byte alignment).
-       Pushing a dummy 8 bytes or aligning */
+    /* Align stack to 16 bytes */
     andq $-16, %rsp
-    subq $8, %rsp         /* align stack to 16 bytes before call */
 
-    /* Save argc, argv, envp across initializers */
+    /* Pad 8 bytes so that (8 + 3*8 = 32 bytes) preserves 16-byte alignment */
+    subq $8, %rsp
     pushq %rdx
     pushq %rsi
     pushq %rdi
@@ -52,6 +50,7 @@ _start:
     popq %rdi             /* argc */
     popq %rsi             /* argv */
     popq %rdx             /* envp */
+    addq $8, %rsp         /* pop padding: %rsp is 0 mod 16 before call main */
 
     call main
 

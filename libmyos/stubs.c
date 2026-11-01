@@ -179,12 +179,12 @@ int _isatty(int fd) {
 }
 
 void *_sbrk(ptrdiff_t incr) {
-    int ret = __syscall1(SYS_SBRK, (long)incr);
+    long ret = __syscall1(SYS_SBRK, (long)incr);
     if (ret == -1) {
         errno = ENOMEM;
         return (void*)-1;
     }
-    return (void*)(uintptr_t)ret;
+    return (void*)ret;
 }
 
 int _kill(pid_t pid, int sig) {
