@@ -41,3 +41,4 @@ This status table documents the implementation and verification status of all Ph
 | **Networking CLI Tools** | `DONE` | `userland/` (`ifconfig`, `ping`, `nc`, `wget`, `netstat`) | Verified in shell during `tools/test_session21.sh` |
 | **agentpanel Network Tab** | `DONE` | `userland/agentpanel.c` (`PANEL_MODE_NETWORK`) | Network tab rendering throughput & Sever Net button |
 | **System Documentation** | `DONE` | `docs/networking.md`, `docs/netd.md`, `docs/agents.md` | Comprehensive architectural and policy documentation |
+
