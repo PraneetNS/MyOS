@@ -130,3 +130,17 @@ MyOS Phase 3 resolves these challenges through five core layers:
    The agent's system prompt explicitly instructs the model never to treat text inside untrusted blocks as system commands.
 4. **Execution Trace**: Real-time thought/action/observation steps are displayed on console and persisted to `/home/out/agent-<id>.log`.
 
+
+---
+
+## 7. Model Tiers, Honest Capabilities & Hardware Requirements
+
+| Model Tier | Checkpoint / Source | Typical RAM Needed | Measured Inference Speed (QEMU TCG) | Agent / Tool-Calling Capability | Honest Intended Use Case |
+|:---|:---|:---|:---|:---|:---|
+| **Default Toy** | stories260K (int8/fp32, ~390 KB) | **< 2 MB** (runs in -m 64) | **~35 tok/s** | None (predicts random story syllables/grammar) | Deterministic smoke tests, boot tests, zero-network environments. |
+| **Offline Demo** | stories15M (	ools/fetch_models.sh, ~60 MB) | **~75 MB** (requires -m 256) | **~4.5 tok/s** (QEMU single-core) | Incompetent / Unreliable (cannot emit strict JSON or parse schemas) | Offline interactive prompt demo, prose generation; **NOT** viable for multi-step agent tool calling. |
+| **Mock Host Bridge** | 	ools/hostbridge.py (mock mode) | **< 1 MB** guest RAM | **~140 tok/s** over COM2 serial | Deterministic scripted responses matching test schemas | Fast offline CI testing, session tests 1..21, reproducible test harness. |
+| **Frontier Cloud** | nthropic (Claude 3.5 Sonnet) / openai_compat via Host Bridge or Direct | **< 1 MB** guest RAM | Bound by host network (~50–100 tok/s) | **Production grade** (strict JSON tool calling, complex reasoning, file indexing) | Real autonomous desktop operation, organizer, semantic search, coding assistants. |
+
+> [!IMPORTANT]
+> **Honest Engineering Reality**: Local on-device LLMs running inside a 32-bit single-core x86 virtual machine under software TCG emulation are strictly demonstration and smoke-test fallbacks. Small 15M parameter models hallucinate JSON schemas and cannot reliably perform tool-calling loops. Real autonomous agent operations in MyOS are designed to be offloaded securely to the Host Bridge or direct HTTPS backend where credentials remain safely isolated outside the guest VM.
