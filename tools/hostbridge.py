@@ -27,11 +27,12 @@ def frame_message(payload_bytes: bytes) -> bytes:
     return struct.pack(">II", length, crc) + payload_bytes
 
 class HostBridge:
-    def __init__(self, host="127.0.0.1", port=4445, is_server=True, backend="mock"):
+    def __init__(self, host="127.0.0.1", port=4445, is_server=True, backend="mock", push_key=None):
         self.host = host
         self.port = port
         self.is_server = is_server
         self.backend = backend
+        self.push_key = push_key
         self.sock = None
         self.conn = None
         self.running = True
@@ -54,6 +55,14 @@ class HostBridge:
                     self.conn = conn
                     self.conn.settimeout(1.0)
                     self.rx_buf.clear()
+                    if self.push_key:
+                        frame = frame_message(json.dumps({
+                            "type": "push-key",
+                            "key": self.push_key,
+                            "provider": "direct"
+                        }).encode("utf-8"))
+                        self.conn.sendall(frame)
+                        print(f"[hostbridge] Pushed direct API key to guest RAM", flush=True)
                     self.run_loop()
                 except Exception as e:
                     if not self.running:
@@ -68,6 +77,16 @@ class HostBridge:
                     self.conn = conn
                     print(f"[hostbridge] Connected to {self.host}:{self.port}", flush=True)
                     self.conn.settimeout(1.0)
+                    self.rx_buf.clear()
+                    if self.push_key:
+                        frame = frame_message(json.dumps({
+                            "type": "push-key",
+                            "key": self.push_key,
+                            "provider": "direct"
+                        }).encode("utf-8"))
+                        self.conn.sendall(frame)
+                        print(f"[hostbridge] Pushed direct API key to guest RAM", flush=True)
+                    self.run_loop()
                     self.rx_buf.clear()
                     self.run_loop()
                 except Exception:
@@ -320,9 +339,10 @@ def main():
     parser.add_argument("--port", type=int, default=4445, help="Port for COM2 TCP socket")
     parser.add_argument("--client", action="store_true", help="Connect to QEMU as client (default: listen as server)")
     parser.add_argument("--backend", default=os.environ.get("HOSTBRIDGE_BACKEND", "mock"), choices=["mock", "anthropic", "openai_compat"])
+    parser.add_argument("--push-key", default=os.environ.get("HOSTBRIDGE_PUSH_KEY", None), help="Push API key to guest RAM only for direct backend")
     args = parser.parse_args()
 
-    bridge = HostBridge(host=args.host, port=args.port, is_server=not args.client, backend=args.backend)
+    bridge = HostBridge(host=args.host, port=args.port, is_server=not args.client, backend=args.backend, push_key=args.push_key)
     try:
         bridge.start()
     except KeyboardInterrupt:
