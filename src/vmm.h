@@ -4,34 +4,32 @@
 #include <stdint.h>
 
 typedef struct {
-    uint32_t* directory;      /* kernel-virtual pointer to the page directory */
-    uint32_t  directory_phys;
+    uint64_t* pml4;           /* kernel-virtual pointer to PML4 table (512 entries) */
+    uint64_t  pml4_phys;      /* physical address to load into CR3 */
 } address_space_t;
 
-/* Allocates a fresh page directory. Copies the kernel PDEs (768..1023)
-   from the master kernel page directory; user space (0..767) starts unmapped. */
+/* Allocates a fresh 4-level address space.
+   Copies the higher-half kernel entries (256..511) from the master kernel PML4;
+   user space entries (0..255) start unmapped. */
 address_space_t vmm_create_address_space(void);
 
 /* Maps virtual page `vaddr` to physical frame `frame_phys` with given PTE flags */
-int vmm_map_page(address_space_t* as, uint32_t vaddr, uint32_t frame_phys, uint32_t pte_flags);
+int vmm_map_page(address_space_t* as, uint64_t vaddr, uint64_t frame_phys, uint64_t pte_flags);
 
-/* Maps one 4KB page at `vaddr` (must be < 0xC0000000) to a FRESH physical
-   frame in the given address space, user-accessible. Returns the frame's
-   physical address, or 0 on failure. */
-uint32_t vmm_map_user_page(address_space_t* as, uint32_t vaddr);
+/* Maps one 4KB page at `vaddr` (< 0x0000800000000000) to a fresh physical frame, user-accessible. */
+uint64_t vmm_map_user_page(address_space_t* as, uint64_t vaddr);
 
-/* Unmaps virtual page `vaddr` from address space and unrefs frame */
-void vmm_unmap_user_page(address_space_t* as, uint32_t vaddr);
+/* Unmaps virtual page `vaddr` from address space and unrefs the underlying frame */
+void vmm_unmap_user_page(address_space_t* as, uint64_t vaddr);
 
-/* Frees every frame this address space owns back to the pmm. */
+/* Frees all user-space page tables and frames back to the PMM */
 void vmm_destroy_address_space(address_space_t* as);
 
 struct vma;
-/* Duplicates every user page currently mapped in `src` into `dst`.
-   Shared VMAs share frames directly without COW; private pages use COW. */
+/* Duplicates every user page currently mapped in `src` into `dst` (COW / shared handling) */
 int vmm_clone_user_pages(address_space_t* dst, address_space_t* src, struct vma* vma_list);
 
-void vmm_switch(address_space_t* as); /* loads CR3 with as->directory_phys */
-void vmm_switch_to_kernel(void);      /* restores the kernel's own page directory */
+void vmm_switch(address_space_t* as);
+void vmm_switch_to_kernel(void);
 
 #endif

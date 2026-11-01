@@ -6,8 +6,8 @@
 #include "paging.h"
 #include "errno.h"
 
-vma_t* vma_create(uint32_t start, uint32_t end, uint32_t prot, uint32_t flags,
-                  struct vnode* file, uint32_t offset, uint32_t file_size) {
+vma_t* vma_create(uint64_t start, uint64_t end, uint32_t prot, uint32_t flags,
+                  struct vnode* file, uint64_t offset, uint64_t file_size) {
     vma_t* vma = (vma_t*) kmalloc(sizeof(vma_t));
     if (!vma) return NULL;
 
@@ -38,12 +38,10 @@ int vma_insert(vma_t** list_head, vma_t* vma) {
         curr = curr->next;
     }
 
-    /* Check for overlap with prev */
     if (prev && prev->end > vma->start) {
         return -1;
     }
 
-    /* Check for overlap with curr */
     if (curr && vma->end > curr->start) {
         return -1;
     }
@@ -59,7 +57,7 @@ int vma_insert(vma_t** list_head, vma_t* vma) {
     return 0;
 }
 
-vma_t* vma_find(process_t* proc, uint32_t addr) {
+vma_t* vma_find(process_t* proc, uint64_t addr) {
     if (!proc) return NULL;
     vma_t* curr = proc->vma_list;
     while (curr) {
@@ -73,93 +71,91 @@ vma_t* vma_find(process_t* proc, uint32_t addr) {
 
 vma_t* vma_clone_list(vma_t* head) {
     vma_t* new_head = NULL;
-    vma_t* tail = NULL;
+    vma_t** tail = &new_head;
 
-    vma_t* curr = head;
-    while (curr) {
-        vma_t* copy = vma_create(curr->start, curr->end, curr->prot, curr->flags,
-                                 curr->file, curr->offset, curr->file_size);
-        if (!copy) {
+    while (head) {
+        vma_t* clone = vma_create(head->start, head->end, head->prot, head->flags,
+                                  head->file, head->offset, head->file_size);
+        if (!clone) {
             vma_free_list(new_head);
             return NULL;
         }
-        if (!new_head) {
-            new_head = copy;
-            tail = copy;
-        } else {
-            tail->next = copy;
-            tail = copy;
-        }
-        curr = curr->next;
+        *tail = clone;
+        tail = &clone->next;
+        head = head->next;
     }
+
     return new_head;
 }
 
 void vma_free_list(vma_t* head) {
-    vma_t* curr = head;
-    while (curr) {
-        vma_t* next = curr->next;
-        if (curr->file) {
-            vnode_unref(curr->file);
+    while (head) {
+        vma_t* next = head->next;
+        if (head->file) {
+            vnode_unref(head->file);
         }
-        kfree(curr);
-        curr = next;
+        kfree(head);
+        head = next;
     }
 }
 
-int vma_overlaps(process_t* proc, uint32_t start, uint32_t end) {
+int vma_overlaps(process_t* proc, uint64_t start, uint64_t end) {
     if (!proc) return 0;
     vma_t* curr = proc->vma_list;
     while (curr) {
-        if (curr->start < end && curr->end > start) return 1;
+        if (!(end <= curr->start || start >= curr->end)) {
+            return 1;
+        }
         curr = curr->next;
     }
     return 0;
 }
 
-#define MMAP_BOTTOM_LIMIT 0x40000000u
-#define MMAP_TOP_START    0xB8000000u
+#define MMAP_BOTTOM_LIMIT 0x0000700000000000ULL
+#define MMAP_TOP_START    0x00007F0000000000ULL
 
-uint32_t vma_find_free_gap(process_t* proc, uint32_t len) {
+uint64_t vma_find_free_gap(process_t* proc, uint64_t len) {
     if (!proc || len == 0) return 0;
-    if (len > (MMAP_TOP_START - MMAP_BOTTOM_LIMIT)) return 0;
+    len = (len + 4095) & ~4095ULL;
 
-    uint32_t best_addr = 0;
-    uint32_t cur_bottom = MMAP_BOTTOM_LIMIT;
+    uint64_t mmap_top = MMAP_TOP_START;
+    if (proc->aslr_mmap_offset > 0 && proc->aslr_mmap_offset < (MMAP_TOP_START - MMAP_BOTTOM_LIMIT - len)) {
+        mmap_top -= proc->aslr_mmap_offset;
+    }
+
+    uint64_t cur_bottom = MMAP_BOTTOM_LIMIT;
+    uint64_t best_addr = 0;
 
     vma_t* curr = proc->vma_list;
     while (curr) {
-        if (curr->end <= cur_bottom) {
+        if (curr->end <= MMAP_BOTTOM_LIMIT) {
             curr = curr->next;
             continue;
         }
 
-        if (curr->start > cur_bottom) {
-            uint32_t gap_end = (curr->start < MMAP_TOP_START) ? curr->start : MMAP_TOP_START;
-            if (gap_end > cur_bottom && (gap_end - cur_bottom) >= len) {
-                uint32_t candidate = gap_end - len;
-                if (candidate > best_addr) {
-                    best_addr = candidate;
-                }
-            }
+        if (curr->start >= mmap_top) {
+            break;
         }
 
-        if (curr->start >= MMAP_TOP_START) {
-            break;
+        if (curr->start > cur_bottom) {
+            uint64_t gap = curr->start - cur_bottom;
+            if (gap >= len) {
+                best_addr = curr->start - len;
+            }
         }
 
         if (curr->end > cur_bottom) {
             cur_bottom = curr->end;
         }
-        if (cur_bottom >= MMAP_TOP_START) {
+        if (cur_bottom >= mmap_top) {
             break;
         }
 
         curr = curr->next;
     }
 
-    if (cur_bottom < MMAP_TOP_START && (MMAP_TOP_START - cur_bottom) >= len) {
-        uint32_t candidate = MMAP_TOP_START - len;
+    if (cur_bottom < mmap_top && (mmap_top - cur_bottom) >= len) {
+        uint64_t candidate = mmap_top - len;
         if (candidate > best_addr) {
             best_addr = candidate;
         }
@@ -168,19 +164,17 @@ uint32_t vma_find_free_gap(process_t* proc, uint32_t len) {
     return best_addr;
 }
 
-int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
+int vma_unmap_range(process_t* proc, uint64_t start, uint64_t len) {
     if (!proc || len == 0) return -EINVAL;
-    if (start & 0xFFFu) return -EINVAL;
-    len = (len + 4095) & ~4095u;
-    uint32_t end = start + len;
-    if (end < start || end > 0xC0000000 || start < 0x1000) return -EINVAL;
+    if (start & 0xFFFULL) return -EINVAL;
+    len = (len + 4095) & ~4095ULL;
+    uint64_t end = start + len;
+    if (end < start || end > 0x0000800000000000ULL || start < 0x1000) return -EINVAL;
 
-    /* 1. Unmap pages in address space */
-    for (uint32_t va = start; va < end; va += 4096) {
+    for (uint64_t va = start; va < end; va += 4096) {
         vmm_unmap_user_page(&proc->as, va);
     }
 
-    /* 2. Truncate / split / remove overlapping VMAs */
     vma_t** curr_ptr = &proc->vma_list;
     while (*curr_ptr) {
         vma_t* vma = *curr_ptr;
@@ -190,7 +184,6 @@ int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
         }
 
         if (start <= vma->start && end >= vma->end) {
-            /* Case 1: completely contained in [start, end) */
             *curr_ptr = vma->next;
             if (vma->file) vnode_unref(vma->file);
             kfree(vma);
@@ -198,7 +191,6 @@ int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
         }
 
         if (vma->start < start && vma->end <= end) {
-            /* Case 2: right side cut off */
             vma->end = start;
             if (vma->file_size > (vma->end - vma->start)) {
                 vma->file_size = vma->end - vma->start;
@@ -208,8 +200,7 @@ int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
         }
 
         if (vma->start >= start && vma->end > end) {
-            /* Case 3: left side cut off */
-            uint32_t shift = end - vma->start;
+            uint64_t shift = end - vma->start;
             vma->start = end;
             vma->offset += shift;
             if (vma->file_size > shift) {
@@ -222,11 +213,10 @@ int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
         }
 
         if (vma->start < start && vma->end > end) {
-            /* Case 4: middle cut out -> split into two VMAs */
-            uint32_t orig_end = vma->end;
-            uint32_t shift = end - vma->start;
-            uint32_t r_offset = vma->offset + shift;
-            uint32_t r_fsize = (vma->file_size > shift) ? (vma->file_size - shift) : 0;
+            uint64_t orig_end = vma->end;
+            uint64_t shift = end - vma->start;
+            uint64_t r_offset = vma->offset + shift;
+            uint64_t r_fsize = (vma->file_size > shift) ? (vma->file_size - shift) : 0;
 
             vma->end = start;
             if (vma->file_size > (vma->end - vma->start)) {
@@ -235,9 +225,7 @@ int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
 
             vma_t* right = vma_create(end, orig_end, vma->prot, vma->flags,
                                       vma->file, r_offset, r_fsize);
-            if (!right) {
-                return -ENOMEM;
-            }
+            if (!right) return -ENOMEM;
             right->next = vma->next;
             vma->next = right;
             curr_ptr = &right->next;
@@ -248,15 +236,14 @@ int vma_unmap_range(process_t* proc, uint32_t start, uint32_t len) {
     return 0;
 }
 
-int vma_mprotect(process_t* proc, uint32_t start, uint32_t len, int prot) {
+int vma_mprotect(process_t* proc, uint64_t start, uint64_t len, int prot) {
     if (!proc || len == 0) return -EINVAL;
-    if (start & 0xFFFu) return -EINVAL;
-    len = (len + 4095) & ~4095u;
-    uint32_t end = start + len;
-    if (end < start || end > 0xC0000000 || start < 0x1000) return -EINVAL;
+    if (start & 0xFFFULL) return -EINVAL;
+    len = (len + 4095) & ~4095ULL;
+    uint64_t end = start + len;
+    if (end < start || end > 0x0000800000000000ULL || start < 0x1000) return -EINVAL;
 
-    /* Verify that every address in [start, end) is backed by a VMA */
-    uint32_t check = start;
+    uint64_t check = start;
     while (check < end) {
         vma_t* v = vma_find(proc, check);
         if (!v) return -ENOMEM;
@@ -268,67 +255,82 @@ int vma_mprotect(process_t* proc, uint32_t start, uint32_t len, int prot) {
     if (prot & 0x2) vprot |= VMA_PROT_WRITE;
     if (prot & 0x4) vprot |= VMA_PROT_EXEC;
 
-    /* Split boundary VMAs if needed */
-    vma_t* curr = proc->vma_list;
-    while (curr) {
-        /* Split at start boundary */
-        if (curr->start < start && curr->end > start) {
-            uint32_t shift = start - curr->start;
-            uint32_t r_offset = curr->offset + shift;
-            uint32_t r_fsize = (curr->file_size > shift) ? (curr->file_size - shift) : 0;
-            vma_t* right = vma_create(start, curr->end, curr->prot, curr->flags,
-                                      curr->file, r_offset, r_fsize);
+    vma_t** curr_ptr = &proc->vma_list;
+    while (*curr_ptr) {
+        vma_t* vma = *curr_ptr;
+        if (vma->end <= start || vma->start >= end) {
+            curr_ptr = &vma->next;
+            continue;
+        }
+
+        if (start <= vma->start && end >= vma->end) {
+            vma->prot = vprot;
+            curr_ptr = &vma->next;
+            continue;
+        }
+
+        if (vma->start < start && vma->end <= end) {
+            uint64_t mid = start;
+            uint64_t shift = mid - vma->start;
+            uint64_t r_offset = vma->offset + shift;
+            uint64_t r_fsize = (vma->file_size > shift) ? (vma->file_size - shift) : 0;
+
+            uint64_t orig_end = vma->end;
+            vma->end = mid;
+            if (vma->file_size > shift) vma->file_size = shift;
+
+            vma_t* right = vma_create(mid, orig_end, vprot, vma->flags, vma->file, r_offset, r_fsize);
             if (!right) return -ENOMEM;
-            curr->end = start;
-            if (curr->file_size > (curr->end - curr->start)) {
-                curr->file_size = curr->end - curr->start;
-            }
-            right->next = curr->next;
-            curr->next = right;
-            curr = right;
+            right->next = vma->next;
+            vma->next = right;
+            curr_ptr = &right->next;
+            continue;
         }
 
-        /* Split at end boundary */
-        if (curr->start < end && curr->end > end) {
-            uint32_t shift = end - curr->start;
-            uint32_t r_offset = curr->offset + shift;
-            uint32_t r_fsize = (curr->file_size > shift) ? (curr->file_size - shift) : 0;
-            vma_t* right = vma_create(end, curr->end, curr->prot, curr->flags,
-                                      curr->file, r_offset, r_fsize);
+        if (vma->start >= start && vma->end > end) {
+            uint64_t mid = end;
+            uint64_t shift = mid - vma->start;
+            uint64_t r_offset = vma->offset + shift;
+            uint64_t r_fsize = (vma->file_size > shift) ? (vma->file_size - shift) : 0;
+
+            uint64_t orig_end = vma->end;
+            vma->end = mid;
+            vma->prot = vprot;
+
+            vma_t* right = vma_create(mid, orig_end, vma->prot, vma->flags, vma->file, r_offset, r_fsize);
             if (!right) return -ENOMEM;
-            curr->end = end;
-            if (curr->file_size > (curr->end - curr->start)) {
-                curr->file_size = curr->end - curr->start;
-            }
-            right->next = curr->next;
-            curr->next = right;
-            curr = right;
+            right->next = vma->next;
+            vma->next = right;
+            curr_ptr = &right->next;
+            continue;
         }
 
-        /* If strictly within [start, end), update prot */
-        if (curr->start >= start && curr->end <= end) {
-            curr->prot = vprot;
-        }
+        if (vma->start < start && vma->end > end) {
+            uint64_t mid1 = start;
+            uint64_t mid2 = end;
 
-        curr = curr->next;
-    }
+            uint64_t orig_end = vma->end;
+            uint64_t orig_prot = vma->prot;
+            uint64_t orig_flags = vma->flags;
+            struct vnode* f = vma->file;
 
-    /* Update page table permissions for existing mapped pages */
-    for (uint32_t va = start; va < end; va += 4096) {
-        uint32_t dir_idx = va >> 22;
-        uint32_t tbl_idx = (va >> 12) & 0x3FF;
-        if (proc->as.directory && (proc->as.directory[dir_idx] & PAGE_PRESENT)) {
-            uint32_t* tbl = (uint32_t*) P2V(proc->as.directory[dir_idx] & ~0xFFFu);
-            if (tbl[tbl_idx] & PAGE_PRESENT) {
-                if (vprot & VMA_PROT_WRITE) {
-                    if (!(tbl[tbl_idx] & PTE_COW)) {
-                        tbl[tbl_idx] |= PAGE_WRITE;
-                    }
-                } else {
-                    tbl[tbl_idx] &= ~PAGE_WRITE;
-                }
-                asm volatile ("invlpg (%0)" :: "r"(va) : "memory");
-            }
+            uint64_t shift1 = mid1 - vma->start;
+            uint64_t shift2 = mid2 - vma->start;
+
+            vma->end = mid1;
+            if (vma->file_size > shift1) vma->file_size = shift1;
+
+            vma_t* mid_vma = vma_create(mid1, mid2, vprot, orig_flags, f, vma->offset + shift1,
+                                        (vma->file_size > shift2 ? (shift2 - shift1) : 0));
+            vma_t* right_vma = vma_create(mid2, orig_end, orig_prot, orig_flags, f, vma->offset + shift2,
+                                         (vma->file_size > shift2 ? (vma->file_size - shift2) : 0));
+            if (!mid_vma || !right_vma) return -ENOMEM;
+
+            right_vma->next = vma->next;
+            mid_vma->next = right_vma;
+            vma->next = mid_vma;
+            curr_ptr = &right_vma->next;
+            continue;
         }
     }
 

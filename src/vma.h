@@ -19,25 +19,25 @@ struct vnode;
 struct process;
 
 typedef struct vma {
-    uint32_t start;       /* Inclusive, page-aligned virtual address */
-    uint32_t end;         /* Exclusive, page-aligned virtual address */
+    uint64_t start;       /* Inclusive, page-aligned virtual address */
+    uint64_t end;         /* Exclusive, page-aligned virtual address */
     uint32_t prot;        /* VMA_PROT_* */
     uint32_t flags;       /* VMA_FLAG_* */
     struct vnode* file;   /* Backing vnode (or NULL) */
-    uint32_t offset;      /* Offset in file */
-    uint32_t file_size;   /* Size of file data in segment */
+    uint64_t offset;      /* Offset in file */
+    uint64_t file_size;   /* Size of file data in segment */
     struct vma* next;
 } vma_t;
 
-vma_t* vma_create(uint32_t start, uint32_t end, uint32_t prot, uint32_t flags,
-                  struct vnode* file, uint32_t offset, uint32_t file_size);
+vma_t* vma_create(uint64_t start, uint64_t end, uint32_t prot, uint32_t flags,
+                  struct vnode* file, uint64_t offset, uint64_t file_size);
 int vma_insert(vma_t** list_head, vma_t* vma);
-vma_t* vma_find(struct process* proc, uint32_t addr);
+vma_t* vma_find(struct process* proc, uint64_t addr);
 vma_t* vma_clone_list(vma_t* head);
 void vma_free_list(vma_t* head);
-int vma_overlaps(struct process* proc, uint32_t start, uint32_t end);
-uint32_t vma_find_free_gap(struct process* proc, uint32_t len);
-int vma_unmap_range(struct process* proc, uint32_t start, uint32_t len);
-int vma_mprotect(struct process* proc, uint32_t start, uint32_t len, int prot);
+int vma_overlaps(struct process* proc, uint64_t start, uint64_t end);
+uint64_t vma_find_free_gap(struct process* proc, uint64_t len);
+int vma_unmap_range(struct process* proc, uint64_t start, uint64_t len);
+int vma_mprotect(struct process* proc, uint64_t start, uint64_t len, int prot);
 
 #endif
