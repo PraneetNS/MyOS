@@ -17,3 +17,5 @@ build/
 dist/
 __pycache__/
 *.pyc
+userland/lua/src/lua
+userland/lua/src/luac
