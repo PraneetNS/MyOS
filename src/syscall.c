@@ -28,6 +28,7 @@
 #include "tmpfs.h"
 #include "socket.h"
 #include "pty.h"
+#include "random.h"
 #include "agent.h"
 
 #define SYS_EXIT       0
@@ -132,23 +133,32 @@
 
 #define WNOHANG        1
 
-#define PAGE_PRESENT 0x1
-#define PAGE_WRITE   0x2
-#define PAGE_USER    0x4
-
 extern void isr128(void); /* defined in isr.s */
 
-static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
+struct syscall_args {
+    uint64_t eax;  /* Syscall number on entry, return value on exit */
+    uint64_t ebx;  /* Arg 1 */
+    uint64_t ecx;  /* Arg 2 */
+    uint64_t edx;  /* Arg 3 */
+    uint64_t esi;  /* Arg 4 */
+    uint64_t edi;  /* Arg 5 */
+    uint64_t ebp;  /* Arg 6 */
+    uint64_t cs;
+    uint64_t rflags;
+    struct registers* raw;
+};
+
+static int validate_user_buffer(const void* ptr, uint64_t len, int write) {
     if (len == 0) return 0;
     if (!ptr) return -EFAULT;
 
     process_t* me = scheduler_current();
     if (!me || me->is_kernel_task) return 0;
 
-    uint32_t start = (uint32_t) ptr;
-    uint32_t end = start + len;
+    uint64_t start = (uint64_t) ptr;
+    uint64_t end = start + len;
     if (end < start) return -EFAULT;
-    if (start < 0x1000 || end > 0xC0000000) return -EFAULT;
+    if (start < 0x1000 || end > 0x0000800000000000ULL) return -EFAULT;
 
     if (me->vma_list) {
         /* Auto-expand stack VMA downward if buffer is within valid user stack range */
@@ -157,7 +167,7 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
             while (sv) {
                 if (sv->flags & VMA_FLAG_STACK) {
                     if (start < sv->start) {
-                        sv->start = start & ~0xFFFu;
+                        sv->start = start & ~0xFFFULL;
                     }
                     break;
                 }
@@ -165,7 +175,7 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
             }
         }
 
-        uint32_t cur = start;
+        uint64_t cur = start;
         while (cur < end) {
             vma_t* vma = vma_find(me, cur);
             if (!vma) return -EFAULT;
@@ -176,19 +186,25 @@ static int validate_user_buffer(const void* ptr, uint32_t len, int write) {
         return 0;
     }
 
-    if (!me->as.directory) return 0;
-    uint32_t* dir = me->as.directory;
-    uint32_t page_start = start & ~0xFFFu;
-    uint32_t page_end = (end - 1) & ~0xFFFu;
+    if (!me->as.pml4) return 0;
+    uint64_t* pml4 = me->as.pml4;
+    uint64_t page_start = start & ~0xFFFULL;
+    uint64_t page_end = (end - 1) & ~0xFFFULL;
 
-    for (uint32_t va = page_start;; va += 4096) {
-        uint32_t dir_idx = va >> 22;
-        uint32_t tbl_idx = (va >> 12) & 0x3FF;
+    for (uint64_t va = page_start;; va += 4096) {
+        uint64_t pml4_idx = (va >> 39) & 0x1FF;
+        uint64_t pdpt_idx = (va >> 30) & 0x1FF;
+        uint64_t pd_idx   = (va >> 21) & 0x1FF;
+        uint64_t pt_idx   = (va >> 12) & 0x1FF;
 
-        if (!(dir[dir_idx] & PAGE_PRESENT) || !(dir[dir_idx] & PAGE_USER)) return -EFAULT;
-        uint32_t* tbl = (uint32_t*) P2V(dir[dir_idx] & ~0xFFFu);
-        if (!(tbl[tbl_idx] & PAGE_PRESENT) || !(tbl[tbl_idx] & PAGE_USER)) return -EFAULT;
-        if (write && !(tbl[tbl_idx] & PAGE_WRITE)) return -EFAULT;
+        if (!(pml4[pml4_idx] & PAGE_PRESENT) || !(pml4[pml4_idx] & PAGE_USER)) return -EFAULT;
+        uint64_t* pdpt = (uint64_t*) P2V(pml4[pml4_idx] & ~0xFFFULL);
+        if (!(pdpt[pdpt_idx] & PAGE_PRESENT) || !(pdpt[pdpt_idx] & PAGE_USER)) return -EFAULT;
+        uint64_t* pd = (uint64_t*) P2V(pdpt[pdpt_idx] & ~0xFFFULL);
+        if (!(pd[pd_idx] & PAGE_PRESENT) || !(pd[pd_idx] & PAGE_USER)) return -EFAULT;
+        uint64_t* pt = (uint64_t*) P2V(pd[pd_idx] & ~0xFFFULL);
+        if (!(pt[pt_idx] & PAGE_PRESENT) || !(pt[pt_idx] & PAGE_USER)) return -EFAULT;
+        if (write && !(pt[pt_idx] & PAGE_WRITE)) return -EFAULT;
 
         if (va >= page_end) break;
     }
@@ -202,8 +218,8 @@ static int validate_user_string(const char* s) {
     process_t* me = scheduler_current();
     if (!me || me->is_kernel_task) return 0;
 
-    uint32_t va = (uint32_t) s;
-    if (va < 0x1000 || va >= 0xC0000000) return -EFAULT;
+    uint64_t va = (uint64_t) s;
+    if (va < 0x1000 || va >= 0x0000800000000000ULL) return -EFAULT;
 
     if (me->vma_list) {
         vma_t* vma = vma_find(me, va);
@@ -219,31 +235,37 @@ static int validate_user_string(const char* s) {
             len++;
             if (len > 1024) return -ENAMETOOLONG;
             va++;
-            if (va >= 0xC0000000) return -EFAULT;
+            if (va >= 0x0000800000000000ULL) return -EFAULT;
         }
     }
 
-    if (!me->as.directory) return 0;
-    uint32_t* dir = me->as.directory;
+    if (!me->as.pml4) return 0;
+    uint64_t* pml4 = me->as.pml4;
     int len = 0;
 
     while (1) {
-        if (va < 0x1000 || va >= 0xC0000000) return -EFAULT;
-        uint32_t dir_idx = va >> 22;
-        uint32_t tbl_idx = (va >> 12) & 0x3FF;
+        if (va < 0x1000 || va >= 0x0000800000000000ULL) return -EFAULT;
+        uint64_t pml4_idx = (va >> 39) & 0x1FF;
+        uint64_t pdpt_idx = (va >> 30) & 0x1FF;
+        uint64_t pd_idx   = (va >> 21) & 0x1FF;
+        uint64_t pt_idx   = (va >> 12) & 0x1FF;
 
-        if (!(dir[dir_idx] & PAGE_PRESENT) || !(dir[dir_idx] & PAGE_USER)) return -EFAULT;
-        uint32_t* tbl = (uint32_t*) P2V(dir[dir_idx] & ~0xFFFu);
-        if (!(tbl[tbl_idx] & PAGE_PRESENT) || !(tbl[tbl_idx] & PAGE_USER)) return -EFAULT;
+        if (!(pml4[pml4_idx] & PAGE_PRESENT) || !(pml4[pml4_idx] & PAGE_USER)) return -EFAULT;
+        uint64_t* pdpt = (uint64_t*) P2V(pml4[pml4_idx] & ~0xFFFULL);
+        if (!(pdpt[pdpt_idx] & PAGE_PRESENT) || !(pdpt[pdpt_idx] & PAGE_USER)) return -EFAULT;
+        uint64_t* pd = (uint64_t*) P2V(pdpt[pdpt_idx] & ~0xFFFULL);
+        if (!(pd[pd_idx] & PAGE_PRESENT) || !(pd[pd_idx] & PAGE_USER)) return -EFAULT;
+        uint64_t* pt = (uint64_t*) P2V(pd[pd_idx] & ~0xFFFULL);
+        if (!(pt[pt_idx] & PAGE_PRESENT) || !(pt[pt_idx] & PAGE_USER)) return -EFAULT;
 
-        uint32_t page_limit = (va & ~0xFFFu) + 4096;
+        uint64_t page_limit = (va & ~0xFFFULL) + 4096;
         while (va < page_limit) {
             char c = *(const char*) va;
             if (c == '\0') return 0;
             len++;
             if (len > 1024) return -ENAMETOOLONG;
             va++;
-            if (va >= 0xC0000000) return -EFAULT;
+            if (va >= 0x0000800000000000ULL) return -EFAULT;
         }
     }
 }
@@ -309,7 +331,7 @@ typedef struct {
     agent_usage_t usage;
 } agent_info_v4_t;
 
-static void syscall_handler(struct registers* regs) {
+static void syscall_handler_internal(struct syscall_args* regs) {
     agent_killswitch_check_deferred();
     switch (regs->eax) {
         case SYS_WRITE: {
@@ -480,8 +502,8 @@ static void syscall_handler(struct registers* regs) {
 
         case SYS_FORK: {
             process_t* me = scheduler_current();
-            process_t* child = process_fork(me, regs);
-            regs->eax = child ? (uint32_t) child->pid : (uint32_t)-1;
+            process_t* child = process_fork(me, regs->raw);
+            regs->eax = child ? (uint64_t) child->pid : (uint64_t)-1;
             break;
         }
 
@@ -703,15 +725,15 @@ static void syscall_handler(struct registers* regs) {
             }
 
             address_space_t new_as = vmm_create_address_space();
-            if (!new_as.directory) {
+            if (!new_as.pml4) {
                 vnode_unref(vn);
                 kfree(buf);
                 kfree(ep);
-                regs->eax = (uint32_t)-1;
+                regs->eax = (uint64_t)-1;
                 break;
             }
 
-            uint32_t entry, stack_top;
+            uint64_t entry, stack_top;
             vma_t* new_vmas = NULL;
             if (elf_load_into(buf, (uint32_t) n, vn, &new_as, argc, kargv, envc, kenvp, &entry, &stack_top, &new_vmas) != 0) {
                 vnode_unref(vn);
@@ -740,6 +762,7 @@ static void syscall_handler(struct registers* regs) {
                 vma_free_list(me->vma_list);
             }
             me->vma_list = new_vmas;
+            me->aslr_mmap_offset = ((uint64_t)(random_u32() & 0x1FFFFULL)) << 12;
 
             address_space_t old_as = me->as;
             me->as = new_as;
@@ -868,15 +891,15 @@ static void syscall_handler(struct registers* regs) {
         }
 
         case SYS_SBRK: {
-            int32_t increment = (int32_t) regs->ebx;
+            int64_t increment = (int64_t) regs->ebx;
             process_t* me = scheduler_current();
 
-            uint32_t old_break = me->heap_end;
-            uint32_t new_break = old_break + increment;
+            uint64_t old_break = me->heap_end;
+            uint64_t new_break = old_break + increment;
 
             if (increment > 0) {
                 if (new_break > HEAP_MAX || new_break < old_break) {
-                    regs->eax = (uint32_t) -1;
+                    regs->eax = (uint64_t) -1;
                     break;
                 }
             } else if (increment < 0) {
@@ -884,9 +907,9 @@ static void syscall_handler(struct registers* regs) {
                     new_break = HEAP_BASE;
                 }
                 /* Shrinking: unmap pages above new_break */
-                uint32_t old_page = (old_break + 4095u) & ~4095u;
-                uint32_t new_page = (new_break + 4095u) & ~4095u;
-                for (uint32_t va = new_page; va < old_page; va += 4096) {
+                uint64_t old_page = (old_break + 4095ULL) & ~4095ULL;
+                uint64_t new_page = (new_break + 4095ULL) & ~4095ULL;
+                for (uint64_t va = new_page; va < old_page; va += 4096) {
                     vmm_unmap_user_page(&me->as, va);
                 }
             }
@@ -896,7 +919,7 @@ static void syscall_handler(struct registers* regs) {
                 vma_t* v = me->vma_list;
                 while (v) {
                     if (v->flags & VMA_FLAG_HEAP) {
-                        v->end = (new_break + 4095u) & ~4095u;
+                        v->end = (new_break + 4095ULL) & ~4095ULL;
                         break;
                     }
                     v = v->next;
@@ -1262,7 +1285,7 @@ static void syscall_handler(struct registers* regs) {
             for (uint32_t i = 0; i <= len; i++) {
                 buf[i] = me->cwd[i];
             }
-            regs->eax = (uint32_t) buf;
+            regs->eax = (uint64_t) (uintptr_t) buf;
             break;
         }
 
@@ -1392,88 +1415,88 @@ static void syscall_handler(struct registers* regs) {
         }
 
         case SYS_MMAP: {
-            uint32_t addr_hint = regs->ebx;
-            uint32_t len       = regs->ecx;
+            uint64_t addr_hint = regs->ebx;
+            uint64_t len       = regs->ecx;
             int prot           = (int) regs->edx;
             int flags          = (int) regs->esi;
             int fd             = (int) regs->edi;
-            uint32_t offset    = regs->ebp;
+            uint64_t offset    = regs->ebp;
             process_t* me = scheduler_current();
 
             if (len == 0 || (offset & 0xFFFu)) {
-                regs->eax = (uint32_t) -EINVAL;
+                regs->eax = (uint64_t) -EINVAL;
                 break;
             }
 
-            len = (len + 4095) & ~4095u;
+            len = (len + 4095ULL) & ~4095ULL;
 
             struct vnode* file = NULL;
-            uint32_t file_size = 0;
+            uint64_t file_size = 0;
             int is_device = 0;
 
             int is_shared = (flags & MAP_SHARED) ? 1 : 0;
             int is_private = (flags & MAP_PRIVATE) ? 1 : 0;
             if ((is_shared && is_private) || (!is_shared && !is_private)) {
-                regs->eax = (uint32_t) -EINVAL;
+                regs->eax = (uint64_t) -EINVAL;
                 break;
             }
 
             if (!(flags & MAP_ANON)) {
                 if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
-                    regs->eax = (uint32_t) -EBADF;
+                    regs->eax = (uint64_t) -EBADF;
                     break;
                 }
                 open_file_t* of = me->fds[fd];
                 if (!of->vnode) {
-                    regs->eax = (uint32_t) -EACCES;
+                    regs->eax = (uint64_t) -EACCES;
                     break;
                 }
                 file = of->vnode;
                 if (file->ops && file->ops->mmap) {
                     is_device = 1;
                 } else if (of->type != OPEN_FILE_VNODE) {
-                    regs->eax = (uint32_t) -EACCES;
+                    regs->eax = (uint64_t) -EACCES;
                     break;
                 }
 
                 if (is_shared && !is_device) {
                     if (!tmpfs_is_tmpfs_vnode(file)) {
                         /* MAP_SHARED on a FAT file returns -ENODEV */
-                        regs->eax = (uint32_t) -ENODEV;
+                        regs->eax = (uint64_t) -ENODEV;
                         break;
                     }
                     if ((prot & PROT_WRITE) && (of->flags & O_ACCMODE) == O_RDONLY) {
-                        regs->eax = (uint32_t) -EACCES;
+                        regs->eax = (uint64_t) -EACCES;
                         break;
                     }
                 }
 
                 if (offset < file->size) {
-                    uint32_t rem = file->size - offset;
+                    uint64_t rem = file->size - offset;
                     file_size = (len < rem) ? len : rem;
                 } else {
                     file_size = 0;
                 }
             }
 
-            uint32_t target_addr = 0;
+            uint64_t target_addr = 0;
             if (flags & MAP_FIXED) {
                 if (!addr_hint || (addr_hint & 0xFFFu) != 0 ||
-                    addr_hint < 0x1000 || addr_hint + len > 0xC0000000 ||
+                    addr_hint < 0x1000 || addr_hint + len > 0x0000800000000000ULL ||
                     addr_hint + len < addr_hint) {
-                    regs->eax = (uint32_t) -EINVAL;
+                    regs->eax = (uint64_t) -EINVAL;
                     break;
                 }
                 vma_unmap_range(me, addr_hint, len);
                 target_addr = addr_hint;
             } else if (addr_hint != 0 && (addr_hint & 0xFFFu) == 0 &&
-                       addr_hint >= 0x40000000 && addr_hint + len <= 0xB8000000 &&
+                       addr_hint >= 0x1000 && addr_hint + len <= 0x00007FFFFFFFFFFFULL &&
                        !vma_overlaps(me, addr_hint, addr_hint + len)) {
                 target_addr = addr_hint;
             } else {
                 target_addr = vma_find_free_gap(me, len);
                 if (!target_addr) {
-                    regs->eax = (uint32_t) -ENOMEM;
+                    regs->eax = (uint64_t) -ENOMEM;
                     break;
                 }
             }
@@ -1493,14 +1516,14 @@ static void syscall_handler(struct registers* regs) {
             vma_t* new_vma = vma_create(target_addr, target_addr + len,
                                         vma_prot, vma_flags, file, offset, file_size);
             if (!new_vma) {
-                regs->eax = (uint32_t) -ENOMEM;
+                regs->eax = (uint64_t) -ENOMEM;
                 break;
             }
 
             if (vma_insert(&me->vma_list, new_vma) != 0) {
                 if (file) vnode_unref(file);
                 kfree(new_vma);
-                regs->eax = (uint32_t) -ENOMEM;
+                regs->eax = (uint64_t) -ENOMEM;
                 break;
             }
 
@@ -1508,7 +1531,7 @@ static void syscall_handler(struct registers* regs) {
                 int mr = file->ops->mmap(file, new_vma);
                 if (mr != 0) {
                     vma_unmap_range(me, target_addr, len);
-                    regs->eax = (uint32_t) mr;
+                    regs->eax = (uint64_t) mr;
                     break;
                 }
             }
@@ -1518,8 +1541,8 @@ static void syscall_handler(struct registers* regs) {
                 uint32_t pte_flags = PAGE_PRESENT | PAGE_USER;
                 if (prot & PROT_WRITE) pte_flags |= PAGE_WRITE;
                 int alloc_fail = 0;
-                for (uint32_t va = target_addr; va < target_addr + len; va += 4096) {
-                    uint32_t fp = pmm_alloc_frame();
+                for (uint64_t va = target_addr; va < target_addr + len; va += 4096) {
+                    uint64_t fp = pmm_alloc_frame();
                     if (!fp) {
                         alloc_fail = 1;
                         break;
@@ -1533,7 +1556,7 @@ static void syscall_handler(struct registers* regs) {
                 }
                 if (alloc_fail) {
                     vma_unmap_range(me, target_addr, len);
-                    regs->eax = (uint32_t) -ENOMEM;
+                    regs->eax = (uint64_t) -ENOMEM;
                     break;
                 }
             }
@@ -1543,31 +1566,31 @@ static void syscall_handler(struct registers* regs) {
         }
 
         case SYS_MUNMAP: {
-            uint32_t addr = regs->ebx;
-            uint32_t len  = regs->ecx;
+            uint64_t addr = regs->ebx;
+            uint64_t len  = regs->ecx;
             process_t* me = scheduler_current();
 
             if ((addr & 0xFFFu) || len == 0) {
-                regs->eax = (uint32_t) -EINVAL;
+                regs->eax = (uint64_t) -EINVAL;
                 break;
             }
             int r = vma_unmap_range(me, addr, len);
-            regs->eax = (uint32_t) r;
+            regs->eax = (uint64_t) r;
             break;
         }
 
         case SYS_MPROTECT: {
-            uint32_t addr = regs->ebx;
-            uint32_t len  = regs->ecx;
+            uint64_t addr = regs->ebx;
+            uint64_t len  = regs->ecx;
             int prot      = (int) regs->edx;
             process_t* me = scheduler_current();
 
             if ((addr & 0xFFFu) || len == 0) {
-                regs->eax = (uint32_t) -EINVAL;
+                regs->eax = (uint64_t) -EINVAL;
                 break;
             }
             int r = vma_mprotect(me, addr, len, prot);
-            regs->eax = (uint32_t) r;
+            regs->eax = (uint64_t) r;
             break;
         }
 
@@ -1756,7 +1779,7 @@ static void syscall_handler(struct registers* regs) {
         }
 
         case SYS_SIGRETURN: {
-            regs->eax = (uint32_t) sys_sigreturn(regs);
+            regs->eax = (uint64_t) sys_sigreturn(regs->raw);
             break;
         }
 
@@ -2882,17 +2905,101 @@ static void syscall_handler(struct registers* regs) {
     /* Lock-sanity assertions: panic if a mutex is held at syscall return
        or if interrupts are disabled on return to user mode */
     kmutex_assert_none_held();
-    if ((regs->cs & 3) == 3 && (regs->eflags & 0x200) == 0) {
-        serial_printf("\n*** KERNEL PANIC: interrupts disabled in user mode return frame (eflags=0x%08x)! ***\n", regs->eflags);
+    if ((regs->cs & 3) == 3 && (regs->rflags & 0x200) == 0) {
+        serial_printf("\n*** KERNEL PANIC: interrupts disabled in user mode return frame (rflags=0x%016lx)! ***\n", regs->rflags);
         terminal_writestring("\n*** KERNEL PANIC: interrupts disabled in user mode return frame! ***\n");
         asm volatile ("cli");
         for (;;) asm volatile ("hlt");
     }
 }
 
+void syscall_dispatch(struct registers* raw_regs) {
+    agent_killswitch_check_deferred();
+
+    struct syscall_args sa;
+    sa.raw = raw_regs;
+    sa.eax = raw_regs->rax;
+    sa.cs = raw_regs->cs;
+    sa.rflags = raw_regs->rflags;
+
+    if (raw_regs->int_no == 128) {
+        /* Legacy 32-bit int 0x80 register layout */
+        sa.ebx = raw_regs->rbx;
+        sa.ecx = raw_regs->rcx;
+        sa.edx = raw_regs->rdx;
+        sa.esi = raw_regs->rsi;
+        sa.edi = raw_regs->rdi;
+        sa.ebp = raw_regs->rbp;
+    } else {
+        /* Standard 64-bit AMD64 syscall register layout:
+           arg1: %rdi, arg2: %rsi, arg3: %rdx, arg4: %r10, arg5: %r8, arg6: %r9 */
+        sa.ebx = raw_regs->rdi;
+        sa.ecx = raw_regs->rsi;
+        sa.edx = raw_regs->rdx;
+        sa.esi = raw_regs->r10;
+        sa.edi = raw_regs->r8;
+        sa.ebp = raw_regs->r9;
+    }
+
+    user_access_begin();
+    syscall_handler_internal(&sa);
+    user_access_end();
+
+    /* In 64-bit, sign-extend 32-bit negative return values (-1 .. -4095) */
+    if ((int32_t)sa.eax < 0 && (int32_t)sa.eax >= -4095) {
+        raw_regs->rax = (int64_t)(int32_t)sa.eax;
+    } else {
+        raw_regs->rax = sa.eax;
+    }
+
+    /* Check deliverable signals before returning to user mode */
+    process_t* me = scheduler_current();
+    if (me && !me->is_kernel_task && (raw_regs->cs & 3) == 3) {
+        if (signal_has_deliverable(me)) {
+            signal_handle_pending(raw_regs);
+        }
+    }
+}
+
+#define MSR_EFER  0xC0000080
+#define MSR_STAR  0xC0000081
+#define MSR_LSTAR 0xC0000082
+#define MSR_FMASK 0xC0000084
+
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t low, high;
+    asm volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val) {
+    uint32_t low = val & 0xFFFFFFFF;
+    uint32_t high = (val >> 32) & 0xFFFFFFFF;
+    asm volatile ("wrmsr" : : "c"(msr), "a"(low), "d"(high));
+}
+
+extern void syscall_entry(void);
+
 void syscall_install(void) {
-    /* 0xEE = present, DPL=3 (so ring-3 code is allowed to `int 0x80`
-       without a general protection fault), 32-bit interrupt gate */
-    idt_set_gate(128, (uint32_t) isr128, 0x08, 0xEE);
-    register_interrupt_handler(128, &syscall_handler);
+    /* 1. Register vector 128 (int $0x80) in 64-bit IDT:
+          DPL=3 (0xEE) so ring 3 code can `int $0x80` */
+    idt_set_gate(128, (uint64_t) isr128, 0x08, 0xEE);
+    register_interrupt_handler(128, &syscall_dispatch);
+
+    /* 2. Configure MSRs for the fast 64-bit `syscall` / `sysret` instruction:
+       Enable SCE (System Call Extensions) in EFER */
+    uint64_t efer = rdmsr(MSR_EFER);
+    wrmsr(MSR_EFER, efer | 1ULL);
+
+    /* STAR MSR:
+       Bits 32..47: Kernel CS (0x08) -> SS is 0x10 (0x08 + 8)
+       Bits 48..63: User CS / SS base (0x18) -> SS is 0x23, CS is 0x2B
+    */
+    wrmsr(MSR_STAR, ((uint64_t)0x18 << 48) | ((uint64_t)0x08 << 32));
+
+    /* LSTAR MSR: Target entry point for 64-bit `syscall` */
+    wrmsr(MSR_LSTAR, (uint64_t) syscall_entry);
+
+    /* FMASK MSR: RFLAGS mask to clear on syscall entry (clear IF, TF, DF) */
+    wrmsr(MSR_FMASK, 0x3F7FD5ULL);
 }
