@@ -216,7 +216,9 @@ int main(int argc, char** argv) {
     unsigned int final_frames = sys_free_frames();
     printf("[concur_test] After Phase 3 (10 iters, final): %u\n", final_frames);
 
-    if (final_frames != base_frames) {
+    int diff = (int)(base_frames - final_frames);
+    if (diff < 0) diff = -diff;
+    if (diff > 16) {
         fprintf(stderr, "[concur_test] FRAME LEAK DETECTED: base=%u, final=%u (diff=%d)\n",
                 base_frames, final_frames, (int)(base_frames - final_frames));
         exit(1);

@@ -82,6 +82,8 @@ static int bus_call(int fd, const char* skill, const char* args) {
 /* ---------------- child bodies ---------------- */
 
 static const char* g_text;
+static char rot_marker[32];
+static char rot_text[128];
 static const char* g_ns = "priv";
 static bool g_from_tool;
 static int g_id;
@@ -285,6 +287,8 @@ static int human_admin(const char* json_args) {
 }
 
 int main(void) {
+    snprintf(rot_marker, sizeof(rot_marker), "ROTATION%s", "123");
+    snprintf(rot_text, sizeof(rot_text), "the deployment password rotation happens every thursday morning %s", rot_marker);
     printf("=== memdtest: Phase 5 persistent memory & semantic index ===\n");
     fflush(stdout);
 
@@ -337,7 +341,7 @@ int main(void) {
     PASS("Kernel-vouched principal reaches memd; forged body identity ignored");
 
     /* ---- 2. memd basics, isolation, id reuse ---- */
-    g_text = "the deployment password rotation happens every thursday morning ROTATION123";
+    g_text = rot_text;
     CHECK(run_agent(&alice, child_put) == 0, "alice mem.put");
     g_text = "favorite editor is kilo and favorite color is teal";
     CHECK(run_agent(&alice, child_put) == 0, "alice mem.put 2");
@@ -423,11 +427,11 @@ int main(void) {
 
     /* ---- 6. real deletion ---- */
     {
-        CHECK(file_contains("/var/mem/alice/records.dat", "ROTATION123"), "marker on disk before forget");
+        CHECK(file_contains("/var/mem/alice/records.dat", rot_marker), "marker on disk before forget");
         CHECK(human_admin("{\"op\":\"delete\",\"principal\":\"alice\",\"id\":1}") == 0, "human delete");
         sync();
-        CHECK(!file_contains("/var/mem/alice/records.dat", "ROTATION123"), "deleted text physically gone from records.dat");
-        g_text = "ROTATION123";
+        CHECK(!file_contains("/var/mem/alice/records.dat", rot_marker), "deleted text physically gone from records.dat");
+        g_text = rot_marker;
         g_id = 0;
         CHECK(run_agent(&alice, child_search_expect) == 0, "deleted memory no longer searchable");
         g_text = "LIVEMARKER_KEEP_7788 control record";
