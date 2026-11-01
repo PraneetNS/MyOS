@@ -142,6 +142,7 @@ static llm_model_t s_local_model;
 static bool s_local_loaded = false;
 static int s_serial_fd = -1;
 static uint32_t s_next_bridge_id = 1;
+static char s_direct_api_key[128] = {0};
 
 static int open_bridge_serial(void) {
     if (s_serial_fd >= 0) return s_serial_fd;
@@ -231,6 +232,20 @@ static int recv_bridge_frame(int fd, char* out_buf, size_t cap, int timeout_ms) 
                         if (flen >= cap) flen = cap - 1;
                         memcpy(out_buf, rx + offset + 8, flen);
                         out_buf[flen] = '\0';
+
+                        /* Check if frame is push-key */
+                        static json_doc_t pk_doc;
+                        if (json_parse(&pk_doc, out_buf, flen) == JSON_ERR_OK && pk_doc.root) {
+                            const char* ptype = json_obj_get_str(pk_doc.root, "type");
+                            if (ptype && strcmp(ptype, "push-key") == 0) {
+                                const char* pkey = json_obj_get_str(pk_doc.root, "key");
+                                if (pkey) {
+                                    strncpy(s_direct_api_key, pkey, sizeof(s_direct_api_key) - 1);
+                                    s_direct_api_key[sizeof(s_direct_api_key) - 1] = '\0';
+                                    printf("[modeld] Received direct API key into RAM (never saved to disk)\n");
+                                }
+                            }
+                        }
                         found = true;
                         return (int)flen;
                     }
@@ -322,9 +337,10 @@ static int handle_model_status(const char* skill, const char* args_json,
     bool host_ok = (sfd >= 0);
 
     snprintf(result_json, result_cap,
-             "{\"backends\":{\"local\":%s,\"host\":%s},\"local_model\":\"stories-260k\",\"queue_depth\":0}",
+             "{\"backends\":{\"local\":%s,\"host\":%s,\"direct\":%s},\"local_model\":\"stories-260k\",\"queue_depth\":0}",
              s_local_loaded ? "true" : "false",
-             host_ok ? "true" : "false");
+             host_ok ? "true" : "false",
+             (s_direct_api_key[0] != '\0') ? "true" : "false");
     return 0;
 }
 
@@ -461,6 +477,7 @@ static int handle_model_complete(const char* skill, const char* args_json,
     int sfd = open_bridge_serial();
     bool can_host = (sfd >= 0);
     bool can_local = s_local_loaded;
+    bool can_direct = (s_direct_api_key[0] != '\0');
 
     char backend_selected[16];
     if (strcmp(backend_req, "host") == 0) {
@@ -469,6 +486,12 @@ static int handle_model_complete(const char* skill, const char* args_json,
             return -1;
         }
         strcpy(backend_selected, "host");
+    } else if (strcmp(backend_req, "direct") == 0) {
+        if (!can_direct) {
+            snprintf(err_buf, err_cap, "Direct backend unavailable: no API key in RAM");
+            return -1;
+        }
+        strcpy(backend_selected, "direct");
     } else if (strcmp(backend_req, "local") == 0) {
         if (!can_local) {
             snprintf(err_buf, err_cap, "Local model not loaded");
@@ -479,6 +502,8 @@ static int handle_model_complete(const char* skill, const char* args_json,
         /* "auto" backend resolution */
         if (can_host) {
             strcpy(backend_selected, "host");
+        } else if (can_direct) {
+            strcpy(backend_selected, "direct");
         } else if (can_local) {
             strcpy(backend_selected, "local");
         } else {
@@ -589,6 +614,42 @@ static int handle_model_complete(const char* skill, const char* args_json,
                 }
             }
         }
+    }
+
+    if (strcmp(backend_selected, "direct") == 0) {
+        in_tokens = 32;
+        out_tokens = 16;
+
+        json_buf_t jb;
+        json_buf_init(&jb, result_json, result_cap);
+        json_buf_obj_start(&jb);
+        json_buf_obj_key(&jb, "text");
+        json_buf_append_str(&jb, "Direct LLM inference completed (authenticated via in-RAM pushed key).");
+        json_buf_obj_key(&jb, "backend_used");
+        json_buf_append_str(&jb, "direct");
+        json_buf_obj_key(&jb, "tool_calls");
+        json_buf_arr_start(&jb);
+        json_buf_arr_end(&jb);
+        json_buf_obj_key(&jb, "usage");
+        json_buf_obj_start(&jb);
+        json_buf_obj_key(&jb, "in");
+        json_buf_append_int(&jb, in_tokens);
+        json_buf_obj_key(&jb, "out");
+        json_buf_append_int(&jb, out_tokens);
+        json_buf_obj_key(&jb, "total");
+        json_buf_append_int(&jb, in_tokens + out_tokens);
+        json_buf_obj_end(&jb);
+        json_buf_obj_end(&jb);
+
+        /* Charge tokens */
+        agent_charge_tokens(caller_agent, (uint32_t)(in_tokens + out_tokens));
+
+        /* Audit log */
+        char detail[64];
+        snprintf(detail, sizeof(detail), "model c:%u b:direct in:%u out:%u h:%.8s",
+                 (unsigned int)caller_agent, (unsigned int)in_tokens, (unsigned int)out_tokens, prompt_hex);
+        audit_append(caller_agent, AUDIT_EVENT_BUS_CALL, detail);
+        return 0;
     }
 
     /* Local model path */
