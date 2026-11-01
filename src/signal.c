@@ -217,53 +217,60 @@ void signal_handle_pending(struct registers* regs) {
     serial_printf("[signal] delivering signal %d to PID %d handler %p\n",
                   sig, me->pid, sa->sa_handler);
 
-    uint32_t sp = regs->useresp;
+    uint64_t sp = regs->rsp;
     sp -= sizeof(struct sigframe);
-    sp &= ~0x0Fu; /* 16-byte align */
+    sp &= ~15ULL; /* 16-byte align */
 
     struct sigframe frame __attribute__((aligned(16)));
     memset(&frame, 0, sizeof(frame));
-    frame.sig = sig;
 
-    frame.sc.gs = regs->ds;
-    frame.sc.fs = regs->ds;
-    frame.sc.es = regs->ds;
-    frame.sc.ds = regs->ds;
-    frame.sc.edi = regs->edi;
-    frame.sc.esi = regs->esi;
-    frame.sc.ebp = regs->ebp;
-    frame.sc.esp = regs->useresp;
-    frame.sc.ebx = regs->ebx;
-    frame.sc.edx = regs->edx;
-    frame.sc.ecx = regs->ecx;
-    frame.sc.eax = regs->eax;
+    frame.sc.r15 = regs->r15;
+    frame.sc.r14 = regs->r14;
+    frame.sc.r13 = regs->r13;
+    frame.sc.r12 = regs->r12;
+    frame.sc.r11 = regs->r11;
+    frame.sc.r10 = regs->r10;
+    frame.sc.r9  = regs->r9;
+    frame.sc.r8  = regs->r8;
+    frame.sc.rbp = regs->rbp;
+    frame.sc.rsi = regs->rsi;
+    frame.sc.rdi = regs->rdi;
+    frame.sc.rdx = regs->rdx;
+    frame.sc.rcx = regs->rcx;
+    frame.sc.rbx = regs->rbx;
+    frame.sc.rax = regs->rax;
     frame.sc.int_no = regs->int_no;
     frame.sc.err_code = regs->err_code;
-    frame.sc.eip = regs->eip;
+    frame.sc.rip = regs->rip;
     frame.sc.cs = regs->cs;
-    frame.sc.eflags = regs->eflags;
-    frame.sc.useresp = regs->useresp;
+    frame.sc.rflags = regs->rflags;
+    frame.sc.rsp = regs->rsp;
     frame.sc.ss = regs->ss;
     frame.sc.old_mask = me->sig_blocked;
-    frame.sc.fpstate = sp + (uint32_t) offsetof(struct sigframe, fpu_state);
+    frame.sc.fpstate = sp + (uint64_t) offsetof(struct sigframe, fpu_state);
 
     fpu_save(me);
     memcpy(frame.fpu_state, fpu_get_state_ptr(me), 512);
 
-    /* Trampoline: pop %eax; mov $119, %eax; int $0x80 */
-    frame.trampoline[0] = 0x58; /* pop %eax */
-    frame.trampoline[1] = 0xB8; /* mov $119, %eax */
-    frame.trampoline[2] = 119;
-    frame.trampoline[3] = 0x00;
+    /* Trampoline: mov $119, %rax; syscall; int $0x80 */
+    frame.trampoline[0] = 0x48;
+    frame.trampoline[1] = 0xC7;
+    frame.trampoline[2] = 0xC0;
+    frame.trampoline[3] = 119;
     frame.trampoline[4] = 0x00;
     frame.trampoline[5] = 0x00;
-    frame.trampoline[6] = 0xCD; /* int $0x80 */
-    frame.trampoline[7] = 0x80;
+    frame.trampoline[6] = 0x00;
+    frame.trampoline[7] = 0x0F; /* syscall */
+    frame.trampoline[8] = 0x05;
+    frame.trampoline[9] = 0xCD; /* int $0x80 */
+    frame.trampoline[10] = 0x80;
+    frame.trampoline[11] = 0x0F;
+    frame.trampoline[12] = 0x0B;
 
     if ((sa->sa_flags & SA_RESTORER) && sa->sa_restorer) {
-        frame.ret_addr = (uint32_t) sa->sa_restorer;
+        frame.ret_addr = (uint64_t) sa->sa_restorer;
     } else {
-        frame.ret_addr = sp + (uint32_t) offsetof(struct sigframe, trampoline);
+        frame.ret_addr = sp + (uint64_t) offsetof(struct sigframe, trampoline);
     }
 
     if (copy_to_user((void*)sp, &frame, sizeof(struct sigframe)) != 0) {
@@ -272,8 +279,9 @@ void signal_handle_pending(struct registers* regs) {
         return;
     }
 
-    regs->useresp = sp;
-    regs->eip = (uint32_t) sa->sa_handler;
+    regs->rsp = sp;
+    regs->rip = (uint64_t) sa->sa_handler;
+    regs->rdi = sig; /* Arg1 in AMD64 ABI */
 
     me->sig_blocked |= sa->sa_mask;
     if (!(sa->sa_flags & SA_NODEFER)) {
@@ -341,22 +349,32 @@ int sys_sigreturn(struct registers* regs) {
     process_t* me = scheduler_current();
     if (!me) return -ESRCH;
 
-    struct sigcontext* u_sc = (struct sigcontext*) regs->useresp;
+    struct sigcontext* u_sc = (struct sigcontext*) regs->rsp;
     struct sigcontext sc;
     if (copy_from_user(&sc, u_sc, sizeof(struct sigcontext)) != 0) {
         return -EFAULT;
     }
 
-    regs->eip = sc.eip;
-    regs->useresp = sc.useresp;
-    regs->ebp = sc.ebp;
-    regs->eax = sc.eax;
-    regs->ebx = sc.ebx;
-    regs->ecx = sc.ecx;
-    regs->edx = sc.edx;
-    regs->esi = sc.esi;
-    regs->edi = sc.edi;
-    regs->eflags = sc.eflags;
+    regs->r15 = sc.r15;
+    regs->r14 = sc.r14;
+    regs->r13 = sc.r13;
+    regs->r12 = sc.r12;
+    regs->r11 = sc.r11;
+    regs->r10 = sc.r10;
+    regs->r9  = sc.r9;
+    regs->r8  = sc.r8;
+    regs->rbp = sc.rbp;
+    regs->rsi = sc.rsi;
+    regs->rdi = sc.rdi;
+    regs->rdx = sc.rdx;
+    regs->rcx = sc.rcx;
+    regs->rbx = sc.rbx;
+    regs->rax = sc.rax;
+    regs->rip = sc.rip;
+    regs->rsp = sc.rsp;
+    regs->rflags = sc.rflags;
+    regs->cs = sc.cs;
+    regs->ss = sc.ss;
 
     me->sig_blocked = sc.old_mask & ~(sigmask(SIGKILL) | sigmask(SIGSTOP));
 
@@ -367,9 +385,9 @@ int sys_sigreturn(struct registers* regs) {
         }
     }
 
-    serial_printf("[signal] PID %d sigreturn restored eip=0x%08x esp=0x%08x\n",
-                  me->pid, regs->eip, regs->useresp);
-    return regs->eax;
+    serial_printf("[signal] PID %d sigreturn restored rip=0x%016lx rsp=0x%016lx\n",
+                  me->pid, regs->rip, regs->rsp);
+    return (int) regs->rax;
 }
 
 int sys_pause(void) {

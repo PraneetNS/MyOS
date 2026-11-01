@@ -13,12 +13,12 @@
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
-extern void switch_task(uint32_t* old_esp_store, uint32_t new_esp);
+extern void switch_task(uint64_t* old_rsp_store, uint64_t new_rsp);
 
 static process_t* current = 0;
 static uint32_t tick_counter = 0;
 static int started = 0;
-static uint32_t discard_esp; /* landing spot for switch_task's "old esp" when there's no real predecessor to save */
+static uint64_t discard_rsp; /* landing spot for switch_task's "old rsp" when there's no real predecessor to save */
 
 process_t* scheduler_current(void) { return current; }
 
@@ -97,7 +97,7 @@ void scheduler_yield(void) {
     current = next;
     enter_process(next);
     fpu_switch(prev, next);
-    switch_task(&prev->esp, next->esp);
+    switch_task(&prev->rsp, next->rsp);
 }
 
 void scheduler_tick(void) {
@@ -118,7 +118,7 @@ void scheduler_tick(void) {
             current = next;
             enter_process(next);
             fpu_switch(prev, next);
-            switch_task(&prev->esp, next->esp);
+            switch_task(&prev->rsp, next->rsp);
             return;
         }
     }
@@ -141,7 +141,7 @@ void scheduler_tick(void) {
     current = next;
     enter_process(next);
     fpu_switch(prev, next);
-    switch_task(&prev->esp, next->esp);
+    switch_task(&prev->rsp, next->rsp);
 }
 
 void scheduler_start(void) {
@@ -151,7 +151,7 @@ void scheduler_start(void) {
     current = first;
     enter_process(first);
     fpu_switch(NULL, first);
-    switch_task(&discard_esp, first->esp); /* never returns */
+    switch_task(&discard_rsp, first->rsp); /* never returns */
 
     for (;;) asm volatile ("hlt"); /* unreachable */
 }
@@ -185,9 +185,9 @@ void scheduler_exit_current(int exit_status) {
     }
 
     /* Release user address space */
-    if (!p->is_kernel_task && p->as.directory) {
+    if (!p->is_kernel_task && p->as.pml4) {
         vmm_destroy_address_space(&p->as);
-        p->as.directory = 0;
+        p->as.pml4 = 0;
     }
 
     if (p->agent_id > 0) {
@@ -262,7 +262,7 @@ void scheduler_exit_current(int exit_status) {
     current = next;
     enter_process(next);
     fpu_switch(NULL, next);
-    switch_task(&discard_esp, next->esp); /* p is gone -- nothing to save, never returns here */
+    switch_task(&discard_rsp, next->rsp); /* p is gone -- nothing to save, never returns here */
 
     for (;;) asm volatile ("hlt"); /* unreachable */
 }
@@ -274,7 +274,7 @@ void scheduler_wait_or_idle(process_t* me) {
         current = next;
         enter_process(next);
         fpu_switch(prev, next);
-        switch_task(&me->esp, next->esp);
+        switch_task(&me->rsp, next->rsp);
     } else {
         while (me->state == PROC_WAITING) {
             while (serial_received()) {

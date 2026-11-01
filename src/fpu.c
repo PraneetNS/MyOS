@@ -16,21 +16,7 @@ int fpu_has_sse(void) { return has_sse; }
 int fpu_has_sse2(void) { return has_sse2; }
 
 static inline int has_cpuid_instruction(void) {
-    uint32_t eflags1, eflags2;
-    asm volatile (
-        "pushfl\n\t"
-        "popl %0\n\t"
-        "movl %0, %1\n\t"
-        "xorl $0x00200000, %1\n\t"
-        "pushl %1\n\t"
-        "popfl\n\t"
-        "pushfl\n\t"
-        "popl %1\n\t"
-        "pushl %0\n\t"
-        "popfl\n\t"
-        : "=r"(eflags1), "=r"(eflags2)
-    );
-    return ((eflags1 ^ eflags2) & 0x00200000) != 0;
+    return 1; /* Always present on x86-64 */
 }
 
 static inline void cpuid(uint32_t code, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {
@@ -42,7 +28,7 @@ static inline void cpuid(uint32_t code, uint32_t* a, uint32_t* b, uint32_t* c, u
 }
 
 static inline uint8_t* process_fpu_state(process_t* p) {
-    return (uint8_t*)(((uintptr_t)p->fpu_buffer + 15) & ~15u);
+    return (uint8_t*)(((uintptr_t)p->fpu_buffer + 15) & ~15ULL);
 }
 
 void fpu_init(void) {
@@ -61,12 +47,12 @@ void fpu_init(void) {
     }
 
     /* Configure CR0 for x87 coprocessor */
-    uint32_t cr0;
+    uint64_t cr0;
     asm volatile ("mov %%cr0, %0" : "=r"(cr0));
-    cr0 &= ~(1u << 2); /* Clear EM (coprocessor emulation) */
-    cr0 |=  (1u << 1); /* Set MP (monitor coprocessor) */
-    cr0 &= ~(1u << 3); /* Clear TS (task switched) */
-    cr0 |=  (1u << 5); /* Set NE (native x87 exception handling on vector 16) */
+    cr0 &= ~(1ULL << 2); /* Clear EM (coprocessor emulation) */
+    cr0 |=  (1ULL << 1); /* Set MP (monitor coprocessor) */
+    cr0 &= ~(1ULL << 3); /* Clear TS (task switched) */
+    cr0 |=  (1ULL << 5); /* Set NE (native x87 exception handling on vector 16) */
     asm volatile ("mov %0, %%cr0" : : "r"(cr0));
 
     if (has_fpu) {
@@ -75,10 +61,10 @@ void fpu_init(void) {
 
     /* Configure CR4 for FXSR and SSE */
     if (has_fxsr) {
-        uint32_t cr4;
+        uint64_t cr4;
         asm volatile ("mov %%cr4, %0" : "=r"(cr4));
-        cr4 |= (1u << 9);  /* OSFXSR: enable FXSAVE / FXRSTOR */
-        cr4 |= (1u << 10); /* OSXMMEXCPT: enable SIMD exceptions (#XM vector 19) */
+        cr4 |= (1ULL << 9);  /* OSFXSR: enable FXSAVE / FXRSTOR */
+        cr4 |= (1ULL << 10); /* OSXMMEXCPT: enable SIMD exceptions (#XM vector 19) */
         asm volatile ("mov %0, %%cr4" : : "r"(cr4));
     }
 
