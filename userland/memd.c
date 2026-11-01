@@ -404,8 +404,10 @@ static void emit_slot(json_buf_t* jb, const slot_t* s, const char* ns, float sco
     json_buf_append_str(jb, ns);
     json_buf_obj_key(jb, "provenance");
     json_buf_append_str(jb, s_prov_names[s->prov > 2 ? 2 : s->prov]);
+    json_buf_obj_key(jb, "trust");
+    json_buf_append_str(jb, s_prov_names[s->prov > 2 ? 2 : s->prov]);
     json_buf_obj_key(jb, "untrusted");
-    json_buf_append_bool(jb, s->prov == PROV_UNTRUSTED);
+    json_buf_append_bool(jb, s->prov != PROV_USER);
     json_buf_obj_key(jb, "ts");
     json_buf_append_int(jb, s->ts);
     if (with_score) {
@@ -540,6 +542,8 @@ static int do_forget(const caller_t* c, const char* principal, const char* ns, i
     slot_t z;
     memset(&z, 0, sizeof(z));
     if (write_slot(dir, file, i, &z) != 0) return err(eb, ecap, "write failed");
+    memset(&s_slots[i], 0, sizeof(slot_t));
+    sync();
     audit(c, AUDIT_EVENT_MEM_FORGET, "forget", ns, id);
     snprintf(res, rcap, "{\"forgotten\":true,\"id\":%d}", id);
     return 0;
@@ -560,14 +564,29 @@ static int h_put(const char* skill, const char* args, char* res, size_t rcap, ch
     const char* text = json_obj_get_str(doc.root, "text");
     if (!text) return err(eb, ecap, "missing 'text'");
     /* Provenance is decided by the daemon from the caller's identity:
-       humans/system (agent 0) may mark 'user'; agents are 'agent' and may only downgrade to 'untrusted'. */
-    int prov = (c.agent_id == 0) ? PROV_USER : PROV_AGENT;
-    const char* pv = json_obj_get_str(doc.root, "provenance");
-    if (pv && strcmp(pv, "untrusted") == 0) prov = PROV_UNTRUSTED;
-    else if (pv && strcmp(pv, "agent") == 0) prov = PROV_AGENT;
-    bool from_tool = false;
-    json_obj_get_bool(doc.root, "from_tool", &from_tool);
-    if (from_tool) prov = PROV_UNTRUSTED;
+       Only non-agents (agent 0, e.g. human via memctl) can set 'user'.
+       Agents are 'agent' at most; from_tool=false or trust=user is ignored. */
+    int prov;
+    if (c.agent_id != 0) {
+        prov = PROV_AGENT;
+        const char* pv = json_obj_get_str(doc.root, "provenance");
+        if (!pv) pv = json_obj_get_str(doc.root, "trust");
+        if (pv && strcmp(pv, "untrusted") == 0) prov = PROV_UNTRUSTED;
+        bool from_tool = false;
+        if (json_obj_get_bool(doc.root, "from_tool", &from_tool) && from_tool) {
+            prov = PROV_UNTRUSTED;
+        }
+    } else {
+        prov = PROV_USER;
+        const char* pv = json_obj_get_str(doc.root, "provenance");
+        if (!pv) pv = json_obj_get_str(doc.root, "trust");
+        if (pv && strcmp(pv, "untrusted") == 0) prov = PROV_UNTRUSTED;
+        else if (pv && strcmp(pv, "agent") == 0) prov = PROV_AGENT;
+        bool from_tool = false;
+        if (json_obj_get_bool(doc.root, "from_tool", &from_tool) && from_tool) {
+            prov = PROV_UNTRUSTED;
+        }
+    }
     return do_put(&c, c.principal, ns, text, json_obj_get_str(doc.root, "tags"), prov, res, rcap, eb, ecap);
 }
 

@@ -128,6 +128,30 @@ static int child_search_untrusted_flag(void) {
     return (g_id == 1) ? (has_true ? 0 : 4) : (has_false ? 0 : 5);
 }
 
+static int child_put_forged_trust(void) {
+    int fd = intent_connect();
+    if (fd < 0) return 1;
+    char args[512];
+    snprintf(args, sizeof(args), "{\"ns\":\"%s\",\"text\":\"%s\",\"provenance\":\"user\",\"trust\":\"user\",\"from_tool\":false}", g_ns, g_text);
+    int rc = bus_call(fd, "mem.put", args);
+    intent_close(fd);
+    return rc == 0 ? 0 : 2;
+}
+
+static int child_search_verify_agent_trust(void) {
+    int fd = intent_connect();
+    if (fd < 0) return 1;
+    char args[512];
+    snprintf(args, sizeof(args), "{\"query\":\"%s\"}", g_text);
+    int rc = bus_call(fd, "mem.search", args);
+    intent_close(fd);
+    if (rc != 0) return 2;
+    if (strstr(g_res, "\"provenance\":\"user\"") != NULL) return 3;
+    if (strstr(g_res, "\"trust\":\"user\"") != NULL) return 4;
+    if (strstr(g_res, "\"untrusted\":true") == NULL) return 5;
+    return 0;
+}
+
 static int child_expect_denied(void) {
     int fd = intent_connect();
     if (fd < 0) return 1;
@@ -359,6 +383,12 @@ int main(void) {
     g_id = 0;
     g_text = "poisonmarker";
     CHECK(run_agent(&alice, child_search_untrusted_flag) == 0, "mark-trusted clears untrusted flag");
+
+    /* Agent writing with from_tool=false and trust=user is still not user */
+    g_text = "agent attempted forged trust note";
+    CHECK(run_agent(&alice, child_put_forged_trust) == 0, "agent put with from_tool=false and trust=user");
+    CHECK(run_agent(&alice, child_search_verify_agent_trust) == 0, "agent write stored trust=agent, not user");
+
     PASS("Provenance: tool output stored untrusted, agents cannot self-promote, human can");
 
     /* ---- 5. crash safety ---- */
