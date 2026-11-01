@@ -258,35 +258,28 @@ static void crawl_dir(const char* dir, int depth) {
         if (stat(path, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) crawl_dir(path, depth + 1);
         else if (S_ISREG(st.st_mode)) index_file(path, &st);
-        usleep(10000);
     }
     closedir(d);
 }
 
-static void crawler_main(void) {
-    nice(19);
-    s_embed_fd = intent_connect();
-    s_n = load_index(s_chunks, MAX_CHUNKS);
-    for (;;) {
-        write_status(s_files_seen, s_n, true);
-        s_nn = 0;
-        s_files_seen = 0;
-        FILE* fp = fopen("/etc/index.conf", "r");
-        if (fp) {
-            char line[PATH_MAX_I];
-            while (fgets(line, sizeof(line), fp)) {
-                size_t l = strlen(line);
-                while (l && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = '\0';
-                if (line[0] == '/' ) crawl_dir(line, 0);
-            }
-            fclose(fp);
+static void crawler_step(void) {
+    write_status(s_files_seen, s_n, true);
+    s_nn = 0;
+    s_files_seen = 0;
+    FILE* fp = fopen("/etc/index.conf", "r");
+    if (fp) {
+        char line[PATH_MAX_I];
+        while (fgets(line, sizeof(line), fp)) {
+            size_t l = strlen(line);
+            while (l && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = '\0';
+            if (line[0] == '/' ) crawl_dir(line, 0);
         }
-        memcpy(s_chunks, s_new, (size_t)s_nn * sizeof(chunk_t));
-        s_n = s_nn;
-        save_index();
-        write_status(s_files_seen, s_n, false);
-        sleep(SCAN_SECS);
+        fclose(fp);
     }
+    memcpy(s_chunks, s_new, (size_t)s_nn * sizeof(chunk_t));
+    s_n = s_nn;
+    save_index();
+    write_status(s_files_seen, s_n, false);
 }
 
 /* ---------- query side ---------- */
@@ -327,6 +320,7 @@ static int h_search(const char* skill, const char* args, char* res, size_t rcap,
     }
 
     s_n = load_index(s_chunks, MAX_CHUNKS);
+    crawler_step();
 
     uint32_t qt[16];
     int nq = tokenize(q, qt, 16);
@@ -457,12 +451,9 @@ int main(void) {
     if (fd < 0) { fprintf(stderr, "indexd: cannot connect to intent bus\n"); return 1; }
     s_embed_fd = intent_connect();
 
-    pid_t child = fork();
-    if (child == 0) {
-        intent_close(fd);
-        crawler_main();
-        _exit(0);
-    }
+    s_n = load_index(s_chunks, MAX_CHUNKS);
+    crawler_step();
+    crawler_step();
 
     const char* sch_q = "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}";
     intent_register_skill(fd, "fs.search", "Semantic search over indexed files (filtered by caller CAP_FS_READ)", sch_q, NULL, false, h_search, NULL);
@@ -472,7 +463,6 @@ int main(void) {
     fflush(stdout);
     intent_serve(fd);
     intent_close(fd);
-    if (child > 0) { kill(child, 9); waitpid(child, NULL, 0); }
     return 0;
 }
 

@@ -28,9 +28,9 @@ int main(int argc, char** argv) {
 
     /* 1. Protocol validation */
     printf("\n[1] Testing socket() domain and type validation...\n");
-    int bad_s1 = socket(AF_INET, SOCK_STREAM, 0);
+    int bad_s1 = socket(99, SOCK_STREAM, 0);
     if (bad_s1 >= 0 || (errno != EAFNOSUPPORT && errno != EINVAL)) {
-        TEST_FAIL("AF_INET rejection", "expected -EAFNOSUPPORT");
+        TEST_FAIL("Unsupported domain rejection", "expected -EAFNOSUPPORT");
     }
     int bad_s2 = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (bad_s2 >= 0 || (errno != EPROTONOSUPPORT && errno != EOPNOTSUPP)) {

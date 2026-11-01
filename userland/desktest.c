@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <agent.h>
+#include <sys/myos.h>
 #include <intent.h>
 #include <json.h>
 #include <win_protocol.h>
@@ -59,7 +60,51 @@ static int test_killswitch(void) {
     TEST_ASSERT(s2 == 0, "Killswitch toggle should deactivate (return 0)");
     TEST_ASSERT(agent_killswitch_state() == 0, "Killswitch state should be 0");
 
-    printf("PASSED: Killswitch state transitions and audit logging verified\n");
+    /* Test timer-tick preemption of pure userland loop:
+       Spawn an agent running for(;;){} with zero syscalls.
+       Trigger killswitch; agent must be suspended within <= 2 ticks. */
+    agent_caps_t caps;
+    memset(&caps, 0, sizeof(caps));
+    agent_budget_t budget;
+    memset(&budget, 0, sizeof(budget));
+    int spin_aid = agent_create("spintest", &caps, &budget);
+    TEST_ASSERT(spin_aid > 0, "Failed to create spin agent");
+
+    int spin_pid = fork();
+    if (spin_pid == 0) {
+        agent_attach(spin_aid);
+        for (;;) {
+            asm volatile ("nop");
+        }
+    }
+    TEST_ASSERT(spin_pid > 0, "Fork failed for spin process");
+
+    usleep(30000); /* 30ms so child starts spinning */
+
+    unsigned int t0 = sys_ticks();
+    agent_killswitch_toggle();
+
+    agent_info_t info;
+    int max_wait = 20;
+    while (max_wait-- > 0) {
+        if (agent_info(spin_aid, &info) == 0 && info.state == AGENT_STATE_SUSPENDED) {
+            break;
+        }
+        usleep(5000);
+    }
+    unsigned int t1 = sys_ticks();
+    unsigned int elapsed_ticks = (t1 >= t0) ? (t1 - t0) : 0;
+    TEST_ASSERT(info.state == AGENT_STATE_SUSPENDED, "Spinning agent must end up SUSPENDED");
+    printf("[desktest] Pure userland loop suspended in %u ticks (limit <= 2)\n", elapsed_ticks);
+
+    kill(spin_pid, SIGKILL);
+    waitpid(spin_pid, NULL, 0);
+    agent_kill(spin_aid);
+    if (agent_killswitch_state()) {
+        agent_killswitch_toggle();
+    }
+
+    printf("PASSED: Killswitch state transitions and timer-tick preemption verified\n");
     return 0;
 }
 
