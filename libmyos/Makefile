@@ -8,7 +8,7 @@ RANLIB = $(PREFIX)/bin/$(TARGET)-ranlib
 CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -Iinclude -isystem $(PREFIX)/$(TARGET)/include
 ASFLAGS =
 
-OBJS = stubs.o posix.o init.o setjmp_alias.o
+OBJS = stubs.o posix.o init.o setjmp_alias.o net.o
 
 all: crt0.o libmyos.a install-headers
 
@@ -23,6 +23,9 @@ stubs.o: stubs.c syscall.h
 
 posix.o: posix.c syscall.h include/dirent.h
 	$(CC) $(CFLAGS) -c posix.c -o posix.o
+
+net.o: net.c syscall.h
+	$(CC) $(CFLAGS) -c net.c -o net.o
 
 init.o: init.c
 	$(CC) $(CFLAGS) -c init.c -o init.o

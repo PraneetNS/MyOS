@@ -938,16 +938,14 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
 
 ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                const struct sockaddr *dest_addr, socklen_t addrlen) {
-    (void) dest_addr;
-    (void) addrlen;
-    return send(sockfd, buf, len, flags);
+    int ret = __syscall6(SYS_SENDTO, sockfd, (long)buf, (long)len, flags, (long)dest_addr, (long)addrlen);
+    return (ssize_t) __check_syscall_err(ret);
 }
 
 ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
                  struct sockaddr *src_addr, socklen_t *addrlen) {
-    (void) src_addr;
-    (void) addrlen;
-    return recv(sockfd, buf, len, flags);
+    int ret = __syscall6(SYS_RECVFROM, sockfd, (long)buf, (long)len, flags, (long)src_addr, (long)addrlen);
+    return (ssize_t) __check_syscall_err(ret);
 }
 
 int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {

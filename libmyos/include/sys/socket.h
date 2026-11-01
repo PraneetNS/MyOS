@@ -51,6 +51,8 @@ struct sockaddr {
 #define SO_RCVBUF     8
 #define SO_KEEPALIVE  9
 #define SO_OOBINLINE  10
+#define SO_RCVTIMEO   20
+#define SO_SNDTIMEO   21
 
 int socket(int domain, int type, int protocol);
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);

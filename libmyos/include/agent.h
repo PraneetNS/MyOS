@@ -29,6 +29,8 @@ extern "C" {
 #define CAP_WINDOW_RAW      (1 << 12)
 #define CAP_MEM_READ        (1 << 13)
 #define CAP_MEM_WRITE       (1 << 14)
+#define CAP_NET_RAW_INET    (1 << 15)
+#define CAP_NET_HTTP        (1 << 16)
 
 /* Model backend capability flags */
 #define MODEL_BACKEND_LOCAL  (1 << 0)
@@ -62,6 +64,8 @@ typedef enum {
 #define AUDIT_EVENT_MEM_SEARCH                16
 #define AUDIT_EVENT_MEM_FORGET                17
 #define AUDIT_EVENT_MEM_ADMIN                 18
+#define AUDIT_EVENT_NET_HTTP                  19
+#define AUDIT_EVENT_NET_DENIED                20
 
 typedef struct {
     char prefix[MAX_PATH_PREFIX_LEN];
@@ -90,6 +94,8 @@ typedef struct {
     agent_path_rule_t mem_read[MAX_PATH_RULES];
     uint32_t num_mem_write;
     agent_path_rule_t mem_write[MAX_PATH_RULES];
+    uint32_t num_net_http;
+    agent_path_rule_t net_http[MAX_PATH_RULES];
     uint32_t model_backends; /* Bitmask of allowed backends: 0 = MODEL_BACKEND_ALL */
 } agent_caps_t;
 
