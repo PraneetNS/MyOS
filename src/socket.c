@@ -8,6 +8,8 @@
 #include "vga.h"
 #include "errno.h"
 #include "agent.h"
+#include "tcp.h"
+#include "udp.h"
 
 static socket_t* all_sockets_head = NULL;
 static uint32_t next_sock_inode = 10001;
@@ -80,6 +82,14 @@ socket_t* socket_alloc(int domain, int type, int protocol) {
     s->creator_principal[31] = '\0';
     s->peer_principal[0] = '\0';
 
+    if (domain == AF_INET) {
+        if (type == SOCK_STREAM) {
+            s->ops = &tcp_socket_ops;
+        } else if (type == SOCK_DGRAM) {
+            s->ops = &udp_socket_ops;
+        }
+    }
+
     uint32_t f = irq_save();
     s->inode = next_sock_inode++;
     s->next_all = all_sockets_head;
@@ -101,6 +111,11 @@ void socket_ref(socket_t* s) {
 
 void socket_close(socket_t* s) {
     if (!s) return;
+
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->close) s->ops->close(s);
+        return;
+    }
 
     socket_t* peer_to_unref = NULL;
     int unref_self = 0;
@@ -177,6 +192,10 @@ void socket_unref(socket_t* s) {
 
 int socket_bind(socket_t* s, const struct sockaddr* addr, uint32_t addrlen) {
     if (!s || !addr) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->bind) return s->ops->bind(s, addr, addrlen);
+        return -EOPNOTSUPP;
+    }
     if (addr->sa_family != AF_UNIX) return -EAFNOSUPPORT;
     if (addrlen < sizeof(sa_family_t) + 1) return -EINVAL;
 
@@ -224,6 +243,10 @@ int socket_bind(socket_t* s, const struct sockaddr* addr, uint32_t addrlen) {
 
 int socket_listen(socket_t* s, int backlog) {
     if (!s) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->listen) return s->ops->listen(s, backlog);
+        return -EOPNOTSUPP;
+    }
     if (s->type != SOCK_STREAM) return -EOPNOTSUPP;
 
     kmutex_lock(&s->lock);
@@ -244,6 +267,10 @@ int socket_listen(socket_t* s, int backlog) {
 
 int socket_accept(socket_t* s, struct sockaddr* addr, uint32_t* addrlen, int flags, socket_t** out) {
     if (!s || !out) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->accept) return s->ops->accept(s, addr, addrlen, flags, out);
+        return -EOPNOTSUPP;
+    }
     if (s->state != SS_LISTENING) return -EINVAL;
 
     int nonblock = (flags & SOCK_NONBLOCK) ? 1 : 0;
@@ -288,6 +315,10 @@ int socket_accept(socket_t* s, struct sockaddr* addr, uint32_t* addrlen, int fla
 
 int socket_connect(socket_t* s, const struct sockaddr* addr, uint32_t addrlen) {
     if (!s || !addr) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->connect) return s->ops->connect(s, addr, addrlen);
+        return -EOPNOTSUPP;
+    }
     if (addr->sa_family != AF_UNIX) return -EAFNOSUPPORT;
     if (addrlen < sizeof(sa_family_t) + 1) return -EINVAL;
 
@@ -384,6 +415,10 @@ int socket_connect(socket_t* s, const struct sockaddr* addr, uint32_t addrlen) {
 
 int socket_send(socket_t* s, const void* buf, uint32_t len, int flags) {
     if (!s || (!buf && len > 0)) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->send) return s->ops->send(s, buf, len, flags);
+        return -EOPNOTSUPP;
+    }
     if (len == 0) return 0;
 
     int nonblock = (flags & MSG_DONTWAIT) ? 1 : 0;
@@ -443,6 +478,10 @@ int socket_send(socket_t* s, const void* buf, uint32_t len, int flags) {
 
 int socket_recv(socket_t* s, void* buf, uint32_t len, int flags) {
     if (!s || (!buf && len > 0)) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->recv) return s->ops->recv(s, buf, len, flags);
+        return -EOPNOTSUPP;
+    }
     if (len == 0) return 0;
     if (s->shutdown_rd) return 0;
 
@@ -480,8 +519,45 @@ int socket_recv(socket_t* s, void* buf, uint32_t len, int flags) {
     return (int) read_bytes;
 }
 
+int socket_sendto(socket_t* s, const void* buf, uint32_t len, int flags, const struct sockaddr* dest_addr, uint32_t addrlen) {
+    if (!s || (!buf && len > 0)) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->sendto) return s->ops->sendto(s, buf, len, flags, dest_addr, addrlen);
+        if (dest_addr) return -EOPNOTSUPP;
+        if (s->ops && s->ops->send) return s->ops->send(s, buf, len, flags);
+        return -EOPNOTSUPP;
+    }
+    if (dest_addr) return -EISCONN;
+    return socket_send(s, buf, len, flags);
+}
+
+int socket_recvfrom(socket_t* s, void* buf, uint32_t len, int flags, struct sockaddr* src_addr, uint32_t* addrlen) {
+    if (!s || (!buf && len > 0)) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->recvfrom) return s->ops->recvfrom(s, buf, len, flags, src_addr, addrlen);
+        return socket_recv(s, buf, len, flags);
+    }
+    return socket_recv(s, buf, len, flags);
+}
+
+int socket_setsockopt(socket_t* s, int level, int optname, const void* optval, uint32_t optlen) {
+    if (!s || !optval) return -EINVAL;
+    if (s->ops && s->ops->setsockopt) return s->ops->setsockopt(s, level, optname, optval, optlen);
+    return -ENOPROTOOPT;
+}
+
+int socket_getsockopt(socket_t* s, int level, int optname, void* optval, uint32_t* optlen) {
+    if (!s || !optval || !optlen) return -EINVAL;
+    if (s->ops && s->ops->getsockopt) return s->ops->getsockopt(s, level, optname, optval, optlen);
+    return -ENOPROTOOPT;
+}
+
 int socket_shutdown(socket_t* s, int how) {
     if (!s) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->shutdown) return s->ops->shutdown(s, how);
+        return 0;
+    }
     if (s->state != SS_CONNECTED) return -ENOTCONN;
 
     if (how == SHUT_RD || how == SHUT_RDWR) {
@@ -500,6 +576,10 @@ int socket_shutdown(socket_t* s, int how) {
 
 short socket_poll(socket_t* s, short events, void** chan_out) {
     if (!s) return POLLNVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->poll) return s->ops->poll(s, events, chan_out);
+        return 0;
+    }
     short revents = 0;
 
     if (s->state == SS_LISTENING) {
@@ -590,6 +670,10 @@ int socket_get_peerinfo(socket_t* s, int* pid_out, int* agent_out, char* princip
 
 int socket_getsockname(socket_t* s, struct sockaddr* addr, uint32_t* addrlen) {
     if (!s || !addr || !addrlen) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->getsockname) return s->ops->getsockname(s, addr, addrlen);
+        return -EOPNOTSUPP;
+    }
     struct sockaddr_un un;
     memset(&un, 0, sizeof(un));
     un.sun_family = AF_UNIX;
@@ -603,6 +687,10 @@ int socket_getsockname(socket_t* s, struct sockaddr* addr, uint32_t* addrlen) {
 
 int socket_getpeername(socket_t* s, struct sockaddr* addr, uint32_t* addrlen) {
     if (!s || !addr || !addrlen) return -EINVAL;
+    if (s->domain == AF_INET) {
+        if (s->ops && s->ops->getpeername) return s->ops->getpeername(s, addr, addrlen);
+        return -EOPNOTSUPP;
+    }
     if (s->state != SS_CONNECTED || s->peer_closed) return -ENOTCONN;
     struct sockaddr_un un;
     memset(&un, 0, sizeof(un));

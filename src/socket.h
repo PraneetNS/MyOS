@@ -42,6 +42,24 @@ struct sockaddr_un {
     char        sun_path[UNIX_PATH_MAX];
 };
 
+struct in_addr {
+    uint32_t s_addr;
+};
+
+struct sockaddr_in {
+    sa_family_t sin_family;
+    uint16_t    sin_port;
+    struct in_addr sin_addr;
+    char        sin_zero[8];
+};
+
+#define SOL_SOCKET   1
+#define SO_REUSEADDR 2
+#define SO_TYPE      3
+#define SO_ERROR     4
+#define SO_RCVTIMEO  20
+#define SO_SNDTIMEO  21
+
 typedef enum {
     SS_FREE = 0,
     SS_UNCONNECTED,
@@ -68,11 +86,15 @@ struct socket_ops {
     int (*connect)(struct socket* sock, const struct sockaddr* addr, uint32_t addrlen);
     int (*send)(struct socket* sock, const void* buf, uint32_t len, int flags);
     int (*recv)(struct socket* sock, void* buf, uint32_t len, int flags);
+    int (*sendto)(struct socket* sock, const void* buf, uint32_t len, int flags, const struct sockaddr* dest_addr, uint32_t addrlen);
+    int (*recvfrom)(struct socket* sock, void* buf, uint32_t len, int flags, struct sockaddr* src_addr, uint32_t* addrlen);
     int (*shutdown)(struct socket* sock, int how);
     short (*poll)(struct socket* sock, short events, void** chan_out);
     void (*close)(struct socket* sock);
     int (*getsockname)(struct socket* sock, struct sockaddr* addr, uint32_t* addrlen);
     int (*getpeername)(struct socket* sock, struct sockaddr* addr, uint32_t* addrlen);
+    int (*setsockopt)(struct socket* sock, int level, int optname, const void* optval, uint32_t optlen);
+    int (*getsockopt)(struct socket* sock, int level, int optname, void* optval, uint32_t* optlen);
 };
 
 typedef struct socket {
@@ -90,6 +112,17 @@ typedef struct socket {
     char sun_path[UNIX_PATH_MAX];
     char peer_path[UNIX_PATH_MAX];
     vnode_t* bound_vn;
+
+    /* AF_INET specific */
+    uint32_t local_ip;
+    uint16_t local_port;
+    uint32_t remote_ip;
+    uint16_t remote_port;
+    uint32_t rcvtimeo_ms;
+    uint32_t sndtimeo_ms;
+    int reuseaddr;
+    int so_error;
+    void* inet_data;
 
     /* Connection */
     struct socket* peer;
@@ -132,6 +165,10 @@ int socket_accept(socket_t* s, struct sockaddr* addr, uint32_t* addrlen, int fla
 int socket_connect(socket_t* s, const struct sockaddr* addr, uint32_t addrlen);
 int socket_send(socket_t* s, const void* buf, uint32_t len, int flags);
 int socket_recv(socket_t* s, void* buf, uint32_t len, int flags);
+int socket_sendto(socket_t* s, const void* buf, uint32_t len, int flags, const struct sockaddr* dest_addr, uint32_t addrlen);
+int socket_recvfrom(socket_t* s, void* buf, uint32_t len, int flags, struct sockaddr* src_addr, uint32_t* addrlen);
+int socket_setsockopt(socket_t* s, int level, int optname, const void* optval, uint32_t optlen);
+int socket_getsockopt(socket_t* s, int level, int optname, void* optval, uint32_t* optlen);
 int socket_shutdown(socket_t* s, int how);
 short socket_poll(socket_t* s, short events, void** chan_out);
 int socket_pair(int domain, int type, int protocol, socket_t** s1_out, socket_t** s2_out);

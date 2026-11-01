@@ -2053,16 +2053,34 @@ static void syscall_handler(struct registers* regs) {
             int flags = type & ~0xF;
             type = type & 0xF;
 
-            if (domain != AF_UNIX) {
+            if (domain != AF_UNIX && domain != AF_INET) {
                 regs->eax = (uint32_t) -EAFNOSUPPORT;
                 break;
             }
-            if (type != SOCK_STREAM) {
+            if (domain == AF_UNIX && type != SOCK_STREAM) {
+                regs->eax = (uint32_t) -EPROTONOSUPPORT;
+                break;
+            }
+            if (domain == AF_INET && type != SOCK_STREAM && type != SOCK_DGRAM) {
                 regs->eax = (uint32_t) -EPROTONOSUPPORT;
                 break;
             }
 
             process_t* me = scheduler_current();
+
+            /* Agent socket restriction: default-deny.
+             * An agent process (p->agent_id > 0) calling socket(AF_INET, ...)
+             * gets -EACCES unless it holds CAP_NET_RAW_INET (strictly audited).
+             */
+            if (domain == AF_INET && me && me->agent_id > 0) {
+                agent_t* ag = agent_get_by_id(me->agent_id);
+                if (!ag || !(ag->caps.mask & CAP_NET_RAW_INET)) {
+                    agent_audit_log(me->agent_id, AUDIT_EVENT_NET_DENIED, "socket_af_inet_denied");
+                    regs->eax = (uint32_t) -EACCES;
+                    break;
+                }
+            }
+
             int slot = -1;
             for (int i = 0; i < MAX_FDS; i++) {
                 if (!me->fds[i]) { slot = i; break; }
@@ -2446,9 +2464,16 @@ static void syscall_handler(struct registers* regs) {
             const void* buf = (const void*) regs->ecx;
             uint32_t len = regs->edx;
             int flags = (int) regs->esi;
+            const struct sockaddr* dest_addr = (const struct sockaddr*) regs->edi;
+            uint32_t addrlen = (uint32_t) regs->ebp;
 
             int err = validate_user_buffer(buf, len, 0);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            if (dest_addr && addrlen > 0) {
+                err = validate_user_buffer(dest_addr, addrlen, 0);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+            }
 
             process_t* me = scheduler_current();
             if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
@@ -2462,7 +2487,7 @@ static void syscall_handler(struct registers* regs) {
             }
             if (me) me->current_op_flags = of->flags;
 
-            int n = socket_send((socket_t*) of->sock, buf, len, flags);
+            int n = socket_sendto((socket_t*) of->sock, buf, len, flags, dest_addr, addrlen);
             regs->eax = (uint32_t) n;
             break;
         }
@@ -2472,9 +2497,20 @@ static void syscall_handler(struct registers* regs) {
             void* buf = (void*) regs->ecx;
             uint32_t len = regs->edx;
             int flags = (int) regs->esi;
+            struct sockaddr* src_addr = (struct sockaddr*) regs->edi;
+            uint32_t* u_addrlen = (uint32_t*) regs->ebp;
 
             int err = validate_user_buffer(buf, len, 1);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            uint32_t addrlen = 0;
+            if (src_addr && u_addrlen) {
+                err = validate_user_buffer(u_addrlen, sizeof(uint32_t), 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+                addrlen = *u_addrlen;
+                err = validate_user_buffer(src_addr, addrlen, 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+            }
 
             process_t* me = scheduler_current();
             if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
@@ -2488,14 +2524,65 @@ static void syscall_handler(struct registers* regs) {
             }
             if (me) me->current_op_flags = of->flags;
 
-            int n = socket_recv((socket_t*) of->sock, buf, len, flags);
+            int n = socket_recvfrom((socket_t*) of->sock, buf, len, flags, src_addr, u_addrlen ? &addrlen : NULL);
+            if (n >= 0 && u_addrlen) {
+                *u_addrlen = addrlen;
+            }
             regs->eax = (uint32_t) n;
             break;
         }
 
-        case SYS_SETSOCKOPT:
+        case SYS_SETSOCKOPT: {
+            int fd = (int) regs->ebx;
+            int level = (int) regs->ecx;
+            int optname = (int) regs->edx;
+            const void* optval = (const void*) regs->esi;
+            uint32_t optlen = (uint32_t) regs->edi;
+
+            int err = validate_user_buffer(optval, optlen, 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_setsockopt((socket_t*) of->sock, level, optname, optval, optlen);
+            regs->eax = (uint32_t) ret;
+            break;
+        }
+
         case SYS_GETSOCKOPT: {
-            regs->eax = 0;
+            int fd = (int) regs->ebx;
+            int level = (int) regs->ecx;
+            int optname = (int) regs->edx;
+            void* optval = (void*) regs->esi;
+            uint32_t* u_optlen = (uint32_t*) regs->edi;
+
+            int err = validate_user_buffer(u_optlen, sizeof(uint32_t), 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            err = validate_user_buffer(optval, *u_optlen, 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
+                regs->eax = (uint32_t) -ENOTSOCK;
+                break;
+            }
+
+            int ret = socket_getsockopt((socket_t*) of->sock, level, optname, optval, u_optlen);
+            regs->eax = (uint32_t) ret;
             break;
         }
 
