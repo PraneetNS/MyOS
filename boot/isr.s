@@ -1,31 +1,28 @@
 .section .text
+.code64
 
-/* Macro for exceptions that DON'T push an error code -- we push a dummy 0
-   so every stack frame has the same shape regardless of vector. */
+/* Macro for exceptions that DON'T push an error code (dummy 0 pushed) */
 .macro ISR_NOERRCODE num
 .global isr\num
 isr\num:
-    cli
-    push $0
-    push $\num
+    pushq $0                /* dummy error code */
+    pushq $\num             /* interrupt vector number */
     jmp isr_common_stub
 .endm
 
-/* Macro for exceptions that DO push an error code automatically (8, 10-14) */
+/* Macro for exceptions that DO push an error code automatically */
 .macro ISR_ERRCODE num
 .global isr\num
 isr\num:
-    cli
-    push $\num
+    pushq $\num             /* interrupt vector number */
     jmp isr_common_stub
 .endm
 
 .macro IRQ num, int_no
 .global irq\num
 irq\num:
-    cli
-    push $0
-    push $\int_no
+    pushq $0                /* dummy error code */
+    pushq $\int_no          /* IRQ vector number */
     jmp irq_common_stub
 .endm
 
@@ -46,7 +43,7 @@ ISR_ERRCODE   13
 ISR_ERRCODE   14
 ISR_NOERRCODE 15
 ISR_NOERRCODE 16
-ISR_NOERRCODE 17
+ISR_ERRCODE   17
 ISR_NOERRCODE 18
 ISR_NOERRCODE 19
 ISR_NOERRCODE 20
@@ -59,19 +56,20 @@ ISR_NOERRCODE 26
 ISR_NOERRCODE 27
 ISR_NOERRCODE 28
 ISR_NOERRCODE 29
-ISR_NOERRCODE 30
+ISR_ERRCODE   30
 ISR_NOERRCODE 31
 
-IRQ 0,  32
-IRQ 1,  33
-IRQ 2,  34
-IRQ 3,  35
-IRQ 4,  36
-IRQ 5,  37
-IRQ 6,  38
-IRQ 7,  39
-IRQ 8,  40
-IRQ 9,  41
+/* IRQs 0..15 mapped to vectors 32..47 */
+IRQ 0, 32
+IRQ 1, 33
+IRQ 2, 34
+IRQ 3, 35
+IRQ 4, 36
+IRQ 5, 37
+IRQ 6, 38
+IRQ 7, 39
+IRQ 8, 40
+IRQ 9, 41
 IRQ 10, 42
 IRQ 11, 43
 IRQ 12, 44
@@ -79,68 +77,127 @@ IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
 
-/* Syscall gate: vector 128 (0x80), deliberately outside the ISR_NOERRCODE
-   macro block above since it's not part of the sequential 0-31 range. */
+/* System Call Gate (int $0x80) */
 .global isr128
 isr128:
-    cli
-    push $0
-    push $128
+    pushq $0
+    pushq $128
     jmp isr_common_stub
 
 .extern isr_handler
 .extern irq_handler
 
 isr_common_stub:
-    pusha             /* save eax, ecx, edx, ebx, esp, ebp, esi, edi */
+    /* Push all general purpose registers to match struct registers */
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rdi
+    pushq %rsi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
 
-    mov %ds, %ax
-    push %eax         /* save data segment */
+    /* Push data segment */
+    movq %ds, %rax
+    pushq %rax
 
-    mov $0x10, %ax    /* load kernel data segment */
-    mov %ax, %ds
-    mov %ax, %es
-    mov %ax, %fs
-    mov %ax, %gs
+    /* Pass pointer to struct registers as 1st argument (%rdi) */
+    movq %rsp, %rdi
 
-    push %esp
+    /* Ensure 16-byte stack alignment before calling C */
+    movq %rsp, %rbp
+    andq $-16, %rsp
+
+    cld
     call isr_handler
-    add $4, %esp
 
-    pop %eax          /* restore original data segment */
-    mov %ax, %ds
-    mov %ax, %es
-    mov %ax, %fs
-    mov %ax, %gs
+    movq %rbp, %rsp
 
-    popa
-    add $8, %esp      /* clean up pushed error code + int number */
-    sti
-    iret
+    /* Pop data segment */
+    popq %rax
+    movq %rax, %ds
+    movq %rax, %es
+
+    /* Pop general purpose registers */
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rsi
+    popq %rdi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    /* Pop int_no and err_code */
+    addq $16, %rsp
+
+    iretq
 
 irq_common_stub:
-    pusha
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rdi
+    pushq %rsi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
 
-    mov %ds, %ax
-    push %eax
+    movq %ds, %rax
+    pushq %rax
 
-    mov $0x10, %ax
-    mov %ax, %ds
-    mov %ax, %es
-    mov %ax, %fs
-    mov %ax, %gs
+    movq %rsp, %rdi
 
-    push %esp
+    movq %rsp, %rbp
+    andq $-16, %rsp
+
+    cld
     call irq_handler
-    add $4, %esp
 
-    pop %eax
-    mov %ax, %ds
-    mov %ax, %es
-    mov %ax, %fs
-    mov %ax, %gs
+    movq %rbp, %rsp
 
-    popa
-    add $8, %esp
-    sti
-    iret
+    popq %rax
+    movq %rax, %ds
+    movq %rax, %es
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rsi
+    popq %rdi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    addq $16, %rsp
+
+    iretq

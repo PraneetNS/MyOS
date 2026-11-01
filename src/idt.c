@@ -1,29 +1,35 @@
 #include "idt.h"
 #include "io.h"
 #include "vga.h"
+#include "serial.h"
+#include "scheduler.h"
+#include "signal.h"
 
-struct idt_entry {
-    uint16_t base_low;
-    uint16_t sel;
-    uint8_t  always0;
-    uint8_t  flags;
-    uint16_t base_high;
+/* 16-byte IDT Gate Descriptor on x86-64 */
+struct idt_entry64 {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t  ist;          /* Bits 0..2: IST stack index, Bits 3..7: 0 */
+    uint8_t  type_attr;    /* P, DPL, Gate Type */
+    uint16_t offset_mid;
+    uint32_t offset_high;
+    uint32_t zero;
 } __attribute__((packed));
 
-struct idt_ptr {
+struct idt_ptr64 {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 } __attribute__((packed));
 
 #define IDT_ENTRIES 256
-static struct idt_entry idt[IDT_ENTRIES];
-static struct idt_ptr   idt_pointer;
+static struct idt_entry64 idt[IDT_ENTRIES];
+static struct idt_ptr64   idt_pointer;
 
 static isr_handler_t interrupt_handlers[IDT_ENTRIES];
 
-extern void idt_flush(uint32_t idt_ptr_addr);
+extern void idt_flush(uint64_t idt_ptr_addr);
 
-/* Declared in isr.s -- one label per CPU exception (0-31) and IRQ (32-47) */
+/* Declared in isr.s */
 extern void isr0(void);  extern void isr1(void);  extern void isr2(void);
 extern void isr3(void);  extern void isr4(void);  extern void isr5(void);
 extern void isr6(void);  extern void isr7(void);  extern void isr8(void);
@@ -43,67 +49,76 @@ extern void irq9(void);  extern void irq10(void); extern void irq11(void);
 extern void irq12(void); extern void irq13(void); extern void irq14(void);
 extern void irq15(void);
 
-void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
-    idt[num].base_low  = base & 0xFFFF;
-    idt[num].base_high = (base >> 16) & 0xFFFF;
-    idt[num].sel       = sel;
-    idt[num].always0   = 0;
-    idt[num].flags     = flags;
+extern void isr128(void);
+
+void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags) {
+    idt[num].offset_low  = (uint16_t)(base & 0xFFFF);
+    idt[num].selector    = sel;
+    idt[num].ist         = 0;
+    if (num == 8)  idt[num].ist = 1; /* Double fault uses IST1 */
+    if (num == 2)  idt[num].ist = 2; /* NMI uses IST2 */
+    if (num == 18) idt[num].ist = 3; /* Machine check uses IST3 */
+
+    idt[num].type_attr   = flags;
+    idt[num].offset_mid  = (uint16_t)((base >> 16) & 0xFFFF);
+    idt[num].offset_high = (uint32_t)((base >> 32) & 0xFFFFFFFF);
+    idt[num].zero        = 0;
 }
 
 void register_interrupt_handler(uint8_t n, isr_handler_t handler) {
     interrupt_handlers[n] = handler;
 }
 
-/* Remap the 8259 PIC so hardware IRQs 0-15 land at vectors 32-47
-   instead of the default 0-15, which collide with CPU exceptions. */
 static void pic_remap(void) {
-    outb(0x20, 0x11); outb(0xA0, 0x11);  /* start init sequence */
-    outb(0x21, 0x20);                     /* master PIC vector offset: 32 */
-    outb(0xA1, 0x28);                     /* slave PIC vector offset: 40 */
-    outb(0x21, 0x04);                     /* tell master about slave at IRQ2 */
-    outb(0xA1, 0x02);                     /* tell slave its cascade identity */
-    outb(0x21, 0x01); outb(0xA1, 0x01);   /* 8086 mode */
-    outb(0x21, 0x0);  outb(0xA1, 0x0);    /* unmask all IRQs */
+    outb(0x20, 0x11); outb(0xA0, 0x11);
+    outb(0x21, 0x20);
+    outb(0xA1, 0x28);
+    outb(0x21, 0x04);
+    outb(0xA1, 0x02);
+    outb(0x21, 0x01); outb(0xA1, 0x01);
+    outb(0x21, 0x0);  outb(0xA1, 0x0);
 }
 
 void idt_install(void) {
     idt_pointer.limit = sizeof(idt) - 1;
-    idt_pointer.base  = (uint32_t) &idt;
+    idt_pointer.base  = (uint64_t) &idt;
 
     for (int i = 0; i < IDT_ENTRIES; i++)
         interrupt_handlers[i] = 0;
 
     pic_remap();
 
-    /* 0x08 = kernel code selector (from our GDT), 0x8E = present, ring 0, 32-bit interrupt gate */
-    idt_set_gate(0, (uint32_t)isr0, 0x08, 0x8E);   idt_set_gate(1, (uint32_t)isr1, 0x08, 0x8E);
-    idt_set_gate(2, (uint32_t)isr2, 0x08, 0x8E);   idt_set_gate(3, (uint32_t)isr3, 0x08, 0x8E);
-    idt_set_gate(4, (uint32_t)isr4, 0x08, 0x8E);   idt_set_gate(5, (uint32_t)isr5, 0x08, 0x8E);
-    idt_set_gate(6, (uint32_t)isr6, 0x08, 0x8E);   idt_set_gate(7, (uint32_t)isr7, 0x08, 0x8E);
-    idt_set_gate(8, (uint32_t)isr8, 0x08, 0x8E);   idt_set_gate(9, (uint32_t)isr9, 0x08, 0x8E);
-    idt_set_gate(10, (uint32_t)isr10, 0x08, 0x8E); idt_set_gate(11, (uint32_t)isr11, 0x08, 0x8E);
-    idt_set_gate(12, (uint32_t)isr12, 0x08, 0x8E); idt_set_gate(13, (uint32_t)isr13, 0x08, 0x8E);
-    idt_set_gate(14, (uint32_t)isr14, 0x08, 0x8E); idt_set_gate(15, (uint32_t)isr15, 0x08, 0x8E);
-    idt_set_gate(16, (uint32_t)isr16, 0x08, 0x8E); idt_set_gate(17, (uint32_t)isr17, 0x08, 0x8E);
-    idt_set_gate(18, (uint32_t)isr18, 0x08, 0x8E); idt_set_gate(19, (uint32_t)isr19, 0x08, 0x8E);
-    idt_set_gate(20, (uint32_t)isr20, 0x08, 0x8E); idt_set_gate(21, (uint32_t)isr21, 0x08, 0x8E);
-    idt_set_gate(22, (uint32_t)isr22, 0x08, 0x8E); idt_set_gate(23, (uint32_t)isr23, 0x08, 0x8E);
-    idt_set_gate(24, (uint32_t)isr24, 0x08, 0x8E); idt_set_gate(25, (uint32_t)isr25, 0x08, 0x8E);
-    idt_set_gate(26, (uint32_t)isr26, 0x08, 0x8E); idt_set_gate(27, (uint32_t)isr27, 0x08, 0x8E);
-    idt_set_gate(28, (uint32_t)isr28, 0x08, 0x8E); idt_set_gate(29, (uint32_t)isr29, 0x08, 0x8E);
-    idt_set_gate(30, (uint32_t)isr30, 0x08, 0x8E); idt_set_gate(31, (uint32_t)isr31, 0x08, 0x8E);
+    /* 0x08 = 64-bit kernel code selector, 0x8E = 64-bit interrupt gate (DPL 0, P=1) */
+    idt_set_gate(0,  (uint64_t)isr0,  0x08, 0x8E); idt_set_gate(1,  (uint64_t)isr1,  0x08, 0x8E);
+    idt_set_gate(2,  (uint64_t)isr2,  0x08, 0x8E); idt_set_gate(3,  (uint64_t)isr3,  0x08, 0x8E);
+    idt_set_gate(4,  (uint64_t)isr4,  0x08, 0x8E); idt_set_gate(5,  (uint64_t)isr5,  0x08, 0x8E);
+    idt_set_gate(6,  (uint64_t)isr6,  0x08, 0x8E); idt_set_gate(7,  (uint64_t)isr7,  0x08, 0x8E);
+    idt_set_gate(8,  (uint64_t)isr8,  0x08, 0x8E); idt_set_gate(9,  (uint64_t)isr9,  0x08, 0x8E);
+    idt_set_gate(10, (uint64_t)isr10, 0x08, 0x8E); idt_set_gate(11, (uint64_t)isr11, 0x08, 0x8E);
+    idt_set_gate(12, (uint64_t)isr12, 0x08, 0x8E); idt_set_gate(13, (uint64_t)isr13, 0x08, 0x8E);
+    idt_set_gate(14, (uint64_t)isr14, 0x08, 0x8E); idt_set_gate(15, (uint64_t)isr15, 0x08, 0x8E);
+    idt_set_gate(16, (uint64_t)isr16, 0x08, 0x8E); idt_set_gate(17, (uint64_t)isr17, 0x08, 0x8E);
+    idt_set_gate(18, (uint64_t)isr18, 0x08, 0x8E); idt_set_gate(19, (uint64_t)isr19, 0x08, 0x8E);
+    idt_set_gate(20, (uint64_t)isr20, 0x08, 0x8E); idt_set_gate(21, (uint64_t)isr21, 0x08, 0x8E);
+    idt_set_gate(22, (uint64_t)isr22, 0x08, 0x8E); idt_set_gate(23, (uint64_t)isr23, 0x08, 0x8E);
+    idt_set_gate(24, (uint64_t)isr24, 0x08, 0x8E); idt_set_gate(25, (uint64_t)isr25, 0x08, 0x8E);
+    idt_set_gate(26, (uint64_t)isr26, 0x08, 0x8E); idt_set_gate(27, (uint64_t)isr27, 0x08, 0x8E);
+    idt_set_gate(28, (uint64_t)isr28, 0x08, 0x8E); idt_set_gate(29, (uint64_t)isr29, 0x08, 0x8E);
+    idt_set_gate(30, (uint64_t)isr30, 0x08, 0x8E); idt_set_gate(31, (uint64_t)isr31, 0x08, 0x8E);
 
-    idt_set_gate(32, (uint32_t)irq0, 0x08, 0x8E);  idt_set_gate(33, (uint32_t)irq1, 0x08, 0x8E);
-    idt_set_gate(34, (uint32_t)irq2, 0x08, 0x8E);  idt_set_gate(35, (uint32_t)irq3, 0x08, 0x8E);
-    idt_set_gate(36, (uint32_t)irq4, 0x08, 0x8E);  idt_set_gate(37, (uint32_t)irq5, 0x08, 0x8E);
-    idt_set_gate(38, (uint32_t)irq6, 0x08, 0x8E);  idt_set_gate(39, (uint32_t)irq7, 0x08, 0x8E);
-    idt_set_gate(40, (uint32_t)irq8, 0x08, 0x8E);  idt_set_gate(41, (uint32_t)irq9, 0x08, 0x8E);
-    idt_set_gate(42, (uint32_t)irq10, 0x08, 0x8E); idt_set_gate(43, (uint32_t)irq11, 0x08, 0x8E);
-    idt_set_gate(44, (uint32_t)irq12, 0x08, 0x8E); idt_set_gate(45, (uint32_t)irq13, 0x08, 0x8E);
-    idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E); idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
+    idt_set_gate(32, (uint64_t)irq0,  0x08, 0x8E); idt_set_gate(33, (uint64_t)irq1,  0x08, 0x8E);
+    idt_set_gate(34, (uint64_t)irq2,  0x08, 0x8E); idt_set_gate(35, (uint64_t)irq3,  0x08, 0x8E);
+    idt_set_gate(36, (uint64_t)irq4,  0x08, 0x8E); idt_set_gate(37, (uint64_t)irq5,  0x08, 0x8E);
+    idt_set_gate(38, (uint64_t)irq6,  0x08, 0x8E); idt_set_gate(39, (uint64_t)irq7,  0x08, 0x8E);
+    idt_set_gate(40, (uint64_t)irq8,  0x08, 0x8E); idt_set_gate(41, (uint64_t)irq9,  0x08, 0x8E);
+    idt_set_gate(42, (uint64_t)irq10, 0x08, 0x8E); idt_set_gate(43, (uint64_t)irq11, 0x08, 0x8E);
+    idt_set_gate(44, (uint64_t)irq12, 0x08, 0x8E); idt_set_gate(45, (uint64_t)irq13, 0x08, 0x8E);
+    idt_set_gate(46, (uint64_t)irq14, 0x08, 0x8E); idt_set_gate(47, (uint64_t)irq15, 0x08, 0x8E);
 
-    idt_flush((uint32_t) &idt_pointer);
+    /* System call gate: 0xEE = DPL 3 (user accessible) */
+    idt_set_gate(128, (uint64_t)isr128, 0x08, 0xEE);
+
+    idt_flush((uint64_t) &idt_pointer);
 }
 
 static const char* exception_messages[32] = {
@@ -117,11 +132,6 @@ static const char* exception_messages[32] = {
     "Reserved", "Reserved", "Reserved", "Reserved",
 };
 
-#include "serial.h"
-#include "scheduler.h"
-#include "signal.h"
-
-/* Called from isr_common_stub in isr.s for CPU exceptions (vectors 0-31) */
 void isr_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no] != 0) {
         interrupt_handlers[regs->int_no](regs);
@@ -132,11 +142,11 @@ void isr_handler(struct registers* regs) {
     int from_usermode = (regs->cs & 0x3) == 3;
     if (from_usermode) {
         process_t* proc = scheduler_current();
-        serial_printf("[fault] PID %d (%s) exception %d (%s) at eip=0x%08x err=0x%x\n",
+        serial_printf("[fault] PID %d (%s) exception %lu (%s) at rip=0x%lx rsp=0x%lx rbp=0x%lx err=0x%lx\n",
                       proc ? proc->pid : 0, proc ? proc->name : "user",
-                      regs->int_no,
+                      (unsigned long)regs->int_no,
                       (regs->int_no < 32) ? exception_messages[regs->int_no] : "unknown",
-                      regs->eip, regs->err_code);
+                      (unsigned long)regs->rip, (unsigned long)regs->rsp, (unsigned long)regs->rbp, (unsigned long)regs->err_code);
 
         int sig = SIGSEGV;
         if (regs->int_no == 0 || regs->int_no == 16 || regs->int_no == 19) sig = SIGFPE;
@@ -150,19 +160,20 @@ void isr_handler(struct registers* regs) {
         return;
     }
 
-    kprintf("\n*** KERNEL PANIC: %s (vec=%u, err=0x%x) ***\nSystem halted.\n",
+    kprintf("\n*** KERNEL PANIC: %s (vec=%lu, err=0x%lx, rip=0x%lx) ***\nSystem halted.\n",
             (regs->int_no < 32) ? exception_messages[regs->int_no] : "Unknown",
-            regs->int_no, regs->err_code);
+            (unsigned long)regs->int_no, (unsigned long)regs->err_code, (unsigned long)regs->rip);
+    serial_printf("*** KERNEL PANIC: %s (vec=%lu, err=0x%lx, rip=0x%lx) ***\nSystem halted.\n",
+                  (regs->int_no < 32) ? exception_messages[regs->int_no] : "Unknown",
+                  (unsigned long)regs->int_no, (unsigned long)regs->err_code, (unsigned long)regs->rip);
     asm volatile ("cli");
     for (;;) asm volatile ("hlt");
 }
 
-/* Called from irq_common_stub in isr.s for hardware IRQs (vectors 32-47) */
 void irq_handler(struct registers* regs) {
-    /* Slave PIC must also be acknowledged for IRQs 8-15 */
     if (regs->int_no >= 40)
         outb(0xA0, 0x20);
-    outb(0x20, 0x20);  /* End-of-interrupt to master PIC */
+    outb(0x20, 0x20);
 
     if (interrupt_handlers[regs->int_no] != 0)
         interrupt_handlers[regs->int_no](regs);
