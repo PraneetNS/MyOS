@@ -186,15 +186,27 @@ static bool is_domain_allowed(const caller_t* c, const char* host) {
 static bool check_ssrf_ipv4(uint32_t ip, bool allow_private) {
     uint8_t b1 = (ip >> 24) & 0xFF;
     uint8_t b2 = (ip >> 16) & 0xFF;
+    uint8_t b3 = (ip >> 8) & 0xFF;
 
     /* Loopback 127.0.0.0/8 */
     if (b1 == 127) return false;
 
+    /* Zero network 0.0.0.0/8 */
+    if (b1 == 0) return false;
+
     /* Link-local 169.254.0.0/16 */
     if (b1 == 169 && b2 == 254) return false;
 
-    /* Broadcast / zero */
-    if (b1 == 0 || b1 >= 224) return false;
+    /* Carrier-grade NAT 100.64.0.0/10 (100.64.0.0 - 100.127.255.255) */
+    if (b1 == 100 && (b2 >= 64 && b2 <= 127)) return false;
+
+    /* Broadcast / Multicast / Class E 224.0.0.0/4 */
+    if (b1 >= 224) return false;
+
+    /* QEMU slirp gateway / DNS (10.0.2.x) */
+    if (b1 == 10 && b2 == 0 && b3 == 2) {
+        if (!allow_private) return false;
+    }
 
     /* Private RFC 1918 */
     bool is_private = false;
@@ -216,10 +228,28 @@ typedef struct {
     char path[256];
 } parsed_url_t;
 
-static bool parse_url(const char* url, parsed_url_t* out) {
+static bool parse_url_strict(const char* url, parsed_url_t* out, bool allow_ip_literal, char* err_buf, size_t err_cap) {
     memset(out, 0, sizeof(*out));
-    const char* p = url;
+    if (!url || url[0] == '\0') {
+        if (err_buf) snprintf(err_buf, err_cap, "empty URL");
+        return false;
+    }
 
+    /* Reject backslashes anywhere in URL */
+    if (strchr(url, '\\')) {
+        if (err_buf) snprintf(err_buf, err_cap, "invalid URL: backslashes forbidden");
+        return false;
+    }
+
+    /* Reject control characters (< 0x20 or 0x7F) */
+    for (const char* cp = url; *cp; cp++) {
+        if ((unsigned char)*cp < 0x20 || (unsigned char)*cp == 0x7F) {
+            if (err_buf) snprintf(err_buf, err_cap, "invalid URL: control characters forbidden");
+            return false;
+        }
+    }
+
+    const char* p = url;
     if (strncmp(p, "http://", 7) == 0) {
         out->is_https = false;
         out->port = 80;
@@ -229,31 +259,102 @@ static bool parse_url(const char* url, parsed_url_t* out) {
         out->port = 443;
         p += 8;
     } else {
+        if (err_buf) snprintf(err_buf, err_cap, "invalid scheme: only http:// and https:// allowed");
         return false;
     }
 
+    /* Find start of path / query */
     const char* slash = strchr(p, '/');
-    const char* colon = strchr(p, ':');
+    const char* qmark = strchr(p, '?');
+    const char* auth_end = slash;
+    if (!auth_end || (qmark && qmark < auth_end)) auth_end = qmark;
+    size_t auth_len = auth_end ? (size_t)(auth_end - p) : strlen(p);
 
-    if (colon && (!slash || colon < slash)) {
-        size_t hlen = colon - p;
-        if (hlen >= sizeof(out->host)) return false;
-        strncpy(out->host, p, hlen);
-        out->host[hlen] = '\0';
-        out->port = atoi(colon + 1);
-        if (out->port <= 0 || out->port > 65535) return false;
-    } else {
-        size_t hlen = slash ? (size_t)(slash - p) : strlen(p);
-        if (hlen >= sizeof(out->host)) return false;
-        strncpy(out->host, p, hlen);
-        out->host[hlen] = '\0';
+    if (auth_len == 0) {
+        if (err_buf) snprintf(err_buf, err_cap, "missing host in URL");
+        return false;
     }
 
-    if (slash) {
-        strncpy(out->path, slash, sizeof(out->path) - 1);
-    } else {
-        strcpy(out->path, "/");
+    /* Reject userinfo (@) and percent-encoding (%) in host/authority */
+    for (size_t i = 0; i < auth_len; i++) {
+        if (p[i] == '@') {
+            if (err_buf) snprintf(err_buf, err_cap, "invalid URL: userinfo forbidden");
+            return false;
+        }
+        if (p[i] == '%') {
+            if (err_buf) snprintf(err_buf, err_cap, "invalid URL: percent-encoding in host forbidden");
+            return false;
+        }
     }
+
+    char auth_buf[256];
+    if (auth_len >= sizeof(auth_buf)) {
+        if (err_buf) snprintf(err_buf, err_cap, "authority too long");
+        return false;
+    }
+    memcpy(auth_buf, p, auth_len);
+    auth_buf[auth_len] = '\0';
+
+    char* colon = strchr(auth_buf, ':');
+    if (colon) {
+        *colon = '\0';
+        char* port_str = colon + 1;
+        if (*port_str == '\0') {
+            if (err_buf) snprintf(err_buf, err_cap, "malformed port in URL");
+            return false;
+        }
+        for (char* cp = port_str; *cp; cp++) {
+            if (!isdigit((unsigned char)*cp)) {
+                if (err_buf) snprintf(err_buf, err_cap, "malformed port in URL");
+                return false;
+            }
+        }
+        int parsed_port = atoi(port_str);
+        if (parsed_port <= 0 || parsed_port > 65535) {
+            if (err_buf) snprintf(err_buf, err_cap, "port out of range (1-65535)");
+            return false;
+        }
+        out->port = parsed_port;
+    }
+
+    /* Normalize host: lowercase and strip trailing dots */
+    size_t host_len = strlen(auth_buf);
+    while (host_len > 0 && auth_buf[host_len - 1] == '.') {
+        auth_buf[--host_len] = '\0';
+    }
+    if (host_len == 0 || host_len >= sizeof(out->host)) {
+        if (err_buf) snprintf(err_buf, err_cap, "invalid host length");
+        return false;
+    }
+
+    bool is_ip_literal = true;
+    for (size_t i = 0; i < host_len; i++) {
+        char c = (char)tolower((unsigned char)auth_buf[i]);
+        out->host[i] = c;
+        if (!isdigit((unsigned char)c) && c != '.') {
+            is_ip_literal = false;
+        }
+        if (!isalnum((unsigned char)c) && c != '.' && c != '-') {
+            if (err_buf) snprintf(err_buf, err_cap, "invalid character '%c' in host", c);
+            return false;
+        }
+    }
+    out->host[host_len] = '\0';
+
+    if (is_ip_literal && !allow_ip_literal) {
+        if (err_buf) snprintf(err_buf, err_cap, "IP-literal host '%s' forbidden without allow_private", out->host);
+        return false;
+    }
+
+    /* Normalize path: ensure leading slash */
+    const char* path_part = slash ? slash : "/";
+    if (path_part[0] != '/') {
+        snprintf(out->path, sizeof(out->path), "/%s", path_part);
+    } else {
+        strncpy(out->path, path_part, sizeof(out->path) - 1);
+        out->path[sizeof(out->path) - 1] = '\0';
+    }
+
     return true;
 }
 
@@ -305,9 +406,10 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
         return -1;
     }
 
+    bool allow_private = (c->agent_id == 0) || principal_allows_private(c->principal);
+
     parsed_url_t purl;
-    if (!parse_url(url, &purl)) {
-        snprintf(err_buf, err_cap, "invalid URL format (must be http:// or https://)");
+    if (!parse_url_strict(url, &purl, allow_private, err_buf, err_cap)) {
         return -1;
     }
 
@@ -337,7 +439,6 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
     }
 
     uint32_t resolved_ip = ntohl(*(uint32_t*)he->h_addr_list[0]);
-    bool allow_private = (c->agent_id == 0) || principal_allows_private(c->principal);
 
     /* 4. SSRF Defense */
     if (!check_ssrf_ipv4(resolved_ip, allow_private)) {
@@ -540,6 +641,13 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
                         strncpy(full_redirect, redirect_url, sizeof(full_redirect) - 1);
                     }
 
+                    /* Disallow HTTPS -> HTTP downgrade */
+                    if (purl.is_https && strncmp(full_redirect, "http://", 7) == 0) {
+                        free(resp_buf);
+                        snprintf(err_buf, err_cap, "HTTPS to HTTP downgrade forbidden in redirect");
+                        return -1;
+                    }
+
                     free(resp_buf);
                     return execute_http(c, full_redirect, method, custom_headers, req_body,
                                         max_size, timeout_ms, redirects_left - 1,
@@ -555,6 +663,16 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
     if (body_start) {
         actual_body = (body_start[0] == '\r') ? body_start + 4 : body_start + 2;
         actual_body_len = total_read - (actual_body - resp_buf);
+    }
+
+    /* Charge agent network budget (in + out) */
+    if (c->agent_id > 0) {
+        int cret = agent_charge_net(c->agent_id, (uint32_t)(total_read + req_hdr_len + body_len));
+        if (cret < 0) {
+            snprintf(err_buf, err_cap, "quota exceeded: max_net_bytes budget reached");
+            free(resp_buf);
+            return -1;
+        }
     }
 
     /* Log traffic */
@@ -587,6 +705,8 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
 #define INET_ADDRSTRLEN 16
 #endif
 
+static int s_active_concurrency[33] = {0};
+
 /* Handler for net.http */
 static int h_net_http(const char* skill, const char* args, char* res, size_t rcap, char* eb, size_t ecap, void* u) {
     (void)skill; (void)u;
@@ -599,8 +719,18 @@ static int h_net_http(const char* skill, const char* args, char* res, size_t rca
     caller_t c;
     get_caller(&c);
 
+    /* Per-agent concurrency limit (max 4 active in-flight requests) */
+    if (c.agent_id > 0 && c.agent_id <= 32) {
+        if (s_active_concurrency[c.agent_id] >= 4) {
+            snprintf(eb, ecap, "concurrency limit exceeded: max 4 active requests");
+            return -1;
+        }
+        s_active_concurrency[c.agent_id]++;
+    }
+
     const char* url = json_obj_get_str(doc.root, "url");
     if (!url) {
+        if (c.agent_id > 0 && c.agent_id <= 32) s_active_concurrency[c.agent_id]--;
         snprintf(eb, ecap, "missing required field 'url'");
         return -1;
     }
@@ -630,8 +760,13 @@ static int h_net_http(const char* skill, const char* args, char* res, size_t rca
         }
     }
 
-    return execute_http(&c, url, method, custom_headers, body, max_size, timeout_ms,
-                        MAX_REDIRECTS, res, rcap, eb, ecap);
+    int r = execute_http(&c, url, method, custom_headers, body, max_size, timeout_ms,
+                         MAX_REDIRECTS, res, rcap, eb, ecap);
+
+    if (c.agent_id > 0 && c.agent_id <= 32) {
+        if (s_active_concurrency[c.agent_id] > 0) s_active_concurrency[c.agent_id]--;
+    }
+    return r;
 }
 
 /* Handler for net.resolve */
@@ -705,44 +840,11 @@ static int h_net_status(const char* skill, const char* args, char* res, size_t r
     return 0;
 }
 
-/* Handler for net.killswitch (human/non-agent only) */
-static int h_net_killswitch(const char* skill, const char* args, char* res, size_t rcap, char* eb, size_t ecap, void* u) {
-    (void)skill; (void)u;
-    caller_t c;
-    get_caller(&c);
-
-    if (c.agent_id != 0) {
-        log_net_audit(c.agent_id, AUDIT_EVENT_NET_DENIED, "killswitch-denied");
-        snprintf(eb, ecap, "denied: net.killswitch requires non-agent (human) caller");
-        return -1;
-    }
-
-    static json_doc_t doc;
-    bool active = true;
-    if (json_parse(&doc, args, strlen(args)) == JSON_ERR_OK && doc.root) {
-        json_obj_get_bool(doc.root, "active", &active);
-    }
-
-    int kfd = open(SYS_KILLSWITCH_PATH, O_WRONLY);
-    if (kfd >= 0) {
-        const char* val = active ? "1\n" : "0\n";
-        (void)write(kfd, val, strlen(val));
-        close(kfd);
-    }
-
-    log_net_audit(0, AUDIT_EVENT_KILLSWITCH, active ? "net-killswitch-active" : "net-killswitch-restored");
-
-    json_buf_t jb;
-    json_buf_init(&jb, res, rcap);
-    json_buf_obj_start(&jb);
-    json_buf_obj_key(&jb, "killswitch");
-    json_buf_append_bool(&jb, active);
-    json_buf_obj_end(&jb);
-    return 0;
-}
-
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
+
+    /* Register netd as privileged net daemon */
+    net_daemon_register();
 
     /* Connect to intent bus */
     int fd = -1;
@@ -762,9 +864,8 @@ int main(void) {
     intent_register_skill(fd, "net.http", "Safe HTTP/HTTPS client", sch_http, NULL, false, h_net_http, NULL);
     intent_register_skill(fd, "net.resolve", "Mediated DNS resolution", sch_resolve, NULL, false, h_net_resolve, NULL);
     intent_register_skill(fd, "net.status", "Network device status", sch_obj, NULL, false, h_net_status, NULL);
-    intent_register_skill(fd, "net.killswitch", "Sever or restore all network traffic", sch_obj, NULL, false, h_net_killswitch, NULL);
 
-    printf("netd: serving net.* gateway skills\n");
+    printf("netd: serving net.* gateway skills (killswitch protected via /proc/sys/net/killswitch)\n");
     fflush(stdout);
 
     intent_serve(fd);
