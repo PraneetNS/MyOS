@@ -74,14 +74,19 @@ static void log_net_audit(int agent_id, uint32_t event_type, const char* detail)
     audit_append(agent_id, event_type, detail);
 }
 
+static void scrub_secrets(const char* principal, char* text);
+
 static void log_net_file(const caller_t* c, const char* method, const char* url, int status, size_t bytes_in, size_t bytes_out) {
     int fd = open(NET_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
-        char buf[256];
+        char buf[512];
         int n = snprintf(buf, sizeof(buf), "[%ld] p=%s m=%s url=%s s=%d in=%u out=%u\n",
                          (long)time(NULL), c->principal, method, url, status,
                          (unsigned int)bytes_in, (unsigned int)bytes_out);
-        if (n > 0) (void)write(fd, buf, n);
+        if (n > 0) {
+            scrub_secrets(c->principal, buf);
+            (void)write(fd, buf, strlen(buf));
+        }
         close(fd);
     }
 }
@@ -358,6 +363,51 @@ static bool parse_url_strict(const char* url, parsed_url_t* out, bool allow_ip_l
     return true;
 }
 
+static void scrub_value_from_text(const char* val, char* text) {
+    if (!val || !text || strlen(val) < 4) return;
+    const char* red = "[REDACTED_SECRET]";
+    size_t vlen = strlen(val);
+    size_t rlen = strlen(red);
+    char* m = strstr(text, val);
+    while (m) {
+        size_t tail_len = strlen(m + vlen);
+        if (rlen <= vlen) {
+            memcpy(m, red, rlen);
+            memmove(m + rlen, m + vlen, tail_len + 1);
+        } else {
+            memmove(m + rlen, m + vlen, tail_len + 1);
+            memcpy(m, red, rlen);
+        }
+        m = strstr(m + rlen, val);
+    }
+}
+
+static void scrub_secrets(const char* principal, char* text) {
+    if (!principal || !text || text[0] == '\0') return;
+    char sec_path[64];
+    snprintf(sec_path, sizeof(sec_path), "%s/%s.conf", NET_SECRETS_DIR, principal);
+    FILE* fp = fopen(sec_path, "r");
+    if (!fp) return;
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        char* val = eq + 1;
+        size_t vlen = strlen(val);
+        while (vlen > 0 && (val[vlen - 1] == '\r' || val[vlen - 1] == '\n' || val[vlen - 1] == ' ')) {
+            val[--vlen] = '\0';
+        }
+        if (vlen < 4) continue;
+
+        scrub_value_from_text(val, text);
+        if (strncmp(val, "Bearer ", 7) == 0 && strlen(val + 7) >= 4) {
+            scrub_value_from_text(val + 7, text);
+        }
+    }
+    fclose(fp);
+}
+
 /* Secret injection: replace placeholders from /etc/net-secrets.d/<principal>.conf */
 static void apply_secrets(const char* principal, char* text, size_t max_len) {
     char sec_path[64];
@@ -565,8 +615,19 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
 
     size_t total_read = 0;
     bool truncated = false;
+    time_t start_time = time(NULL);
+    int max_elapsed = (timeout_ms > 0) ? ((timeout_ms + 999) / 1000) : 5;
+    if (max_elapsed < 2) max_elapsed = 2;
 
     while (total_read < resp_cap - 1) {
+        if (time(NULL) - start_time > max_elapsed) {
+            if (tls) { tls_client_close(tls); tls_client_free(tls); }
+            close(sock);
+            free(resp_buf);
+            snprintf(err_buf, err_cap, "request timed out: slow loris deadline exceeded");
+            return -1;
+        }
+
         ssize_t n = 0;
         if (tls) {
             n = tls_client_read(tls, resp_buf + total_read, resp_cap - 1 - total_read);
@@ -580,6 +641,15 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
         /* Early finish if full Content-Length received */
         char* hdr_end = strstr(resp_buf, "\r\n\r\n");
         if (!hdr_end) hdr_end = strstr(resp_buf, "\n\n");
+
+        if (!hdr_end && total_read >= 16384) {
+            if (tls) { tls_client_close(tls); tls_client_free(tls); }
+            close(sock);
+            free(resp_buf);
+            snprintf(err_buf, err_cap, "header limit exceeded: never-ending headers");
+            return -1;
+        }
+
         if (hdr_end) {
             char* cl = strstr(resp_buf, "Content-Length: ");
             if (!cl) cl = strstr(resp_buf, "content-length: ");
@@ -599,6 +669,10 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
         }
     }
     resp_buf[total_read] = '\0';
+
+    /* Scrub secrets from received response headers & body */
+    scrub_secrets(c->principal, resp_buf);
+    total_read = strlen(resp_buf);
 
     if (tls) {
         tls_client_close(tls);
@@ -643,6 +717,7 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
 
                     /* Disallow HTTPS -> HTTP downgrade */
                     if (purl.is_https && strncmp(full_redirect, "http://", 7) == 0) {
+                        log_net_audit(c->agent_id, AUDIT_EVENT_NET_DENIED, "redirect-downgrade-denied");
                         free(resp_buf);
                         snprintf(err_buf, err_cap, "HTTPS to HTTP downgrade forbidden in redirect");
                         return -1;
@@ -705,7 +780,14 @@ static int execute_http(const caller_t* c, const char* url, const char* method,
 #define INET_ADDRSTRLEN 16
 #endif
 
+typedef struct {
+    time_t last_sec;
+    int count;
+} rate_limit_t;
+
 static int s_active_concurrency[33] = {0};
+static rate_limit_t s_rate_limit[33] = {0};
+#define MAX_REQ_PER_SEC 5
 
 /* Handler for net.http */
 static int h_net_http(const char* skill, const char* args, char* res, size_t rcap, char* eb, size_t ecap, void* u) {
@@ -718,6 +800,22 @@ static int h_net_http(const char* skill, const char* args, char* res, size_t rca
 
     caller_t c;
     get_caller(&c);
+
+    /* Per-agent rate limit (max 5 requests per second) */
+    if (c.agent_id > 0 && c.agent_id <= 32) {
+        time_t now = time(NULL);
+        if (s_rate_limit[c.agent_id].last_sec == now) {
+            if (s_rate_limit[c.agent_id].count >= MAX_REQ_PER_SEC) {
+                log_net_audit(c.agent_id, AUDIT_EVENT_NET_DENIED, "rate-limit-exceeded");
+                snprintf(eb, ecap, "rate limit exceeded: max %d req/s", MAX_REQ_PER_SEC);
+                return -1;
+            }
+            s_rate_limit[c.agent_id].count++;
+        } else {
+            s_rate_limit[c.agent_id].last_sec = now;
+            s_rate_limit[c.agent_id].count = 1;
+        }
+    }
 
     /* Per-agent concurrency limit (max 4 active in-flight requests) */
     if (c.agent_id > 0 && c.agent_id <= 32) {
