@@ -2,27 +2,33 @@
 #include "multiboot2.h"
 #include "vga.h"
 #include "serial.h"
+#include "paging.h"
 
-#define MAX_FRAMES (1024 * 1024 * 1024 / FRAME_SIZE)  /* bitmap covers up to 1GB of RAM (262,144 frames) */
+/* Support up to 16GB of physical RAM in x86-64 long mode:
+   16GB / 4096 = 4,194,304 frames.
+   Bitmap size: 4,194,304 / 8 = 524,288 bytes (512 KB).
+*/
+#define MAX_SUPPORTED_RAM_BYTES (16ULL * 1024ULL * 1024ULL * 1024ULL)
+#define MAX_FRAMES (MAX_SUPPORTED_RAM_BYTES / FRAME_SIZE)
 
 static uint8_t frame_bitmap[MAX_FRAMES / 8];
 static uint16_t* frame_refcount = 0;
-static uint32_t highest_frame = 0;
-static uint32_t free_frames = 0;
-static uint32_t total_usable_frames = 0;
+static uint64_t highest_frame = 0;
+static uint64_t free_frames = 0;
+static uint64_t total_usable_frames = 0;
 
-extern uint32_t kernel_end; /* from linker.ld */
+extern char kernel_end; /* from linker.ld */
 
-static inline void bitmap_set(uint32_t frame)   { frame_bitmap[frame / 8] |=  (1 << (frame % 8)); }
-static inline void bitmap_clear(uint32_t frame) { frame_bitmap[frame / 8] &= ~(1 << (frame % 8)); }
-static inline int  bitmap_test(uint32_t frame)  { return frame_bitmap[frame / 8] & (1 << (frame % 8)); }
+static inline void bitmap_set(uint64_t frame)   { frame_bitmap[frame / 8] |=  (1 << (frame % 8)); }
+static inline void bitmap_clear(uint64_t frame) { frame_bitmap[frame / 8] &= ~(1 << (frame % 8)); }
+static inline int  bitmap_test(uint64_t frame)  { return frame_bitmap[frame / 8] & (1 << (frame % 8)); }
 
 static void mark_region_free(uint64_t base, uint64_t len) {
-    uint32_t start_frame = (uint32_t)(base / FRAME_SIZE);
-    uint32_t frame_count = (uint32_t)(len / FRAME_SIZE);
+    uint64_t start_frame = base / FRAME_SIZE;
+    uint64_t frame_count = len / FRAME_SIZE;
 
-    for (uint32_t i = 0; i < frame_count; i++) {
-        uint32_t frame = start_frame + i;
+    for (uint64_t i = 0; i < frame_count; i++) {
+        uint64_t frame = start_frame + i;
         if (frame >= MAX_FRAMES) break;
         if (bitmap_test(frame)) {
             bitmap_clear(frame);
@@ -34,9 +40,9 @@ static void mark_region_free(uint64_t base, uint64_t len) {
     }
 }
 
-static void mark_region_used(uint32_t start_frame, uint32_t frame_count) {
-    for (uint32_t i = 0; i < frame_count; i++) {
-        uint32_t frame = start_frame + i;
+static void mark_region_used(uint64_t start_frame, uint64_t frame_count) {
+    for (uint64_t i = 0; i < frame_count; i++) {
+        uint64_t frame = start_frame + i;
         if (frame >= MAX_FRAMES) break;
         if (!bitmap_test(frame)) {
             bitmap_set(frame);
@@ -49,20 +55,18 @@ static void mark_region_used(uint32_t start_frame, uint32_t frame_count) {
 }
 
 static void mark_region_used_bytes(uint64_t base, uint64_t len) {
-    uint32_t start_frame = (uint32_t)(base / FRAME_SIZE);
-    uint32_t end_frame = (uint32_t)((base + len + FRAME_SIZE - 1) / FRAME_SIZE);
+    uint64_t start_frame = base / FRAME_SIZE;
+    uint64_t end_frame = (base + len + FRAME_SIZE - 1) / FRAME_SIZE;
     if (end_frame > start_frame) {
         mark_region_used(start_frame, end_frame - start_frame);
     }
 }
 
-#include "paging.h"
-
-void pmm_init(uint32_t mb_info_addr) {
+void pmm_init(uint64_t mb_info_addr) {
     frame_refcount = (void*)0;
 
     /* Start with everything marked used in bitmap */
-    for (uint32_t i = 0; i < MAX_FRAMES / 8; i++)
+    for (uint64_t i = 0; i < MAX_FRAMES / 8; i++)
         frame_bitmap[i] = 0xFF;
 
     free_frames = 0;
@@ -70,13 +74,12 @@ void pmm_init(uint32_t mb_info_addr) {
     highest_frame = 0;
 
     /* Parse Multiboot2 info: u32 total_size, u32 reserved, then stream of tags */
-    uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
-    uint32_t total_size = mb_info_addr ? *(uint32_t*) ptr : 0;
+    uint8_t* ptr = mb_info_addr ? (uint8_t*) P2V(mb_info_addr) : NULL;
+    uint32_t total_size = ptr ? *(uint32_t*) ptr : 0;
     uint8_t* end = ptr + total_size;
     uint8_t* tag_ptr = ptr + 8;
 
-    uint32_t max_mod_end = 0;
-    int capped_logged = 0;
+    uint64_t max_mod_end = 0;
     while (mb_info_addr && tag_ptr < end) {
         struct mb2_tag* tag = (struct mb2_tag*) tag_ptr;
         if (tag->type == MB2_TAG_TYPE_END) break;
@@ -91,15 +94,9 @@ void pmm_init(uint32_t mb_info_addr) {
                 if (e->type == MB2_MEMORY_AVAILABLE) {
                     uint64_t addr = e->addr;
                     uint64_t len = e->len;
-                    if (addr + len > DIRECT_MAP_LIMIT) {
-                        if (!capped_logged) {
-                            kprintf("[pmm] RAM exceeds 768MB direct map limit; using first 768MB\n");
-                            capped_logged = 1;
-                        }
-                        if (addr >= DIRECT_MAP_LIMIT) {
-                            continue;
-                        }
-                        len = DIRECT_MAP_LIMIT - addr;
+                    if (addr + len > MAX_SUPPORTED_RAM_BYTES) {
+                        if (addr >= MAX_SUPPORTED_RAM_BYTES) continue;
+                        len = MAX_SUPPORTED_RAM_BYTES - addr;
                     }
                     mark_region_free(addr, len);
                 }
@@ -114,44 +111,41 @@ void pmm_init(uint32_t mb_info_addr) {
         tag_ptr += (tag->size + 7) & ~7u;
     }
 
-    /* Now find a safe early memory location for frame_refcount above kernel_end,
-       multiboot info, and any modules */
-    uint32_t safe_start = (uint32_t)&kernel_end;
+    /* Place frame_refcount dynamically in early physical RAM above the kernel image */
+    uint64_t kernel_end_phys = KERN_V2P(&kernel_end);
+    uint64_t safe_phys = (kernel_end_phys + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
     if (mb_info_addr) {
-        uint32_t mb_end_virt = mb_info_addr + total_size;
-        if (mb_end_virt > safe_start) safe_start = mb_end_virt;
+        uint64_t mb_phys_end = mb_info_addr + total_size;
+        if (mb_phys_end > safe_phys) safe_phys = (mb_phys_end + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
     }
-    if (max_mod_end > 0) {
-        uint32_t mod_end_virt = (uint32_t)P2V(max_mod_end);
-        if (mod_end_virt > safe_start) safe_start = mod_end_virt;
+    if (max_mod_end > safe_phys) {
+        safe_phys = (max_mod_end + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
     }
 
-    uint32_t refcount_start = (safe_start + FRAME_SIZE - 1) & ~(FRAME_SIZE - 1);
-    uint32_t refcount_bytes = MAX_FRAMES * sizeof(uint16_t);
-    uint32_t reserved_early_end_phys = V2P(refcount_start + refcount_bytes);
+    uint64_t max_tracked_frames = highest_frame + 1;
+    if (max_tracked_frames > MAX_FRAMES) max_tracked_frames = MAX_FRAMES;
+    uint64_t refcount_bytes = max_tracked_frames * sizeof(uint16_t);
 
-    frame_refcount = (uint16_t*) refcount_start;
+    frame_refcount = (uint16_t*) P2V(safe_phys);
 
     /* Initialize refcounts based on bitmap */
-    for (uint32_t i = 0; i < MAX_FRAMES; i++) {
+    for (uint64_t i = 0; i < max_tracked_frames; i++) {
         frame_refcount[i] = bitmap_test(i) ? 1 : 0;
     }
 
     /* 1. Reserve low 1MB (BIOS/real-mode/VGA memory) */
     mark_region_used_bytes(0, 0x100000);
 
-    /* 2. Reserve kernel image + early frame_refcount array */
-    if (reserved_early_end_phys > 0x100000) {
-        mark_region_used_bytes(0x100000, reserved_early_end_phys - 0x100000);
-    }
+    /* 2. Reserve kernel image + frame_refcount array */
+    mark_region_used_bytes(0x100000, (safe_phys + refcount_bytes) - 0x100000);
 
     /* 3. Reserve Multiboot2 info structure */
     if (mb_info_addr && total_size > 0) {
-        uint32_t mb_info_phys = V2P(mb_info_addr);
+        uint64_t mb_info_phys = mb_info_addr;
         mark_region_used_bytes(mb_info_phys, total_size);
     }
 
-    /* 4. Reserve Multiboot2 modules (if present) */
+    /* 4. Reserve Multiboot2 modules */
     tag_ptr = ptr + 8;
     while (mb_info_addr && tag_ptr < end) {
         struct mb2_tag* tag = (struct mb2_tag*) tag_ptr;
@@ -167,16 +161,15 @@ void pmm_init(uint32_t mb_info_addr) {
     }
 
     kprintf("[pmm] Total RAM: %u MB (%u frames), Free RAM: %u MB (%u frames)\n",
-            (total_usable_frames * 4) / 1024, total_usable_frames,
-            (free_frames * 4) / 1024, free_frames);
-    terminal_writestring("[ok] Physical memory manager initialized\n");
+            (unsigned int)((total_usable_frames * 4) / 1024), (unsigned int)total_usable_frames,
+            (unsigned int)((free_frames * 4) / 1024), (unsigned int)free_frames);
 }
 
-uint32_t pmm_alloc_frame(void) {
-    for (uint32_t frame = 0; frame <= highest_frame; frame++) {
+uint64_t pmm_alloc_frame(void) {
+    for (uint64_t frame = 0; frame <= highest_frame; frame++) {
         if (!bitmap_test(frame)) {
             bitmap_set(frame);
-            frame_refcount[frame] = 1;
+            if (frame_refcount) frame_refcount[frame] = 1;
             free_frames--;
             return frame * FRAME_SIZE;
         }
@@ -184,22 +177,38 @@ uint32_t pmm_alloc_frame(void) {
     return 0; /* out of memory */
 }
 
-uint32_t pmm_alloc_contiguous_frames(size_t count) {
+/* Allocate a frame strictly below 4GB (0x100000000) for legacy 32-bit DMA (virtio-net, ATA) */
+uint64_t pmm_alloc_frame_low(void) {
+    uint64_t limit_frame = (4ULL * 1024ULL * 1024ULL * 1024ULL) / FRAME_SIZE;
+    if (limit_frame > highest_frame) limit_frame = highest_frame;
+
+    for (uint64_t frame = 0; frame <= limit_frame; frame++) {
+        if (!bitmap_test(frame)) {
+            bitmap_set(frame);
+            if (frame_refcount) frame_refcount[frame] = 1;
+            free_frames--;
+            return frame * FRAME_SIZE;
+        }
+    }
+    return 0;
+}
+
+uint64_t pmm_alloc_contiguous_frames(size_t count) {
     if (count == 0) return 0;
     if (count == 1) return pmm_alloc_frame();
     if (free_frames < count) return 0;
 
-    uint32_t consecutive = 0;
-    uint32_t start_frame = 0;
+    uint64_t consecutive = 0;
+    uint64_t start_frame = 0;
 
-    for (uint32_t frame = 0; frame <= highest_frame; frame++) {
+    for (uint64_t frame = 0; frame <= highest_frame; frame++) {
         if (!bitmap_test(frame)) {
             if (consecutive == 0) {
                 start_frame = frame;
             }
             consecutive++;
             if (consecutive == count) {
-                for (uint32_t i = 0; i < count; i++) {
+                for (size_t i = 0; i < count; i++) {
                     bitmap_set(start_frame + i);
                     if (frame_refcount) frame_refcount[start_frame + i] = 1;
                 }
@@ -210,28 +219,28 @@ uint32_t pmm_alloc_contiguous_frames(size_t count) {
             consecutive = 0;
         }
     }
-    return 0; /* out of contiguous memory */
+    return 0;
 }
 
-void pmm_free_contiguous_frames(uint32_t phys_addr, size_t count) {
+void pmm_free_contiguous_frames(uint64_t phys_addr, size_t count) {
     for (size_t i = 0; i < count; i++) {
         pmm_unref(phys_addr + i * FRAME_SIZE);
     }
 }
 
-void pmm_ref(uint32_t phys_addr) {
-    uint32_t frame = phys_addr / FRAME_SIZE;
-    if (frame < MAX_FRAMES) {
+void pmm_ref(uint64_t phys_addr) {
+    uint64_t frame = phys_addr / FRAME_SIZE;
+    if (frame < MAX_FRAMES && frame_refcount) {
         frame_refcount[frame]++;
     }
 }
 
-void pmm_unref(uint32_t phys_addr) {
-    uint32_t frame = phys_addr / FRAME_SIZE;
-    if (frame >= MAX_FRAMES) return;
+void pmm_unref(uint64_t phys_addr) {
+    uint64_t frame = phys_addr / FRAME_SIZE;
+    if (frame >= MAX_FRAMES || !frame_refcount) return;
 
     if (frame_refcount[frame] == 0) {
-        kprintf("[pmm] ASSERTION FAILED: unref on frame 0x%08x with refcount 0\n", phys_addr);
+        kprintf("[pmm] ASSERTION FAILED: unref on frame 0x%lx with refcount 0\n", (unsigned long)phys_addr);
         return;
     }
 
@@ -242,28 +251,30 @@ void pmm_unref(uint32_t phys_addr) {
     }
 }
 
-void pmm_free_frame(uint32_t phys_addr) {
+void pmm_free_frame(uint64_t phys_addr) {
     pmm_unref(phys_addr);
 }
 
-uint16_t pmm_refcount(uint32_t phys_addr) {
-    uint32_t frame = phys_addr / FRAME_SIZE;
-    return (frame < MAX_FRAMES) ? frame_refcount[frame] : 0;
+uint16_t pmm_refcount(uint64_t phys_addr) {
+    uint64_t frame = phys_addr / FRAME_SIZE;
+    if (frame >= MAX_FRAMES || !frame_refcount) return 0;
+    return frame_refcount[frame];
 }
 
-uint32_t pmm_free_count(void) {
+uint64_t pmm_free_count(void) {
     return free_frames;
 }
 
-uint32_t pmm_free_frame_count(void) {
+uint64_t pmm_free_frame_count(void) {
     return free_frames;
 }
 
-uint32_t pmm_total_count(void) {
+uint64_t pmm_total_count(void) {
     return total_usable_frames;
 }
 
-int pmm_is_ram(uint32_t phys_addr) {
-    uint32_t frame = phys_addr / FRAME_SIZE;
-    return (frame < MAX_FRAMES && frame <= highest_frame);
+int pmm_is_ram(uint64_t phys_addr) {
+    uint64_t frame = phys_addr / FRAME_SIZE;
+    if (frame > highest_frame) return 0;
+    return 1;
 }
