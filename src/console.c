@@ -737,8 +737,8 @@ void terminal_writestring(const char* data) {
     size_t len = 0;
     while (data[len]) len++;
 
-    uint32_t saved_eflags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(saved_eflags));
+    uint64_t saved_eflags;
+    asm volatile ("pushfq; popq %0; cli" : "=r"(saved_eflags));
 
     terminal_write(data, len);
 

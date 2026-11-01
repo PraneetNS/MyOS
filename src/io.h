@@ -38,4 +38,14 @@ static inline void io_wait(void) {
     outb(0x80, 0);
 }
 
+static inline uint64_t irq_save(void) {
+    uint64_t flags;
+    asm volatile ("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags) {
+    asm volatile ("pushq %0; popfq" : : "r"(flags) : "memory");
+}
+
 #endif

@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 struct fb_info {
-    uint32_t phys_addr;
+    uint64_t phys_addr;
     void*    virt_addr;
     uint32_t width;
     uint32_t height;
@@ -24,7 +24,7 @@ struct fb_info {
 
 extern struct fb_info g_fb_info;
 
-void fb_init(uint32_t mb_info_addr);
+void fb_init(uint64_t mb_info_addr);
 int  fb_is_present(void);
 
 #endif

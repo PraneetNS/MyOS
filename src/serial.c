@@ -68,15 +68,15 @@ void serial_puts(const char* s) {
     }
 }
 
-static void print_number(void (*put_func)(char), uint32_t n, int base, int is_signed, int width, char pad) {
-    char buf[32];
+static void print_number(void (*put_func)(char), uint64_t n, int base, int is_signed, int width, char pad) {
+    char buf[64];
     int i = 0;
     const char digits[] = "0123456789abcdef";
     int negative = 0;
 
-    if (is_signed && (int32_t)n < 0) {
+    if (is_signed && (int64_t)n < 0) {
         negative = 1;
-        n = -(int32_t)n;
+        n = -(int64_t)n;
     }
 
     if (n == 0) {
@@ -130,6 +130,20 @@ static void kvprintf(void (*put_func)(char), const char* fmt, va_list args) {
         }
         if (fmt[i] == '\0') break;
 
+        int is_long = 0;
+        if (fmt[i] == 'l') {
+            is_long = 1;
+            i++;
+            if (fmt[i] == 'l') {
+                is_long = 2;
+                i++;
+            }
+        } else if (fmt[i] == 'z') {
+            is_long = 1;
+            i++;
+        }
+        if (fmt[i] == '\0') break;
+
         switch (fmt[i]) {
             case 'c': {
                 char c = (char)va_arg(args, int);
@@ -144,19 +158,38 @@ static void kvprintf(void (*put_func)(char), const char* fmt, va_list args) {
             }
             case 'd':
             case 'i': {
-                int val = va_arg(args, int);
-                print_number(put_func, (uint32_t)val, 10, 1, width, pad);
+                if (is_long) {
+                    int64_t val = va_arg(args, int64_t);
+                    print_number(put_func, (uint64_t)val, 10, 1, width, pad);
+                } else {
+                    int val = va_arg(args, int);
+                    print_number(put_func, (uint64_t)(int64_t)val, 10, 1, width, pad);
+                }
                 break;
             }
             case 'u': {
-                unsigned int val = va_arg(args, unsigned int);
-                print_number(put_func, val, 10, 0, width, pad);
+                if (is_long) {
+                    uint64_t val = va_arg(args, uint64_t);
+                    print_number(put_func, val, 10, 0, width, pad);
+                } else {
+                    unsigned int val = va_arg(args, unsigned int);
+                    print_number(put_func, (uint64_t)val, 10, 0, width, pad);
+                }
                 break;
             }
-            case 'x':
+            case 'x': {
+                if (is_long) {
+                    uint64_t val = va_arg(args, uint64_t);
+                    print_number(put_func, val, 16, 0, width, pad);
+                } else {
+                    unsigned int val = va_arg(args, unsigned int);
+                    print_number(put_func, (uint64_t)val, 16, 0, width, pad);
+                }
+                break;
+            }
             case 'p': {
-                unsigned int val = va_arg(args, unsigned int);
-                print_number(put_func, val, 16, 0, width, pad);
+                uint64_t val = (uint64_t)(uintptr_t)va_arg(args, void*);
+                print_number(put_func, val, 16, 0, width ? width : 16, pad == ' ' ? '0' : pad);
                 break;
             }
             case '%': {
@@ -185,17 +218,14 @@ static void kprint_char(char c) {
 }
 
 void kprintf(const char* fmt, ...) {
-    uint32_t saved_eflags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(saved_eflags));
+    uint64_t saved_eflags = irq_save();
 
     va_list args;
     va_start(args, fmt);
     kvprintf(kprint_char, fmt, args);
     va_end(args);
 
-    if (saved_eflags & 0x200) {
-        asm volatile ("sti");
-    }
+    irq_restore(saved_eflags);
 }
 
 static char* s_ksnprintf_ptr = NULL;
@@ -235,14 +265,12 @@ static volatile uint32_t s_serial1_rx_tail = 0;
 static volatile uint32_t s_serial1_rx_count = 0;
 static int s_serial1_read_wait = 0;
 
-static inline uint32_t serial1_irq_save(void) {
-    uint32_t flags;
-    asm volatile ("pushfl; popl %0; cli" : "=r"(flags) :: "memory");
-    return flags;
+static inline uint64_t serial1_irq_save(void) {
+    return irq_save();
 }
 
-static inline void serial1_irq_restore(uint32_t flags) {
-    asm volatile ("pushl %0; popfl" :: "r"(flags) : "memory");
+static inline void serial1_irq_restore(uint64_t flags) {
+    irq_restore(flags);
 }
 
 static void serial1_callback(struct registers* regs) {

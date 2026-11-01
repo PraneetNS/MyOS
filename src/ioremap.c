@@ -4,7 +4,7 @@
 #include "serial.h"
 #include "scheduler.h"
 
-static uint32_t ioremap_next_vaddr = IOREMAP_START;
+static uint64_t ioremap_next_vaddr = IOREMAP_START;
 static int pat_initialized = 0;
 
 static inline void rdmsr(uint32_t msr, uint32_t *lo, uint32_t *hi) {
@@ -35,70 +35,88 @@ void pat_init(void) {
      * PA1: bits 8..15  (WT  = 0x04)
      * PA2: bits 16..23 (UC- = 0x07)
      * PA3: bits 24..31 (UC  = 0x00)
-     * PA4: bits 32..39 -> we configure to Write-Combining (0x01)
-     * In 4KB PTE, PA4 is selected by setting PAT=1 (bit 7), PCD=0 (bit 4), PWT=0 (bit 3).
+     * PA4: bits 32..39 -> Write-Combining (0x01)
      */
     uint32_t lo = 0, hi = 0;
     rdmsr(0x277, &lo, &hi);
-    hi = (hi & ~0xFFu) | 0x01u; /* PA4 = WC (0x01) */
+    hi = (hi & ~0xFFu) | 0x01u;
     wrmsr(0x277, lo, hi);
     pat_initialized = 1;
 }
 
-void* ioremap(uint32_t phys_addr, size_t size, uint32_t flags) {
+void* ioremap(uint64_t phys_addr, size_t size, uint32_t flags) {
     if (size == 0) return NULL;
 
-    uint32_t offset = phys_addr & 0xFFFu;
-    uint32_t phys_base = phys_addr & ~0xFFFu;
-    uint32_t total_size = ((size + offset + 4095u) & ~4095u);
-    uint32_t num_pages = total_size / 4096u;
+    /* In x86-64 long mode, physical addresses of RAM and MMIO below 16GB
+       can also be accessed directly via P2V, but ioremap establishes dedicated
+       caching attributes (e.g. Write-Combining for Framebuffer or Uncached for BARs).
+    */
+    uint64_t offset = phys_addr & 0xFFFULL;
+    uint64_t phys_base = phys_addr & ~0xFFFULL;
+    uint64_t total_size = ((size + offset + 4095ULL) & ~4095ULL);
+    uint64_t num_pages = total_size / 4096ULL;
 
     if (ioremap_next_vaddr + total_size > IOREMAP_END) {
-        serial_printf("[ioremap] Out of virtual address space in 0xF0000000-0xFFBFFFFF\n");
+        serial_printf("[ioremap] Out of virtual address space in higher canonical half\n");
         return NULL;
     }
 
-    uint32_t vaddr = ioremap_next_vaddr;
+    uint64_t vaddr = ioremap_next_vaddr;
     ioremap_next_vaddr += total_size;
 
-    /* Determine caching bits for PTE */
-    uint32_t cache_bits = 0;
+    uint64_t cache_bits = 0;
     if (flags & IOMAP_WRITECOMBINING) {
         if (cpu_has_pat()) {
             pat_init();
-            cache_bits = 0x80u; /* PAT bit in 4KB PTE selects PA4 (WC) */
+            cache_bits = (1ULL << 7); /* PAT bit in 4KB PTE */
         } else {
-            cache_bits = 0x10u; /* PCD fallback (Uncached) */
+            cache_bits = PAGE_PCD;
         }
     } else if (flags & IOMAP_NOCACHE) {
-        cache_bits = 0x10u;     /* PCD */
+        cache_bits = PAGE_PCD;
     }
 
-    for (uint32_t i = 0; i < num_pages; i++) {
-        uint32_t page_va = vaddr + i * 4096u;
-        uint32_t page_pa = phys_base + i * 4096u;
-        uint32_t dir_idx = page_va >> 22;
-        uint32_t tbl_idx = (page_va >> 12) & 0x3FFu;
+    uint64_t* kernel_pml4 = paging_get_kernel_pml4_virt();
 
-        if (!(boot_page_directory[dir_idx] & PAGE_PRESENT)) {
-            uint32_t pt_phys = pmm_alloc_frame();
-            if (!pt_phys) {
-                serial_printf("[ioremap] Failed to alloc frame for page table\n");
-                return NULL;
-            }
-            uint32_t* pt_virt = (uint32_t*) P2V(pt_phys);
-            for (int k = 0; k < 1024; k++) pt_virt[k] = 0;
-            boot_page_directory[dir_idx] = pt_phys | PAGE_PRESENT | PAGE_WRITE;
+    for (uint64_t i = 0; i < num_pages; i++) {
+        uint64_t page_va = vaddr + i * 4096ULL;
+        uint64_t page_pa = phys_base + i * 4096ULL;
 
-            process_t* cur = scheduler_current();
-            if (cur && cur->as.directory) {
-                cur->as.directory[dir_idx] = boot_page_directory[dir_idx];
-            }
+        uint64_t pml4_idx = (page_va >> 39) & 0x1FFULL;
+        uint64_t pdpt_idx = (page_va >> 30) & 0x1FFULL;
+        uint64_t pd_idx   = (page_va >> 21) & 0x1FFULL;
+        uint64_t pt_idx   = (page_va >> 12) & 0x1FFULL;
+
+        /* Allocate kernel PDPT / PD / PT tables if missing */
+        if (!(kernel_pml4[pml4_idx] & PAGE_PRESENT)) {
+            uint64_t f = pmm_alloc_frame();
+            if (!f) return NULL;
+            uint64_t* p = (uint64_t*) P2V(f);
+            for (int k = 0; k < 512; k++) p[k] = 0;
+            kernel_pml4[pml4_idx] = f | PAGE_PRESENT | PAGE_WRITE;
         }
+        uint64_t* pdpt = (uint64_t*) P2V(kernel_pml4[pml4_idx] & ~0xFFFULL);
 
-        uint32_t* pt = (uint32_t*) P2V(boot_page_directory[dir_idx] & ~0xFFFu);
-        pt[tbl_idx] = page_pa | PAGE_PRESENT | PAGE_WRITE | cache_bits;
-        asm volatile("invlpg (%0)" :: "r"(page_va) : "memory");
+        if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) {
+            uint64_t f = pmm_alloc_frame();
+            if (!f) return NULL;
+            uint64_t* p = (uint64_t*) P2V(f);
+            for (int k = 0; k < 512; k++) p[k] = 0;
+            pdpt[pdpt_idx] = f | PAGE_PRESENT | PAGE_WRITE;
+        }
+        uint64_t* pd = (uint64_t*) P2V(pdpt[pdpt_idx] & ~0xFFFULL);
+
+        if (!(pd[pd_idx] & PAGE_PRESENT)) {
+            uint64_t f = pmm_alloc_frame();
+            if (!f) return NULL;
+            uint64_t* p = (uint64_t*) P2V(f);
+            for (int k = 0; k < 512; k++) p[k] = 0;
+            pd[pd_idx] = f | PAGE_PRESENT | PAGE_WRITE;
+        }
+        uint64_t* pt = (uint64_t*) P2V(pd[pd_idx] & ~0xFFFULL);
+
+        pt[pt_idx] = page_pa | PAGE_PRESENT | PAGE_WRITE | cache_bits | PAGE_NX;
+        invlpg_page(page_va);
     }
 
     return (void*)(vaddr + offset);

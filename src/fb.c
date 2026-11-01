@@ -1,5 +1,6 @@
 #include "fb.h"
 #include "multiboot2.h"
+#include "paging.h"
 #include "ioremap.h"
 #include "serial.h"
 #include "vga.h"
@@ -11,14 +12,14 @@ int fb_is_present(void) {
     return g_fb_info.present;
 }
 
-void fb_init(uint32_t mb_info_addr) {
+void fb_init(uint64_t mb_info_addr) {
     g_fb_info.present = 0;
     if (!mb_info_addr) {
         serial_printf("[fb] No multiboot info; fallback to VGA text\n");
         return;
     }
 
-    uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
+    uint8_t* ptr = (uint8_t*) P2V(mb_info_addr);
     uint32_t total_size = *(uint32_t*) ptr;
     uint8_t* end = ptr + total_size;
     uint8_t* tag_ptr = ptr + 8;
@@ -51,7 +52,7 @@ void fb_init(uint32_t mb_info_addr) {
         return;
     }
 
-    g_fb_info.phys_addr = (uint32_t) fb->addr;
+    g_fb_info.phys_addr = fb->addr;
     g_fb_info.width = fb->width;
     g_fb_info.height = fb->height;
     g_fb_info.pitch = fb->pitch;
@@ -89,10 +90,10 @@ void fb_init(uint32_t mb_info_addr) {
     g_fb_info.present = 1;
     console_switch_to_fb();
 
-    serial_printf("[fb] %ux%ux%u pitch=%u at phys=0x%08x mapped at 0x%08x\n",
+    serial_printf("[fb] %ux%ux%u pitch=%u at phys=0x%lx mapped at %p\n",
                   g_fb_info.width, g_fb_info.height, g_fb_info.bpp, g_fb_info.pitch,
-                  g_fb_info.phys_addr, (uint32_t)g_fb_info.virt_addr);
-    kprintf("[fb] %ux%ux%u pitch=%u at phys=0x%08x mapped at 0x%08x\n",
+                  g_fb_info.phys_addr, g_fb_info.virt_addr);
+    kprintf("[fb] %ux%ux%u pitch=%u at phys=0x%lx mapped at %p\n",
             g_fb_info.width, g_fb_info.height, g_fb_info.bpp, g_fb_info.pitch,
-            g_fb_info.phys_addr, (uint32_t)g_fb_info.virt_addr);
+            g_fb_info.phys_addr, g_fb_info.virt_addr);
 }
