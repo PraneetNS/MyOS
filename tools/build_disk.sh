@@ -4,7 +4,7 @@ export PATH="$HOME/.local/bin:$PATH"
 cd "$(dirname "$0")/.."
 
 IMAGE="disk.img"
-DISK_SIZE_MB="${DISK_SIZE_MB:-64}"
+DISK_SIZE_MB="${DISK_SIZE_MB:-128}"
 echo "Creating ${DISK_SIZE_MB}MB disk image..."
 rm -f "$IMAGE"
 dd if=/dev/zero of="$IMAGE" bs=1M count="$DISK_SIZE_MB" status=none
