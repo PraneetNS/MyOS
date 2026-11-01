@@ -176,7 +176,7 @@ def run_packet_fuzz_test():
 
     port = 12345
     qemu_cmd = [
-        "qemu-system-i386", "-vga", "std", "-m", "256",
+        "qemu-system-x86_64", "-vga", "std", "-m", "256",
         "-device", "virtio-net-pci,netdev=n0",
         "-netdev", f"socket,id=n0,listen=127.0.0.1:{port}",
         "-hda", "disk.img", "-cdrom", "myos.iso", "-boot", "d",
