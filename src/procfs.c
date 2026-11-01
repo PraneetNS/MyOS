@@ -191,7 +191,7 @@ static int proc_uptime_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t
 /* /proc/version */
 static int proc_version_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    const char* text = "MyOS version 1.0.0-i386 (gcc 11.4.0) #1 SMP PREEMPT Thu Oct 15 2026 i686 GNU/Linux\n";
+    const char* text = "MyOS version 1.0.0-x86_64 (gcc 13.2.0) #1 SMP PREEMPT Thu Oct 15 2026 x86_64 GNU/Linux\n";
     int len = 0;
     while (text[len]) len++;
     return procfs_read_helper(text, len, offset, buf, count);
@@ -232,7 +232,16 @@ static int proc_cpuinfo_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_
     append_uint(text, &pos, sizeof(text), model);
     append_str(text, &pos, sizeof(text), "\nstepping\t: ");
     append_uint(text, &pos, sizeof(text), stepping);
-    append_str(text, &pos, sizeof(text), "\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 mmx fxsr sse sse2\n");
+    append_str(text, &pos, sizeof(text), "\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 mmx fxsr sse sse2 lm nx");
+
+    uint32_t max_leaf = 0;
+    proc_cpuid(0, &max_leaf, &ebx, &ecx, &edx);
+    if (max_leaf >= 7) {
+        asm volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
+        if (ebx & (1U << 7)) append_str(text, &pos, sizeof(text), " smep");
+        if (ebx & (1U << 20)) append_str(text, &pos, sizeof(text), " smap");
+    }
+    append_str(text, &pos, sizeof(text), "\n");
 
     return procfs_read_helper(text, pos, offset, buf, count);
 }
@@ -319,7 +328,7 @@ static int proc_global_cmdline_read(vnode_t* vn, uint32_t offset, uint8_t* buf, 
 /* Common stat for regular files in procfs */
 static int procfs_file_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFREG | 0444;
     st->st_nlink = 1;
     st->st_size = 0;
@@ -339,7 +348,7 @@ static const struct fs_ops global_cmdline_ops = {
 /* Common stat for directories in procfs */
 static int procfs_dir_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFDIR | 0555;
     st->st_nlink = 2;
     st->st_size = 0;

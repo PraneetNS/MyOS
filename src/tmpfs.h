@@ -42,7 +42,7 @@ typedef struct tmpfs_node {
     tmpfs_dirent_t* children;
 
     /* Sparse frame array: two-level table (if type == TMPFS_NODE_REG) */
-    uint32_t* page_blocks[TMPFS_MAX_BLOCKS];
+    uint64_t* page_blocks[TMPFS_MAX_BLOCKS];
 
     /* Socket pointer (if type == TMPFS_NODE_SOCK) */
     void* sock_data;
@@ -53,8 +53,8 @@ typedef struct tmpfs_node {
 
 void tmpfs_init(void);
 int tmpfs_mount(const char* mount_path);
-uint32_t tmpfs_get_or_alloc_frame(tmpfs_node_t* node, uint32_t page_idx, int allocate, int* err_out);
-uint32_t tmpfs_get_frame(tmpfs_node_t* node, uint32_t page_idx);
+uint64_t tmpfs_get_or_alloc_frame(tmpfs_node_t* node, uint32_t page_idx, int allocate, int* err_out);
+uint64_t tmpfs_get_frame(tmpfs_node_t* node, uint32_t page_idx);
 void tmpfs_node_ref(tmpfs_node_t* node);
 void tmpfs_node_unref(tmpfs_node_t* node);
 

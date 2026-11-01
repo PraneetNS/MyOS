@@ -37,7 +37,7 @@ static void tmpfs_free_page_blocks(tmpfs_node_t* node) {
     for (int b = 0; b < TMPFS_MAX_BLOCKS; b++) {
         if (node->page_blocks[b]) {
             for (int p = 0; p < TMPFS_PAGES_PER_BLOCK; p++) {
-                uint32_t phys = node->page_blocks[b][p];
+                uint64_t phys = node->page_blocks[b][p];
                 if (phys != 0) {
                     pmm_unref(phys);
                     if (node->fs->used_frames > 0) {
@@ -78,7 +78,7 @@ void tmpfs_node_unref(tmpfs_node_t* node) {
     }
 }
 
-uint32_t tmpfs_get_or_alloc_frame(tmpfs_node_t* node, uint32_t page_idx, int allocate, int* err_out) {
+uint64_t tmpfs_get_or_alloc_frame(tmpfs_node_t* node, uint32_t page_idx, int allocate, int* err_out) {
     if (!node || !node->fs) {
         if (err_out) *err_out = -EINVAL;
         return 0;
@@ -97,16 +97,16 @@ uint32_t tmpfs_get_or_alloc_frame(tmpfs_node_t* node, uint32_t page_idx, int all
             if (err_out) *err_out = 0;
             return 0; /* Hole */
         }
-        uint32_t* blk = (uint32_t*) kmalloc(TMPFS_PAGES_PER_BLOCK * sizeof(uint32_t));
+        uint64_t* blk = (uint64_t*) kmalloc(TMPFS_PAGES_PER_BLOCK * sizeof(uint64_t));
         if (!blk) {
             if (err_out) *err_out = -ENOMEM;
             return 0;
         }
-        memset(blk, 0, TMPFS_PAGES_PER_BLOCK * sizeof(uint32_t));
+        memset(blk, 0, TMPFS_PAGES_PER_BLOCK * sizeof(uint64_t));
         node->page_blocks[block_idx] = blk;
     }
 
-    uint32_t phys = node->page_blocks[block_idx][page_in_block];
+    uint64_t phys = node->page_blocks[block_idx][page_in_block];
     if (phys != 0) {
         if (err_out) *err_out = 0;
         return phys;
@@ -138,7 +138,7 @@ uint32_t tmpfs_get_or_alloc_frame(tmpfs_node_t* node, uint32_t page_idx, int all
     return phys;
 }
 
-uint32_t tmpfs_get_frame(tmpfs_node_t* node, uint32_t page_idx) {
+uint64_t tmpfs_get_frame(tmpfs_node_t* node, uint32_t page_idx) {
     return tmpfs_get_or_alloc_frame(node, page_idx, 0, NULL);
 }
 
@@ -234,7 +234,7 @@ static int tmpfs_op_read(vnode_t* node, uint32_t offset, uint8_t* buf, uint32_t 
             chunk = count - bytes_read;
         }
 
-        uint32_t phys = tmpfs_get_or_alloc_frame(tnode, page_idx, 0, NULL);
+        uint64_t phys = tmpfs_get_or_alloc_frame(tnode, page_idx, 0, NULL);
         if (phys == 0) {
             /* Sparse hole: read as zeroes */
             memset(buf + bytes_read, 0, chunk);
@@ -266,7 +266,7 @@ static int tmpfs_op_write(vnode_t* node, uint32_t offset, const uint8_t* buf, ui
         }
 
         int err = 0;
-        uint32_t phys = tmpfs_get_or_alloc_frame(tnode, page_idx, 1, &err);
+        uint64_t phys = tmpfs_get_or_alloc_frame(tnode, page_idx, 1, &err);
         if (phys == 0) {
             kmutex_unlock(&fs->lock);
             if (bytes_written > 0) return (int) bytes_written;
@@ -624,9 +624,9 @@ static int tmpfs_op_truncate(vnode_t* node, uint32_t length) {
             vma_t* v = proc->vma_list;
             while (v) {
                 if (v->file == node) {
-                    for (uint32_t va = v->start; va < v->end; va += FRAME_SIZE) {
-                        uint32_t off_in_vma = va - v->start;
-                        uint32_t file_offset = v->offset + off_in_vma;
+                    for (uint64_t va = v->start; va < v->end; va += FRAME_SIZE) {
+                        uint64_t off_in_vma = va - v->start;
+                        uint64_t file_offset = v->offset + off_in_vma;
                         if (file_offset >= length) {
                             vmm_unmap_user_page(&proc->as, va);
                             if (proc == scheduler_current()) {
@@ -647,7 +647,7 @@ static int tmpfs_op_truncate(vnode_t* node, uint32_t length) {
             uint32_t b = p / TMPFS_PAGES_PER_BLOCK;
             uint32_t o = p % TMPFS_PAGES_PER_BLOCK;
             if (b < TMPFS_MAX_BLOCKS && tnode->page_blocks[b]) {
-                uint32_t phys = tnode->page_blocks[b][o];
+                uint64_t phys = tnode->page_blocks[b][o];
                 if (phys != 0) {
                     pmm_unref(phys);
                     if (fs->used_frames > 0) fs->used_frames--;
@@ -660,7 +660,7 @@ static int tmpfs_op_truncate(vnode_t* node, uint32_t length) {
         uint32_t boundary_page = length / FRAME_SIZE;
         uint32_t boundary_off = length % FRAME_SIZE;
         if (boundary_off != 0) {
-            uint32_t phys = tmpfs_get_or_alloc_frame(tnode, boundary_page, 0, NULL);
+            uint64_t phys = tmpfs_get_or_alloc_frame(tnode, boundary_page, 0, NULL);
             if (phys != 0) {
                 memset((uint8_t*)P2V(phys) + boundary_off, 0, FRAME_SIZE - boundary_off);
             }

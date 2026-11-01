@@ -7,19 +7,10 @@
 #include "errno.h"
 #include "uaccess.h"
 #include "serial.h"
+#include "io.h"
 
 static pty_t ptys[MAX_PTYS];
 static kmutex_t pty_table_lock;
-
-static inline uint32_t irq_save(void) {
-    uint32_t flags;
-    asm volatile ("pushfl; popl %0; cli" : "=r"(flags) :: "memory");
-    return flags;
-}
-
-static inline void irq_restore(uint32_t flags) {
-    asm volatile ("pushl %0; popfl" :: "r"(flags) : "memory");
-}
 
 static void pty_slave_output_char(tty_t* tty, char c);
 

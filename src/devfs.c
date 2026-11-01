@@ -154,7 +154,7 @@ static short serial0_poll(vnode_t* vn, short events, void** chan_out) {
 
 static int dev_chr_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFCHR | 0666;
     st->st_nlink = 1;
     st->st_size = 0;
@@ -290,7 +290,7 @@ static int fb0_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t 
 
 static int fb0_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFCHR | 0666;
     st->st_nlink = 1;
     st->st_size = fb_is_present() ? (g_fb_info.pitch * g_fb_info.height) : 0;
@@ -350,8 +350,8 @@ static int fb0_mmap(vnode_t* vn, vma_t* vma) {
     uint32_t smem_len = g_fb_info.pitch * g_fb_info.height;
     if (vma->offset >= smem_len) return -EINVAL;
 
-    uint32_t size = vma->end - vma->start;
-    uint32_t num_pages = (size + 4095) / 4096;
+    uint64_t size = vma->end - vma->start;
+    uint64_t num_pages = (size + 4095ULL) / 4096ULL;
 
     uint32_t cache_bits = 0;
     if (g_fb_info.is_wc) {
@@ -363,9 +363,9 @@ static int fb0_mmap(vnode_t* vn, vma_t* vma) {
     uint32_t pte_flags = PAGE_PRESENT | PAGE_USER | cache_bits;
     if (vma->prot & VMA_PROT_WRITE) pte_flags |= PAGE_WRITE;
 
-    for (uint32_t i = 0; i < num_pages; i++) {
-        uint32_t page_va = vma->start + i * 4096;
-        uint32_t page_pa = g_fb_info.phys_addr + vma->offset + i * 4096;
+    for (uint64_t i = 0; i < num_pages; i++) {
+        uint64_t page_va = vma->start + i * 4096ULL;
+        uint64_t page_pa = g_fb_info.phys_addr + vma->offset + i * 4096ULL;
         if (vmm_map_page(&me->as, page_va, page_pa, pte_flags) != 0) {
             return -ENOMEM;
         }
@@ -438,7 +438,7 @@ static short mice_poll(vnode_t* vn, short events, void** chan_out) {
 
 static int mice_stat(vnode_t* vn, struct stat* st) {
     st->st_dev   = 0;
-    st->st_ino   = (uint32_t) vn;
+    st->st_ino   = (uint32_t)(uintptr_t) vn;
     st->st_mode  = S_IFCHR | 0666;
     st->st_nlink = 1;
     st->st_size  = 0;
@@ -602,7 +602,7 @@ static int input_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
 
 static int input_dir_stat(vnode_t* vn, struct stat* st) {
     st->st_dev  = 0;
-    st->st_ino  = (uint32_t) vn;
+    st->st_ino  = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFDIR | 0755;
     st->st_nlink= 2;
     st->st_size = 0;
@@ -624,7 +624,7 @@ static int ptmx_stat(vnode_t* vn, struct stat* st) {
     (void) vn;
     if (!st) return -EINVAL;
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFCHR | 0666;
     st->st_nlink = 1;
     st->st_size = 0;
@@ -720,7 +720,7 @@ static int pts_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
 static int pts_dir_stat(vnode_t* vn, struct stat* st) {
     if (!st) return -EINVAL;
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFDIR | 0755;
     st->st_nlink = 2;
     st->st_size = 0;
@@ -893,7 +893,7 @@ static int devfs_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
 
 static int devfs_root_stat(vnode_t* vn, struct stat* st) {
     st->st_dev = 0;
-    st->st_ino = (uint32_t) vn;
+    st->st_ino = (uint32_t)(uintptr_t) vn;
     st->st_mode = S_IFDIR | 0755;
     st->st_nlink = 2;
     st->st_size = 0;

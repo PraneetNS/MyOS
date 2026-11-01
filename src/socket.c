@@ -10,19 +10,10 @@
 #include "agent.h"
 #include "tcp.h"
 #include "udp.h"
+#include "io.h"
 
 static socket_t* all_sockets_head = NULL;
 static uint32_t next_sock_inode = 10001;
-
-static uint32_t irq_save(void) {
-    uint32_t flags;
-    asm volatile ("pushfl; popl %0; cli" : "=r"(flags) :: "memory");
-    return flags;
-}
-
-static void irq_restore(uint32_t flags) {
-    asm volatile ("pushl %0; popfl" :: "r"(flags) : "memory");
-}
 
 static void kstrncpy(char* dst, const char* src, size_t n) {
     size_t i = 0;
