@@ -7,15 +7,23 @@
 #include "idt.h" /* struct registers -- forked children resume from a saved snapshot of it */
 
 #define MAX_PROCESSES 64
-#define PROC_KERNEL_STACK_SIZE 8192
-#define MAX_FDS 16               /* Stage 12: 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
-#define HEAP_BASE 0x08800000u    /* Clear of user ELFs at 0x08048000 and stack below 0xC0000000 */
-#define HEAP_MAX  (HEAP_BASE + 256 * 1024 * 1024u) /* 256MB max heap */
+#define PROC_KERNEL_STACK_SIZE 16384
+#define MAX_FDS 16               /* 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 
-#define USER_STACK_TOP        0xC0000000u
-#define USER_STACK_MAX_GROWTH (8 * 1024 * 1024u) /* 8MB max stack */
-#define USER_STACK_BOTTOM     (USER_STACK_TOP - USER_STACK_MAX_GROWTH) /* 0xBF800000 */
-#define USER_STACK_GUARD_GAP  (4096u)
+/* Canonical 64-bit Address Layout:
+   ELF text starts at 0x0000000000400000 (4MB)
+   Heap Base: 0x0000000010000000 (256MB)
+   Heap Max:  0x0000000080000000 (2GB max heap)
+   User Stack Top: 0x00007FFFFFFFE000 (below top of lower canonical half)
+   User Stack Max Growth: 16MB
+*/
+#define HEAP_BASE 0x0000000010000000ULL
+#define HEAP_MAX  (HEAP_BASE + 2ULL * 1024ULL * 1024ULL * 1024ULL)
+
+#define USER_STACK_TOP        0x00007FFFFFFFE000ULL
+#define USER_STACK_MAX_GROWTH (16ULL * 1024ULL * 1024ULL) /* 16MB max stack */
+#define USER_STACK_BOTTOM     (USER_STACK_TOP - USER_STACK_MAX_GROWTH)
+#define USER_STACK_GUARD_GAP  (4096ULL)
 
 #include "vfs.h"
 #include "signal.h"
@@ -24,11 +32,11 @@ typedef enum { PROC_UNUSED = 0, PROC_READY, PROC_WAITING, PROC_ZOMBIE, PROC_EXIT
 
 typedef struct process {
     address_space_t as;
-    uint32_t esp;               /* saved kernel-mode esp -- the switch_task continuation point */
-    uint32_t kernel_stack_top;  /* becomes TSS.esp0 whenever this process is current */
+    uint64_t rsp;               /* saved kernel-mode rsp -- the switch_task continuation point */
+    uint64_t kernel_stack_top;  /* becomes TSS.rsp0 whenever this process is current */
     uint8_t* kernel_stack_base; /* for freeing on exit */
-    uint32_t entry_point;       /* read by process_trampoline on this process's first run */
-    uint32_t user_stack_top;
+    uint64_t entry_point;       /* read by process_trampoline on this process's first run */
+    uint64_t user_stack_top;
     proc_state_t state;
     int is_kernel_task;         /* process 0 (the shell/idle) runs in ring0, in the kernel's own address space */
     char name[32];
@@ -38,8 +46,8 @@ typedef struct process {
     int pgid;                   /* Process group ID */
     int sid;                    /* Session ID */
     int waiting_for_pid;        /* valid when state == PROC_WAITING */
-    void* wait_channel;         /* Stage 14: sleep channel for blocked pipes/events */
-    int exit_code;              /* Stage 14: exit status code */
+    void* wait_channel;         /* sleep channel for blocked pipes/events */
+    int exit_code;              /* exit status code */
 
     sigset_t sig_pending;       /* Pending signals mask */
     sigset_t sig_blocked;       /* Blocked signals mask */
@@ -50,64 +58,43 @@ typedef struct process {
     int stop_sig;               /* Signal that stopped the process */
     int term_sig;               /* Signal that terminated the process, if any */
 
-    open_file_t* fds[MAX_FDS];  /* Stage 13: VFS open_file pointers, refcounted */
-    uint8_t fd_flags[MAX_FDS];  /* Stage 14: descriptor flags (FD_CLOEXEC) */
+    open_file_t* fds[MAX_FDS];  /* VFS open_file pointers, refcounted */
+    uint8_t fd_flags[MAX_FDS];  /* descriptor flags (FD_CLOEXEC) */
     char cwd[1024];             /* Current working directory (PATH_MAX) */
 
-    int is_forked;              /* Stage 9: resumes via resume_saved_state(&saved_regs), not process_trampoline */
+    int is_forked;              /* resumes via resume_saved_state(&saved_regs) */
     struct registers saved_regs;
 
-    uint32_t heap_end;          /* Stage 11: current program break, grows from HEAP_BASE via sys_sbrk() */
-    uint32_t heap_mapped_up_to; /* how far the heap has actually been paged in (<= heap_end, rounded to a page) */
+    uint64_t heap_end;          /* current program break, grows from HEAP_BASE via sys_sbrk() */
+    uint64_t heap_mapped_up_to; /* how far the heap has actually been paged in */
 
-    struct vma* vma_list;       /* Stage 15: sorted list of memory areas (VMAs) */
+    struct vma* vma_list;       /* sorted list of memory areas (VMAs) */
+    uint64_t aslr_mmap_offset;  /* ASLR random slide for mmap allocations */
 
-    /* Stage 16: Time and scheduler enhancements */
-    uint32_t sleep_deadline;    /* Tick deadline for sleep/nanosleep (0 if not sleeping) */
+    uint32_t sleep_deadline;    /* Tick deadline for sleep/nanosleep */
     struct process* sleep_next; /* Next pointer in timer sleep wait queue */
     uint32_t cpu_ticks;         /* Ticks consumed while running */
     int nice;                   /* Scheduling nice value (-20 to 19) */
 
-    /* Stage 17: FPU / SSE state area (512 bytes + 16 bytes alignment pad) */
-    uint8_t fpu_buffer[512 + 16];
+    /* FPU / SSE state area (512 bytes + 64 bytes alignment pad) */
+    uint8_t fpu_buffer[512 + 64];
 
-    /* Stage 18A: poll wait channels and op flags */
 #define MAX_POLL_CHANNELS 64
     void* poll_channels[MAX_POLL_CHANNELS];
     int   num_poll_channels;
-    int   current_op_flags;     /* Per-process active VFS operation flags (prevents global static race) */
+    int   current_op_flags;     /* Per-process active VFS operation flags */
     void* ctty;                 /* Controlling terminal (tty_t*) */
-    int   agent_id;             /* Stage 19: Bound agent ID (0 if unconfined) */
+    int   agent_id;             /* Bound agent ID (0 if unconfined) */
 } process_t;
 
-/* Sets up the fixed process table with slot 0 as either the resident
-   kshell (if use_kshell is 1) or the kernel idle task (if 0). */
 void process_init_table(int use_kshell);
-
 process_t* process_get_shell(void);
 process_t* process_table_entry(int i);
 process_t* process_find_by_pid(int pid);
 void kernel_idle_task(void);
-
-/* Spawns an ELF executable by filesystem name. */
 process_t* process_spawn_by_name(const char* name, int parent_pid);
-
-/* Loads an ELF into a fresh process slot + fresh address space and
-   marks it READY to run. `parent_pid` becomes the new process's ppid.
-   Returns NULL if no free slot or the load failed. Does NOT start
-   running it -- the scheduler picks it up on its next switch. */
-process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid, vnode_t* vn);
-
-/* Frees a process's address space and kernel stack, marking its slot
-   free for reuse. */
+process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint64_t image_size, int parent_pid, vnode_t* vn);
 void process_destroy(process_t* p);
-
-/* Duplicates `parent` (its address space via vmm_clone_user_pages, and
-   its exact CPU register state at the moment of the fork syscall) into
-   a fresh process slot. The child resumes at the SAME instruction the
-   parent was at, with eax forced to 0 (classic fork() semantics: the
-   syscall "returns twice"). Returns NULL on failure (no free slot, out
-   of memory, etc). */
 process_t* process_fork(process_t* parent, const struct registers* parent_regs);
 
 #endif

@@ -15,6 +15,7 @@
 #include "kmutex.h"
 #include "tty.h"
 #include "agent.h"
+#include "random.h"
 
 int respawn_shell_needed = 0;
 
@@ -75,14 +76,16 @@ static void process_trampoline(void) {
 }
 
 static void fabricate_initial_frame(process_t* p, void (*entry)(void)) {
-    uint32_t* sp = (uint32_t*)(p->kernel_stack_top);
-    *(--sp) = (uint32_t) entry;
-    *(--sp) = 0; /* ebp */
-    *(--sp) = 0; /* ebx */
-    *(--sp) = 0; /* esi */
-    *(--sp) = 0; /* edi */
-    *(--sp) = 0x202; /* eflags, IF set */
-    p->esp = (uint32_t) sp;
+    uint64_t* sp = (uint64_t*)(p->kernel_stack_top);
+    *(--sp) = (uint64_t) entry;
+    *(--sp) = 0; /* rbp */
+    *(--sp) = 0; /* rbx */
+    *(--sp) = 0; /* r12 */
+    *(--sp) = 0; /* r13 */
+    *(--sp) = 0; /* r14 */
+    *(--sp) = 0; /* r15 */
+    *(--sp) = 0x202; /* rflags: IF set */
+    p->rsp = (uint64_t) sp;
 }
 
 static void init_fds(process_t* p) {
@@ -106,11 +109,11 @@ void process_init_table(int use_kshell) {
     for (int i = 0; i < MAX_PROCESSES; i++) table[i].state = PROC_UNUSED;
 
     process_t* shell = &table[0];
-    shell->as.directory      = boot_page_directory;
-    shell->as.directory_phys = paging_get_kernel_dir_phys();
+    shell->as.pml4      = paging_get_kernel_pml4_virt();
+    shell->as.pml4_phys = paging_get_kernel_pml4_phys();
 
     shell->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
-    shell->kernel_stack_top  = (uint32_t)(shell->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
+    shell->kernel_stack_top  = (uint64_t)(shell->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
     shell->is_kernel_task = 1;
     shell->state = PROC_READY;
     shell->pid = 0;
@@ -204,7 +207,7 @@ process_t* process_find_by_pid(int pid) {
     return 0;
 }
 
-process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32_t image_size, int parent_pid, vnode_t* vn) {
+process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint64_t image_size, int parent_pid, vnode_t* vn) {
     int slot = -1;
     for (int i = 1; i < MAX_PROCESSES; i++) { /* slot 0 is always the shell */
         if (table[i].state == PROC_UNUSED) { slot = i; break; }
@@ -216,9 +219,9 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
 
     process_t* p = &table[slot];
     p->as = vmm_create_address_space();
-    if (!p->as.directory) return 0;
+    if (!p->as.pml4) return 0;
 
-    uint32_t entry, stack_top;
+    uint64_t entry, stack_top;
     const char* argv[2] = { name, 0 };
     const char* default_env[5] = {
         "HOME=/",
@@ -235,9 +238,10 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint32
     p->entry_point = entry;
     p->user_stack_top = stack_top;
     p->vma_list = vmas;
+    p->aslr_mmap_offset = ((uint64_t)(random_u32() & 0x1FFFFULL)) << 12;
 
     p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
-    p->kernel_stack_top  = (uint32_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
+    p->kernel_stack_top  = (uint64_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
     p->is_kernel_task = 0;
     p->pid = next_pid++;
     p->ppid = parent_pid;
@@ -334,7 +338,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
 
     process_t* p = &table[slot];
     p->as = vmm_create_address_space();
-    if (!p->as.directory) {
+    if (!p->as.pml4) {
         if (parent->agent_id > 0) agent_proc_exited(parent->agent_id);
         return 0;
     }
@@ -347,9 +351,10 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     }
 
     p->vma_list = vma_clone_list(parent->vma_list);
+    p->aslr_mmap_offset = parent->aslr_mmap_offset;
 
     p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
-    p->kernel_stack_top  = (uint32_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
+    p->kernel_stack_top  = (uint64_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
     p->is_kernel_task = 0;
     p->pid = next_pid++;
     p->ppid = parent->pid;
@@ -411,7 +416,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
        normally) sees the child's pid instead (set by syscall.c). */
     p->is_forked = 1;
     p->saved_regs = *parent_regs;
-    p->saved_regs.eax = 0;
+    p->saved_regs.rax = 0;
 
     fabricate_initial_frame(p, process_trampoline);
     p->state = PROC_READY;
