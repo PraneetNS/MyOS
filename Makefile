@@ -3,7 +3,8 @@ AS      = as
 LD      = ld
 
 CFLAGS  = -m32 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pic \
-          -fno-strict-aliasing -O2 -Wall -Wextra -nostdlib -MMD -MP
+          -fno-strict-aliasing -O2 -Wall -Wextra -nostdlib -MMD -MP \
+          -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -Isrc -Isrc/net
 ASFLAGS = --32
 LDFLAGS = -m elf_i386 -T boot/linker.ld -nostdlib
 
@@ -15,7 +16,9 @@ OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o boot/paging_asm.
        src/process.o src/scheduler.o src/kmutex.o src/pipe.o src/serial.o src/bcache.o src/vfs.o src/fat16.o \
        src/tty.o src/devfs.o src/signal.o src/rtc.o src/procfs.o src/fpu.o \
        src/ioremap.o src/fb.o src/mouse.o src/input.o src/tmpfs.o src/socket.o src/pty.o \
-       src/sha256.o src/agent.o
+       src/sha256.o src/agent.o src/pci.o src/random.o \
+       src/net/pbuf.o src/net/netdev.o src/net/virtio_net.o src/net/ethernet.o \
+       src/net/arp.o src/net/ipv4.o src/net/icmp.o src/net/udp.o src/net/tcp.o
 
 DEPS = $(OBJS:.o=.d)
 
@@ -30,6 +33,9 @@ boot/%.o: boot/%.s
 	$(AS) $(ASFLAGS) $< -o $@
 
 src/%.o: src/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/net/%.o: src/net/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(KERNEL_BIN): $(OBJS)
@@ -52,8 +58,14 @@ test: $(ISO) disk.img
 disk.img:
 	bash tools/build_disk.sh
 
+release: $(ISO) disk.img
+	mkdir -p dist
+	cp $(ISO) dist/myos.iso
+	cp disk.img dist/disk.img
+	cd dist && sha256sum myos.iso disk.img > SHA256SUMS
+
 clean:
 	rm -f boot/*.o src/*.o boot/*.d src/*.d $(KERNEL_BIN) $(ISO)
-	rm -rf isodir
+	rm -rf isodir dist
 
-.PHONY: all run test clean
+.PHONY: all run test clean release
