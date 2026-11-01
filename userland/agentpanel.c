@@ -40,8 +40,13 @@ static ui_widget_t* g_lb_agents = NULL;
 static ui_widget_t* g_tb_ask = NULL;
 static ui_widget_t* g_ta_reply = NULL;
 static ui_widget_t* g_lbl_index = NULL;
-static ui_widget_t* g_btn_mode = NULL;
-static int g_memory_mode = 0;           /* 0 = agents list, 1 = Memory tab */
+static ui_widget_t* g_btn_sever = NULL;
+enum {
+    PANEL_MODE_AGENTS = 0,
+    PANEL_MODE_MEMORY = 1,
+    PANEL_MODE_NETWORK = 2
+};
+static int g_panel_mode = PANEL_MODE_AGENTS;
 static char g_mem_principal[32];        /* principal whose memory is shown */
 
 static void refresh_agents_list(void);
@@ -263,10 +268,128 @@ static void refresh_memory_list(void) {
     }
 }
 
+static int net_sever_state(void) {
+    int fd = open("/proc/sys/net/killswitch", O_RDONLY);
+    if (fd < 0) return 0;
+    char c = 0;
+    read(fd, &c, 1);
+    close(fd);
+    return (c == '1');
+}
+
+static void on_sever_click(ui_widget_t* w, void* data) {
+    (void)w; (void)data;
+    int cur = net_sever_state();
+    int next = !cur;
+    int fd = open("/proc/sys/net/killswitch", O_WRONLY);
+    if (fd >= 0) {
+        char c = next ? '1' : '0';
+        write(fd, &c, 1);
+        close(fd);
+    }
+    refresh_agents_list();
+}
+
+static void refresh_network_list(void) {
+    ui_listbox_clear(g_lb_agents);
+
+    /* 1. Interface throughput and counters from /proc/net/dev */
+    ui_listbox_add_item(g_lb_agents, "=== TRAFFIC THROUGHPUT & INTERFACES ===");
+    int fd = open("/proc/net/dev", O_RDONLY);
+    if (fd >= 0) {
+        char buf[512];
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0) {
+            buf[n] = '\0';
+            char* line = strtok(buf, "\n");
+            while (line) {
+                if (line[0]) {
+                    ui_listbox_add_item(g_lb_agents, line);
+                }
+                line = strtok(NULL, "\n");
+            }
+        }
+    } else {
+        ui_listbox_add_item(g_lb_agents, "(No network interface data available)");
+    }
+
+    /* 2. Active connections from /proc/net/tcp */
+    ui_listbox_add_item(g_lb_agents, "=== ACTIVE TCP CONNECTIONS ===");
+    fd = open("/proc/net/tcp", O_RDONLY);
+    int conns = 0;
+    if (fd >= 0) {
+        char buf[1024];
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0) {
+            buf[n] = '\0';
+            char* line = strtok(buf, "\n");
+            while (line) {
+                if (line[0] && strstr(line, "local_address") == NULL) {
+                    ui_listbox_add_item(g_lb_agents, line);
+                    conns++;
+                }
+                line = strtok(NULL, "\n");
+            }
+        }
+    }
+    if (conns == 0) {
+        ui_listbox_add_item(g_lb_agents, "  (No active TCP connections)");
+    }
+
+    /* 3. Recent agent HTTP requests from /var/log/net.log */
+    ui_listbox_add_item(g_lb_agents, "=== RECENT AGENT HTTP REQUESTS ===");
+    fd = open("/var/log/net.log", O_RDONLY);
+    int reqs = 0;
+    if (fd >= 0) {
+        char buf[2048];
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0) {
+            buf[n] = '\0';
+            char* lines[32];
+            int lcnt = 0;
+            char* s = buf;
+            while (*s && lcnt < 32) {
+                lines[lcnt++] = s;
+                char* e = strchr(s, '\n');
+                if (!e) break;
+                *e = '\0';
+                s = e + 1;
+            }
+            int start = (lcnt > 8) ? (lcnt - 8) : 0;
+            for (int i = start; i < lcnt; i++) {
+                if (lines[i][0]) {
+                    ui_listbox_add_item(g_lb_agents, lines[i]);
+                    reqs++;
+                }
+            }
+        }
+    }
+    if (reqs == 0) {
+        ui_listbox_add_item(g_lb_agents, "  (No agent HTTP requests logged yet)");
+    }
+}
+
 static void refresh_agents_list(void) {
     if (!g_lb_agents) return;
     refresh_index_status();
-    if (g_memory_mode) { refresh_memory_list(); return; }
+
+    if (g_btn_sever) {
+        int sv = net_sever_state();
+        if (sv) {
+            ui_label_set_text(g_btn_sever, "SEVERED (OFF)");
+            ui_label_set_color(g_btn_sever, 0xFFDC2626);
+        } else {
+            ui_label_set_text(g_btn_sever, "Sever Net");
+            ui_label_set_color(g_btn_sever, 0xFF16A34A);
+        }
+    }
+
+    if (g_panel_mode == PANEL_MODE_MEMORY) { refresh_memory_list(); return; }
+    if (g_panel_mode == PANEL_MODE_NETWORK) { refresh_network_list(); return; }
+
     ui_listbox_clear(g_lb_agents);
 
     int active_count = 0;
@@ -325,13 +448,14 @@ static void on_refresh_click(ui_widget_t* w, void* data) {
 static void on_kill_click(ui_widget_t* w, void* data) {
     (void)w; (void)data;
     const char* sel = ui_listbox_get_selected(g_lb_agents);
-    if (g_memory_mode) {
+    if (g_panel_mode == PANEL_MODE_MEMORY) {
         if (!sel || sel[0] != 'M') return;
         static char res[256];
         mem_admin("delete", atoi(sel + 1), res, sizeof(res));
         refresh_agents_list();
         return;
     }
+    if (g_panel_mode != PANEL_MODE_AGENTS) return;
     if (!sel || sel[0] != '#') return;
 
     int id = atoi(sel + 1);
@@ -343,7 +467,7 @@ static void on_kill_click(ui_widget_t* w, void* data) {
 
 static void on_trust_click(ui_widget_t* w, void* data) {
     (void)w; (void)data;
-    if (!g_memory_mode) return;
+    if (g_panel_mode != PANEL_MODE_MEMORY) return;
     const char* sel = ui_listbox_get_selected(g_lb_agents);
     if (!sel || sel[0] != 'M') return;
     static char res[256];
@@ -351,24 +475,30 @@ static void on_trust_click(ui_widget_t* w, void* data) {
     refresh_agents_list();
 }
 
-static void on_mode_click(ui_widget_t* w, void* data) {
+static void on_tab_agents(ui_widget_t* w, void* data) {
     (void)w; (void)data;
-    if (!g_memory_mode) {
-        strcpy(g_mem_principal, "system");
-        const char* sel = ui_listbox_get_selected(g_lb_agents);
-        if (sel && sel[0] == '#') {
-            agent_info_t info;
-            if (agent_info(atoi(sel + 1), &info) == 0 && info.principal[0]) {
-                strncpy(g_mem_principal, info.principal, sizeof(g_mem_principal) - 1);
-                g_mem_principal[sizeof(g_mem_principal) - 1] = '\0';
-            }
+    g_panel_mode = PANEL_MODE_AGENTS;
+    refresh_agents_list();
+}
+
+static void on_tab_memory(ui_widget_t* w, void* data) {
+    (void)w; (void)data;
+    strcpy(g_mem_principal, "system");
+    const char* sel = ui_listbox_get_selected(g_lb_agents);
+    if (sel && sel[0] == '#') {
+        agent_info_t info;
+        if (agent_info(atoi(sel + 1), &info) == 0 && info.principal[0]) {
+            strncpy(g_mem_principal, info.principal, sizeof(g_mem_principal) - 1);
+            g_mem_principal[sizeof(g_mem_principal) - 1] = '\0';
         }
-        g_memory_mode = 1;
-        ui_label_set_text(g_btn_mode, "Agents");
-    } else {
-        g_memory_mode = 0;
-        ui_label_set_text(g_btn_mode, "Memory");
     }
+    g_panel_mode = PANEL_MODE_MEMORY;
+    refresh_agents_list();
+}
+
+static void on_tab_network(ui_widget_t* w, void* data) {
+    (void)w; (void)data;
+    g_panel_mode = PANEL_MODE_NETWORK;
     refresh_agents_list();
 }
 
@@ -468,18 +598,29 @@ int main(int argc, char** argv) {
     ui_widget_t* b_p2 = ui_button_create(win, 460, 75, 200, 32, p2_lbl, on_preset2_click);
     ui_widget_add_child(root, b_p2);
 
-    /* 3. Running Agents Table */
-    ui_widget_t* lbl_rheader = ui_label_create(win, 20, 120, 170, 20, "Active Sandboxed Agents:");
+    /* 3. Running Agents / Memory / Network Table */
+    ui_widget_t* lbl_rheader = ui_label_create(win, 20, 120, 60, 20, "Views:");
     ui_widget_add_child(root, lbl_rheader);
 
-    g_btn_mode = ui_button_create(win, 250, 115, 85, 26, "Memory", on_mode_click);
-    ui_widget_add_child(root, g_btn_mode);
-    ui_widget_t* btn_trust = ui_button_create(win, 345, 115, 95, 26, "Trust", on_trust_click);
+    ui_widget_t* btn_tab_agents = ui_button_create(win, 80, 115, 75, 26, "Agents", on_tab_agents);
+    ui_widget_add_child(root, btn_tab_agents);
+
+    ui_widget_t* btn_tab_mem = ui_button_create(win, 160, 115, 75, 26, "Memory", on_tab_memory);
+    ui_widget_add_child(root, btn_tab_mem);
+
+    ui_widget_t* btn_tab_net = ui_button_create(win, 240, 115, 75, 26, "Network", on_tab_network);
+    ui_widget_add_child(root, btn_tab_net);
+
+    g_btn_sever = ui_button_create(win, 320, 115, 110, 26, "Sever Net", on_sever_click);
+    ui_widget_add_child(root, g_btn_sever);
+
+    ui_widget_t* btn_trust = ui_button_create(win, 435, 115, 65, 26, "Trust", on_trust_click);
     ui_widget_add_child(root, btn_trust);
 
-    ui_widget_t* btn_refresh = ui_button_create(win, 450, 115, 95, 26, "Refresh", on_refresh_click);
+    ui_widget_t* btn_refresh = ui_button_create(win, 505, 115, 75, 26, "Refresh", on_refresh_click);
     ui_widget_add_child(root, btn_refresh);
-    ui_widget_t* btn_kill = ui_button_create(win, 555, 115, 105, 26, "Kill Agent", on_kill_click);
+
+    ui_widget_t* btn_kill = ui_button_create(win, 585, 115, 75, 26, "Action", on_kill_click);
     ui_widget_add_child(root, btn_kill);
 
     g_lb_agents = ui_listbox_create(win, 20, 145, 640, 160, NULL);
