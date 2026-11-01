@@ -94,6 +94,13 @@ void ipv4_rx(netdev_t* dev, pbuf_t* pbuf) {
         return;
     }
 
+    /* Drop fragmented IPv4 packets (RFC 1858: prevent fragment injection / overlapping attacks) */
+    if (ntohs(ip->flags_offset) & 0x3FFF) {
+        dev->rx_dropped++;
+        pbuf_free(pbuf);
+        return;
+    }
+
     /* Check destination */
     if (!(dev->flags & NETDEV_FLAG_LOOPBACK)) {
         if (ip->dst_ip != dev->ip && ip->dst_ip != 0xFFFFFFFFu && ip->dst_ip != 0x0100007Fu) {
