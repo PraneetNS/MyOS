@@ -9,11 +9,14 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 
 #include "inc/bearssl.h"
 #include "tls.h"
+
+#define MIN_BUILD_EPOCH 1700000000L /* Epoch sanity check: clock must not be before build date */
 
 struct tls_client {
     int fd;
@@ -208,8 +211,23 @@ int tls_client_connect(tls_client_t* ctx, int fd, const char* sni_hostname) {
     if (!ctx || fd < 0) return -1;
     ctx->fd = fd;
 
+    /* Fail closed if system RTC clock is before build epoch */
+    time_t now = time(NULL);
+    if (now < MIN_BUILD_EPOCH) {
+        ctx->last_err = BR_ERR_X509_TIME_UNKNOWN;
+        return -1;
+    }
+
     /* Initialize full client profile */
     br_ssl_client_init_full(&ctx->sc, &ctx->xc, ctx->anchors, ctx->num_anchors);
+
+    /* Enforce TLS 1.2 minimum */
+    br_ssl_engine_set_versions(&ctx->sc.eng, BR_TLS12, BR_TLS12);
+
+    /* Set certificate validity time from RTC */
+    uint32_t days = (uint32_t)(now / 86400) + 719528;
+    uint32_t seconds = (uint32_t)(now % 86400);
+    br_x509_minimal_set_time(&ctx->xc, days, seconds);
 
     /* Inject entropy */
     unsigned char seed[32];
