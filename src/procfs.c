@@ -551,11 +551,18 @@ static int net_killswitch_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint3
 
 static int net_killswitch_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
     (void) vn; (void) offset;
+    process_t* me = scheduler_current();
+    if (me && me->agent_id != 0) {
+        agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "write /proc/sys/net/killswitch denied for agent");
+        return -EPERM;
+    }
     if (count > 0) {
         if (buf[0] == '1') {
             net_killswitch_set(1);
+            agent_audit_log(0, AUDIT_EVENT_KILLSWITCH, "net-killswitch-active");
         } else if (buf[0] == '0') {
             net_killswitch_set(0);
+            agent_audit_log(0, AUDIT_EVENT_KILLSWITCH, "net-killswitch-restored");
         }
     }
     return count;
@@ -1012,6 +1019,8 @@ static int proc_agent_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, ui
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.mem_pages);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nTokens:\t");
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.tokens_used);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nNetBytes:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.net_bytes_used);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\n");
 
     return procfs_read_helper(s_proc_agent_text, pos, offset, buf, count);
@@ -1128,6 +1137,10 @@ static int proc_agent_budget_read(vnode_t* vn, uint32_t offset, uint8_t* buf, ui
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.budget.max_tokens);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nTokensUsed:\t");
     append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.tokens_used);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nMaxNetBytes:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.budget.max_net_bytes);
+    append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\nNetBytesUsed:\t");
+    append_uint(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), s_proc_agent_info.usage.net_bytes_used);
     append_str(s_proc_agent_text, &pos, sizeof(s_proc_agent_text), "\n");
 
     return procfs_read_helper(s_proc_agent_text, pos, offset, buf, count);
