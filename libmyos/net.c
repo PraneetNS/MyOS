@@ -80,8 +80,9 @@ char* inet_ntoa(struct in_addr in) {
     return buf;
 }
 
-static uint32_t get_dns_server(void) {
+static uint32_t get_dns_server(uint16_t* out_port) {
     uint32_t dns = 0x0302000Au; /* 10.0.2.3 default QEMU DNS */
+    if (out_port) *out_port = 53;
 
     int fd = open("/etc/resolv.conf", O_RDONLY);
     if (fd >= 0) {
@@ -100,6 +101,11 @@ static uint32_t get_dns_server(void) {
                     ip_buf[k++] = *p++;
                 }
                 ip_buf[k] = '\0';
+                char* colon = strchr(ip_buf, ':');
+                if (colon) {
+                    *colon = '\0';
+                    if (out_port) *out_port = (uint16_t)atoi(colon + 1);
+                }
                 uint32_t parsed_ip = 0;
                 if (inet_pton(AF_INET, ip_buf, &parsed_ip) > 0) {
                     dns = parsed_ip;
@@ -156,11 +162,14 @@ static int dns_query_udp(const char* name, uint32_t* out_ip) {
     tv.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
+    uint16_t dns_port = 53;
+    uint32_t dns_ip = get_dns_server(&dns_port);
+
     struct sockaddr_in sin;
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
-    sin.sin_port = htons(53);
-    sin.sin_addr.s_addr = get_dns_server();
+    sin.sin_port = htons(dns_port);
+    sin.sin_addr.s_addr = dns_ip;
 
     /* Build DNS query packet */
     uint8_t pkt[512];
@@ -262,8 +271,12 @@ static int dns_query_udp(const char* name, uint32_t* out_ip) {
             strncpy(s_dns_cache[slot].host, name, DNS_MAX_NAME - 1);
             s_dns_cache[slot].host[DNS_MAX_NAME - 1] = '\0';
             s_dns_cache[slot].ip = resolved;
-            s_dns_cache[slot].expire_ticks = (uint32_t)time(NULL) + (attl > 0 && attl < 86400 ? attl : 300);
-            s_dns_cache[slot].valid = 1;
+            if (attl > 0) {
+                s_dns_cache[slot].expire_ticks = (uint32_t)time(NULL) + (attl < 86400 ? attl : 86400);
+                s_dns_cache[slot].valid = 1;
+            } else {
+                s_dns_cache[slot].valid = 0;
+            }
             return 0;
         }
         idx += rdlength;

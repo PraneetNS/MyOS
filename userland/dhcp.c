@@ -266,3 +266,4 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[dhcp] Failed to acquire DHCP lease\n");
     return 1;
 }
+
