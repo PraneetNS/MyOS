@@ -3,10 +3,17 @@ wget-log
 tools/toolchain/build.log
 tools/toolchain/src/
 tools/toolchain/build/
+tools/toolchain/*.tar.*
+tools/toolchain/*.tgz
 *.bin
 *.iso
+*.img
 *.o
+*.a
+*.elf
 *.d
+isodir/
 build/
+dist/
 __pycache__/
 *.pyc
