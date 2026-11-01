@@ -11,10 +11,11 @@
 #include "vmm.h"
 #include "input.h"
 #include "keyboard.h"
+#include "random.h"
 #include <string.h>
 
-/* Flat device count (console, tty, null, zero, serial0, fb0, input_dir, mice, mouse0, kbd0, serial1) */
-#define NUM_DEVICES 11
+/* Flat device count (console, tty, null, zero, serial0, fb0, input_dir, mice, mouse0, kbd0, serial1, urandom, random) */
+#define NUM_DEVICES 13
 
 vnode_t dev_nodes[NUM_DEVICES];
 
@@ -29,7 +30,9 @@ static const char* dev_names[NUM_DEVICES] = {
     "mice",    /* index 7: /dev/input/mice */
     "mouse0",  /* index 8: /dev/input/mouse0 */
     "kbd0",    /* index 9: /dev/input/kbd0 */
-    "serial1"  /* index 10: /dev/serial1 */
+    "serial1", /* index 10: /dev/serial1 */
+    "urandom", /* index 11: /dev/urandom */
+    "random"   /* index 12: /dev/random */
 };
 
 static tty_t* get_effective_tty(vnode_t* vn) {
@@ -747,6 +750,8 @@ static const struct {
     { "zero", 1 },
     { "serial0", 1 },
     { "serial1", 1 },
+    { "urandom", 1 },
+    { "random", 1 },
     { "fb0", 1 },
     { "input", 2 },
     { "ptmx", 1 },
@@ -758,6 +763,30 @@ static const struct {
 };
 
 #define NUM_ROOT_DEV_ENTRIES (sizeof(root_dev_entries) / sizeof(root_dev_entries[0]))
+
+static int random_dev_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    (void) vn; (void) offset;
+    random_get_bytes(buf, count);
+    return (int) count;
+}
+
+static int random_dev_write(vnode_t* vn, uint32_t offset, const uint8_t* buf, uint32_t count) {
+    (void) vn; (void) offset;
+    random_add_entropy(buf, count);
+    return (int) count;
+}
+
+static short random_dev_poll(vnode_t* vn, short events, void** chan_out) {
+    (void) vn; (void) chan_out;
+    return (POLLIN | POLLOUT) & events;
+}
+
+static const struct fs_ops random_dev_ops = {
+    .read = random_dev_read,
+    .write = random_dev_write,
+    .poll = random_dev_poll,
+    .stat = dev_chr_stat
+};
 
 static int devfs_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (!name || !out) return -EINVAL;
@@ -801,6 +830,18 @@ static int devfs_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     if (streq(name, "serial1")) {
         *out = &dev_nodes[10];
         vnode_ref(&dev_nodes[10]);
+        return 0;
+    }
+
+    if (streq(name, "urandom")) {
+        *out = &dev_nodes[11];
+        vnode_ref(&dev_nodes[11]);
+        return 0;
+    }
+
+    if (streq(name, "random")) {
+        *out = &dev_nodes[12];
+        vnode_ref(&dev_nodes[12]);
         return 0;
     }
 
@@ -962,6 +1003,22 @@ void devfs_init(void) {
     dev_nodes[10].ops      = &serial1_ops;
     dev_nodes[10].refcount = 1000;
     dev_nodes[10].parent   = &dev_root_node;
+
+    /* 11: /dev/urandom */
+    dev_nodes[11].type     = VNODE_CONSOLE;
+    dev_nodes[11].size     = 0;
+    dev_nodes[11].fs_data  = 0;
+    dev_nodes[11].ops      = &random_dev_ops;
+    dev_nodes[11].refcount = 1000;
+    dev_nodes[11].parent   = &dev_root_node;
+
+    /* 12: /dev/random */
+    dev_nodes[12].type     = VNODE_CONSOLE;
+    dev_nodes[12].size     = 0;
+    dev_nodes[12].fs_data  = 0;
+    dev_nodes[12].ops      = &random_dev_ops;
+    dev_nodes[12].refcount = 1000;
+    dev_nodes[12].parent   = &dev_root_node;
 
     /* /dev/input directory node */
     input_dir_node.type     = VNODE_DIR;

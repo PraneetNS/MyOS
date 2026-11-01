@@ -198,6 +198,33 @@ void kprintf(const char* fmt, ...) {
     }
 }
 
+static char* s_ksnprintf_ptr = NULL;
+static size_t s_ksnprintf_rem = 0;
+static size_t s_ksnprintf_written = 0;
+
+static void ksnprintf_putc(char c) {
+    if (s_ksnprintf_rem > 1) {
+        *s_ksnprintf_ptr++ = c;
+        s_ksnprintf_rem--;
+    }
+    s_ksnprintf_written++;
+}
+
+int ksnprintf(char* buf, size_t size, const char* fmt, ...) {
+    if (!buf || size == 0) return 0;
+    s_ksnprintf_ptr = buf;
+    s_ksnprintf_rem = size;
+    s_ksnprintf_written = 0;
+
+    va_list args;
+    va_start(args, fmt);
+    kvprintf(ksnprintf_putc, fmt, args);
+    va_end(args);
+
+    *s_ksnprintf_ptr = '\0';
+    return (int)s_ksnprintf_written;
+}
+
 /* --- COM2 (/dev/serial1) raw byte device --- */
 #define COM2 COM2_PORT
 #define SERIAL1_RX_BUF_SIZE 8192

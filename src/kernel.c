@@ -33,10 +33,38 @@
 #include "io.h"
 #include "signal.h"
 #include "agent.h"
+#include "pci.h"
+#include "random.h"
+#include "netdev.h"
+#include "pbuf.h"
+#include "arp.h"
+#include "ipv4.h"
+#include "icmp.h"
+#include "udp.h"
+#include "tcp.h"
+#include "virtio_net.h"
 
 int kernel_has_serial_shell = 0;
 int g_kernel_shutting_down = 0;
 static char kernel_cmdline[256] = "mode=text\n";
+
+int strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+void* __memset_chk(void* dest, int c, size_t len, size_t destlen) {
+    (void)destlen;
+    return memset(dest, c, len);
+}
+
+void* __memcpy_chk(void* dest, const void* src, size_t len, size_t destlen) {
+    (void)destlen;
+    return memcpy(dest, src, len);
+}
 
 const char* kernel_get_cmdline(void) {
     return kernel_cmdline;
@@ -126,7 +154,8 @@ void kernel_reboot(uint32_t cmd) {
         }
     }
 
-    /* 4. Sync buffer cache */
+    /* 4. Save CSPRNG seed and sync buffer cache */
+    random_save_seed();
     bcache_sync();
 
     /* 5. Perform requested power action */
@@ -278,6 +307,22 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     agent_init();
     kprintf("[ok] Agent subsystem initialized\n");
+
+    pci_init();
+    kprintf("[ok] PCI bus initialized\n");
+
+    pbuf_pool_init();
+    netdev_init();
+    arp_init();
+    ipv4_init();
+    icmp_init();
+    udp_init();
+    tcp_init();
+    virtio_net_init();
+    kprintf("[ok] Network stack initialized\n");
+
+    random_init();
+    kprintf("[ok] CSPRNG initialized\n");
 
     int use_kshell = check_boot_flag(mb_info_addr, "kshell");
     if (check_boot_flag(mb_info_addr, "serial_shell=1")) {

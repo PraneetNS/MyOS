@@ -12,6 +12,7 @@ void serial_putc(char c);
 void serial_puts(const char* s);
 void serial_printf(const char* fmt, ...);
 void kprintf(const char* fmt, ...);
+int ksnprintf(char* buf, size_t size, const char* fmt, ...);
 
 int serial_received(void);
 char serial_read(void);
