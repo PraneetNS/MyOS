@@ -113,9 +113,7 @@ int agent_is_runnable(int agent_id) {
     return (ag->state == AGENT_STATE_RUNNING);
 }
 
-void agent_audit_log(int agent_id, uint32_t event_type, const char* detail) {
-    kmutex_lock(&s_agent_lock);
-
+static void agent_audit_log_locked(int agent_id, uint32_t event_type, const char* detail) {
     audit_entry_t* entry = &s_audit_entries[s_audit_head];
     memcpy(entry->prev_hash, s_current_hash, 32);
 
@@ -147,7 +145,11 @@ void agent_audit_log(int agent_id, uint32_t event_type, const char* detail) {
     s_audit_head = (s_audit_head + 1) % MAX_AUDIT_ENTRIES;
     if (s_audit_count < MAX_AUDIT_ENTRIES)
         s_audit_count++;
+}
 
+void agent_audit_log(int agent_id, uint32_t event_type, const char* detail) {
+    kmutex_lock(&s_agent_lock);
+    agent_audit_log_locked(agent_id, event_type, detail);
     kmutex_unlock(&s_agent_lock);
 }
 
@@ -335,6 +337,21 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
                 kmutex_unlock(&s_agent_lock);
                 agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: mem_write widening attempted");
                 kprintf("[agent %d] DENIED: mem_write prefix '%s' widening attempted\n", parent_agent_id, caps->mem_write[i].prefix);
+                return -EACCES;
+            }
+        }
+
+        for (uint32_t i = 0; i < caps->num_net_http && i < MAX_PATH_RULES; i++) {
+            int ok = 0;
+            for (uint32_t j = 0; j < parent->caps.num_net_http && j < MAX_PATH_RULES; j++) {
+                if (path_matches_prefix(caps->net_http[i].prefix, parent->caps.net_http[j].prefix)) {
+                    ok = 1; break;
+                }
+            }
+            if (!ok) {
+                kmutex_unlock(&s_agent_lock);
+                agent_audit_log(parent_agent_id, AUDIT_EVENT_DENIED, "agent_create: net_http widening attempted");
+                kprintf("[agent %d] DENIED: net_http prefix '%s' widening attempted\n", parent_agent_id, caps->net_http[i].prefix);
                 return -EACCES;
             }
         }
@@ -909,14 +926,10 @@ void agent_killswitch_request(void) {
 
 void agent_killswitch_check_deferred(void) {
     if (!s_killswitch_pending) return;
-    process_t* me = scheduler_current();
-    if (me && s_agent_lock.locked && s_agent_lock.owner_pid == me->pid) return;
+    if (!kmutex_trylock(&s_agent_lock)) {
+        return;
+    }
     s_killswitch_pending = 0;
-    agent_killswitch_toggle();
-}
-
-int agent_killswitch_toggle(void) {
-    kmutex_lock(&s_agent_lock);
     s_killswitch_active = !s_killswitch_active;
     int state = s_killswitch_active;
     if (state) {
@@ -925,18 +938,26 @@ int agent_killswitch_toggle(void) {
                 s_agents[i].state = AGENT_STATE_SUSPENDED;
             }
         }
-        kmutex_unlock(&s_agent_lock);
-        agent_audit_log(0, AUDIT_EVENT_KILLSWITCH, "KILLSWITCH: all agents suspended");
-        kprintf("\n[KILLSWITCH] Agents paused, press Ctrl+Alt+Esc again to resume\n");
+        agent_audit_log_locked(0, AUDIT_EVENT_KILLSWITCH, "KILLSWITCH: all agents suspended");
     } else {
         for (int i = 0; i < MAX_AGENTS; i++) {
             if (s_agents[i].in_use && s_agents[i].state == AGENT_STATE_SUSPENDED) {
                 s_agents[i].state = AGENT_STATE_RUNNING;
             }
         }
-        kmutex_unlock(&s_agent_lock);
-        agent_audit_log(0, AUDIT_EVENT_KILLSWITCH, "KILLSWITCH: agents resumed");
+        agent_audit_log_locked(0, AUDIT_EVENT_KILLSWITCH, "KILLSWITCH: agents resumed");
+    }
+    kmutex_unlock(&s_agent_lock);
+
+    if (state) {
+        kprintf("\n[KILLSWITCH] Agents paused, press Ctrl+Alt+Esc again to resume\n");
+    } else {
         kprintf("\n[KILLSWITCH] Agents resumed\n");
     }
-    return state;
+}
+
+int agent_killswitch_toggle(void) {
+    agent_killswitch_request();
+    agent_killswitch_check_deferred();
+    return s_killswitch_active;
 }
