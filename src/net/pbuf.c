@@ -1,4 +1,5 @@
 #include "pbuf.h"
+#include "io.h"
 #include <string.h>
 
 static pbuf_t s_pool[PBUF_POOL_SIZE];
@@ -18,12 +19,11 @@ void pbuf_pool_init(void) {
 }
 
 pbuf_t* pbuf_alloc(void) {
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    uint64_t flags = irq_save();
 
     if (!s_free_list) {
         s_dropped_count++;
-        asm volatile ("push %0; popf" : : "r"(flags));
+        irq_restore(flags);
         return NULL;
     }
 
@@ -36,23 +36,21 @@ pbuf_t* pbuf_alloc(void) {
     p->refcount = 1;
     p->next = NULL;
 
-    asm volatile ("push %0; popf" : : "r"(flags));
+    irq_restore(flags);
     return p;
 }
 
 pbuf_t* pbuf_ref(pbuf_t* p) {
     if (!p) return NULL;
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    uint64_t flags = irq_save();
     p->refcount++;
-    asm volatile ("push %0; popf" : : "r"(flags));
+    irq_restore(flags);
     return p;
 }
 
 void pbuf_free(pbuf_t* p) {
     if (!p) return;
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
+    uint64_t flags = irq_save();
 
     p->refcount--;
     if (p->refcount <= 0) {
@@ -61,7 +59,7 @@ void pbuf_free(pbuf_t* p) {
         s_free_count++;
     }
 
-    asm volatile ("push %0; popf" : : "r"(flags));
+    irq_restore(flags);
 }
 
 uint32_t pbuf_pool_free_count(void) {

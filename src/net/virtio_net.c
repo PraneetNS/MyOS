@@ -68,7 +68,7 @@ static struct vring_avail* s_rx_avail = NULL;
 static struct vring_used*  s_rx_used = NULL;
 static uint16_t s_rx_last_used = 0;
 static uint8_t* s_rx_buf_virt = NULL;
-static uint32_t s_rx_buf_phys = 0;
+static uint64_t s_rx_buf_phys = 0;
 
 /* TX virtqueue */
 static uint16_t s_tx_qsize = 0;
@@ -77,7 +77,7 @@ static struct vring_avail* s_tx_avail = NULL;
 static struct vring_used*  s_tx_used = NULL;
 static uint16_t s_tx_last_used = 0;
 static uint8_t* s_tx_buf_virt = NULL;
-static uint32_t s_tx_buf_phys = 0;
+static uint64_t s_tx_buf_phys = 0;
 static kmutex_t s_tx_lock;
 
 extern int net_killswitch_active(void);
@@ -215,9 +215,9 @@ int virtio_net_init(void) {
         return -1;
     }
 
-    uint32_t rx_vring_phys = pmm_alloc_contiguous_frames(4);
+    uint64_t rx_vring_phys = pmm_alloc_contiguous_frames(4);
     if (!rx_vring_phys) return -1;
-    uint8_t* rx_vring_virt = (uint8_t*)(KERNEL_BASE + rx_vring_phys);
+    uint8_t* rx_vring_virt = (uint8_t*) P2V(rx_vring_phys);
     memset(rx_vring_virt, 0, 4 * FRAME_SIZE);
 
     s_rx_desc = (struct vring_desc*) rx_vring_virt;
@@ -226,7 +226,7 @@ int virtio_net_init(void) {
     s_rx_used = (struct vring_used*) (rx_vring_virt + used_offset);
     s_rx_last_used = 0;
 
-    outl(s_io_base + 0x08, rx_vring_phys >> 12);
+    outl(s_io_base + 0x08, (uint32_t)(rx_vring_phys >> 12));
 
     /* Setup TX Queue (1) */
     outw(s_io_base + 0x0E, 1);
@@ -236,9 +236,9 @@ int virtio_net_init(void) {
         return -1;
     }
 
-    uint32_t tx_vring_phys = pmm_alloc_contiguous_frames(4);
+    uint64_t tx_vring_phys = pmm_alloc_contiguous_frames(4);
     if (!tx_vring_phys) return -1;
-    uint8_t* tx_vring_virt = (uint8_t*)(KERNEL_BASE + tx_vring_phys);
+    uint8_t* tx_vring_virt = (uint8_t*) P2V(tx_vring_phys);
     memset(tx_vring_virt, 0, 4 * FRAME_SIZE);
 
     s_tx_desc = (struct vring_desc*) tx_vring_virt;
@@ -247,17 +247,17 @@ int virtio_net_init(void) {
     s_tx_used = (struct vring_used*) (tx_vring_virt + used_offset);
     s_tx_last_used = 0;
 
-    outl(s_io_base + 0x08, tx_vring_phys >> 12);
+    outl(s_io_base + 0x08, (uint32_t)(tx_vring_phys >> 12));
 
     /* Allocate DMA buffers */
     s_rx_buf_phys = pmm_alloc_contiguous_frames(8);
     if (!s_rx_buf_phys) return -1;
-    s_rx_buf_virt = (uint8_t*)(KERNEL_BASE + s_rx_buf_phys);
+    s_rx_buf_virt = (uint8_t*) P2V(s_rx_buf_phys);
     memset(s_rx_buf_virt, 0, 8 * FRAME_SIZE);
 
     s_tx_buf_phys = pmm_alloc_frame();
     if (!s_tx_buf_phys) return -1;
-    s_tx_buf_virt = (uint8_t*)(KERNEL_BASE + s_tx_buf_phys);
+    s_tx_buf_virt = (uint8_t*) P2V(s_tx_buf_phys);
     memset(s_tx_buf_virt, 0, FRAME_SIZE);
 
     kmutex_init(&s_tx_lock, "virtio_tx");
