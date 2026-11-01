@@ -1,18 +1,18 @@
 .section .text
+.code64
 
 .global paging_flush
 .type paging_flush, @function
+/* void paging_flush(uint64_t pml4_phys) */
 paging_flush:
-    mov 4(%esp), %eax
-    mov %eax, %cr3
+    mov %rdi, %cr3
     ret
 .size paging_flush, . - paging_flush
 
-.global paging_enable
-.type paging_enable, @function
-paging_enable:
-    mov %cr0, %eax
-    or $0x80000000, %eax   /* PG bit (bit 31) */
-    mov %eax, %cr0
+.global invlpg_page
+.type invlpg_page, @function
+/* void invlpg_page(uint64_t vaddr) */
+invlpg_page:
+    invlpg (%rdi)
     ret
-.size paging_enable, . - paging_enable
+.size invlpg_page, . - invlpg_page

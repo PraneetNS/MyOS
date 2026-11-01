@@ -1,36 +1,50 @@
 .section .text
+.code64
+
 .global resume_saved_state
 .type resume_saved_state, @function
-/* void resume_saved_state(struct registers* r) -- never returns.
-   Field offsets must match struct registers in src/idt.h exactly:
-   ds=0, edi=4, esi=8, ebp=12, esp=16(unused, matches POPA's own
-   behavior of not restoring esp), ebx=20, edx=24, ecx=28, eax=32,
-   int_no=36, err_code=40, eip=44, cs=48, eflags=52, useresp=56, ss=60. */
+/* void resume_saved_state(struct registers* r) -- never returns
+   rdi = pointer to struct registers
+*/
 resume_saved_state:
-    mov 4(%esp), %ebp    /* ebp = r, temporarily repurposed as a base pointer */
-
-    mov 0(%ebp), %eax
+    /* Load data segment registers */
+    mov 0(%rdi), %rax
     mov %ax, %ds
     mov %ax, %es
     mov %ax, %fs
     mov %ax, %gs
 
-    /* Build the iret frame on the CURRENT (kernel) stack: push in
-       reverse order so iret pops eip, cs, eflags, useresp, ss. */
-    push 60(%ebp)   /* ss */
-    push 56(%ebp)   /* useresp */
-    push 52(%ebp)   /* eflags */
-    push 48(%ebp)   /* cs */
-    push 44(%ebp)   /* eip */
+    /* Push iretq frame:
+       SS     = r->ss     (offset 176)
+       RSP    = r->rsp    (offset 168)
+       RFLAGS = r->rflags (offset 160)
+       CS     = r->cs     (offset 152)
+       RIP    = r->rip    (offset 144)
+    */
+    pushq 176(%rdi)   /* ss */
+    pushq 168(%rdi)   /* rsp */
+    pushq 160(%rdi)   /* rflags */
+    pushq 152(%rdi)   /* cs */
+    pushq 144(%rdi)   /* rip */
 
-    mov 20(%ebp), %ebx
-    mov 24(%ebp), %edx
-    mov 28(%ebp), %ecx
-    mov 4(%ebp),  %edi
-    mov 8(%ebp),  %esi
-    mov 32(%ebp), %eax   /* r->eax -- the caller sets this to 0 for the child, matching fork() semantics */
+    /* Restore general purpose registers */
+    movq 8(%rdi),   %r15
+    movq 16(%rdi),  %r14
+    movq 24(%rdi),  %r13
+    movq 32(%rdi),  %r12
+    movq 40(%rdi),  %r11
+    movq 48(%rdi),  %r10
+    movq 56(%rdi),  %r9
+    movq 64(%rdi),  %r8
+    movq 72(%rdi),  %rbp
+    movq 80(%rdi),  %rsi
+    movq 96(%rdi),  %rdx
+    movq 104(%rdi), %rcx
+    movq 112(%rdi), %rbx
+    movq 120(%rdi), %rax
 
-    mov 12(%ebp), %ebp   /* load the real saved ebp LAST -- it's our base pointer until this instruction */
+    /* Restore rdi last */
+    movq 88(%rdi),  %rdi
 
-    iret
+    iretq
 .size resume_saved_state, . - resume_saved_state

@@ -1,24 +1,35 @@
 .section .text
+.code64
+
 .global switch_task
 .type switch_task, @function
-/* void switch_task(uint32_t* old_esp_store, uint32_t new_esp) */
+/* void switch_task(uint64_t* old_rsp_store, uint64_t new_rsp)
+   rdi = old_rsp_store
+   rsi = new_rsp
+*/
 switch_task:
-    push %ebp
-    push %ebx
-    push %esi
-    push %edi
-    pushf
+    /* Push callee-saved registers on old stack */
+    pushq %rbp
+    pushq %rbx
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+    pushfq
 
-    mov 24(%esp), %eax   /* old_esp_store */
-    mov %esp, (%eax)
+    /* Save old rsp */
+    movq %rsp, (%rdi)
 
-    mov 28(%esp), %ecx   /* new_esp -- read before we clobber %esp */
-    mov %ecx, %esp
+    /* Switch to new rsp */
+    movq %rsi, %rsp
 
-    popf
-    pop %edi
-    pop %esi
-    pop %ebx
-    pop %ebp
+    /* Pop callee-saved registers from new stack */
+    popfq
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbx
+    popq %rbp
     ret
 .size switch_task, . - switch_task

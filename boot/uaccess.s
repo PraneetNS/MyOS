@@ -1,3 +1,6 @@
+.section .text
+.code64
+
 .global copy_to_user
 .global copy_from_user
 .global copy_user_start
@@ -6,87 +9,82 @@
 .global copy_user_end2
 .global copy_user_fault
 
-.section .text
-
-# int copy_to_user(void* user_dest, const void* kernel_src, uint32_t len)
+/* int copy_to_user(void* user_dest, const void* kernel_src, uint64_t len)
+   rdi = user_dest
+   rsi = kernel_src
+   rdx = len
+*/
 copy_to_user:
-    push %ebp
-    mov %esp, %ebp
-    push %esi
-    push %edi
-    push %ecx
-
-    mov 8(%ebp), %edi     # user_dest
-    mov 12(%ebp), %esi    # kernel_src
-    mov 16(%ebp), %ecx    # len
-
-    test %ecx, %ecx
+    test %rdx, %rdx
     jz 1f
 
-    # Bounds check user_dest range [user_dest, user_dest + len)
-    cmp $0x1000, %edi
+    /* Bounds check user_dest range: [0x1000 .. 0x0000800000000000) */
+    mov %rdi, %rax
+    cmp $0x1000, %rax
     jb copy_user_fault
-    mov %edi, %eax
-    add %ecx, %eax
+    add %rdx, %rax
     jc copy_user_fault
-    cmp $0xC0000000, %eax
+    mov $0x0000800000000000, %rcx
+    cmp %rcx, %rax
     ja copy_user_fault
 
+    mov %rdx, %rcx
+
+    /* SMAP: open access to user pages if enabled */
+    cmpb $0, smap_enabled(%rip)
+    je copy_user_start
+    stac
 copy_user_start:
     rep movsb
 copy_user_end:
+    cmpb $0, smap_enabled(%rip)
+    je 1f
+    clac
 1:
-    xor %eax, %eax        # 0 = success
-    pop %ecx
-    pop %edi
-    pop %esi
-    mov %ebp, %esp
-    pop %ebp
+    xor %eax, %eax
     ret
 
-# int copy_from_user(void* kernel_dest, const void* user_src, uint32_t len)
+/* int copy_from_user(void* kernel_dest, const void* user_src, uint64_t len)
+   rdi = kernel_dest
+   rsi = user_src
+   rdx = len
+*/
 copy_from_user:
-    push %ebp
-    mov %esp, %ebp
-    push %esi
-    push %edi
-    push %ecx
-
-    mov 8(%ebp), %edi     # kernel_dest
-    mov 12(%ebp), %esi    # user_src
-    mov 16(%ebp), %ecx    # len
-
-    test %ecx, %ecx
+    test %rdx, %rdx
     jz 2f
 
-    # Bounds check user_src range [user_src, user_src + len)
-    cmp $0x1000, %esi
+    /* Bounds check user_src range */
+    mov %rsi, %rax
+    cmp $0x1000, %rax
     jb copy_user_fault
-    mov %esi, %eax
-    add %ecx, %eax
+    add %rdx, %rax
     jc copy_user_fault
-    cmp $0xC0000000, %eax
+    mov $0x0000800000000000, %rcx
+    cmp %rcx, %rax
     ja copy_user_fault
 
+    mov %rdx, %rcx
+
+    /* SMAP: open access to user pages if enabled */
+    cmpb $0, smap_enabled(%rip)
+    je copy_user_start2
+    stac
 copy_user_start2:
     rep movsb
 copy_user_end2:
+    cmpb $0, smap_enabled(%rip)
+    je 2f
+    clac
 2:
-    xor %eax, %eax        # 0 = success
-    pop %ecx
-    pop %edi
-    pop %esi
-    mov %ebp, %esp
-    pop %ebp
+    xor %eax, %eax
     ret
 
 copy_user_fault:
-    mov $-14, %eax        # -EFAULT (-14)
-    pop %ecx
-    pop %edi
-    pop %esi
-    mov %ebp, %esp
-    pop %ebp
+    cmpb $0, smap_enabled(%rip)
+    je 9f
+    clac
+9:
+    mov $-14, %eax      /* -EFAULT (-14) */
     ret
 
 .section .note.GNU-stack,"",@progbits
