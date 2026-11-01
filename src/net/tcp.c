@@ -36,6 +36,21 @@ typedef struct tcp_cb {
     uint32_t iss;         /* Initial send sequence number */
     uint32_t irs;         /* Initial receive sequence number */
 
+    /* RTT estimation and RTO backoff */
+    uint32_t srtt;
+    uint32_t rttvar;
+    uint32_t rto;             /* in ticks (1 tick = 10ms) */
+    uint32_t rto_backoff;
+    uint32_t rtt_seq;
+    uint32_t rtt_start_tick;
+
+    /* Congestion control */
+    uint32_t cwnd;
+    uint32_t ssthresh;
+
+    /* TIME_WAIT tracking */
+    uint32_t time_wait_start;
+
     int connect_wait;
     int connect_status;
 
@@ -79,6 +94,10 @@ static tcp_cb_t* get_or_create_tcb(socket_t* sock) {
         tcb->state = TCP_STATE_CLOSED;
         tcb->rcv_wnd = TCP_RX_BUF_SIZE;
         tcb->snd_wnd = 8192;
+        tcb->rto = 20; /* 200 ms */
+        tcb->rto_backoff = 1;
+        tcb->cwnd = TCP_MSS;
+        tcb->ssthresh = 65535;
         tcb->rx_buf = (uint8_t*) kmalloc(TCP_RX_BUF_SIZE);
         if (!tcb->rx_buf) {
             kfree(tcb);
@@ -338,6 +357,12 @@ static int tcp_send(socket_t* sock, const void* buf, uint32_t len, int flags) {
 
     kmutex_lock(&sock->lock);
     tcp_cb_t* tcb = (tcp_cb_t*) sock->inet_data;
+
+    if (tcb && tcb->state == TCP_STATE_TIME_WAIT) {
+        if (timer_get_ticks() - tcb->time_wait_start >= 40) {
+            tcb->state = TCP_STATE_CLOSED;
+        }
+    }
     if (!tcb || tcb->state != TCP_STATE_ESTABLISHED) {
         kmutex_unlock(&sock->lock);
         return -ENOTCONN;
@@ -357,11 +382,22 @@ static int tcp_send(socket_t* sock, const void* buf, uint32_t len, int flags) {
         }
         tcb->snd_nxt += chunk;
 
-        /* Wait for ACK or retransmit (up to 200ms per chunk) */
+        /* Measure RTT for this segment if not already timing */
+        if (tcb->rtt_seq == 0) {
+            tcb->rtt_seq = tcb->snd_nxt;
+            tcb->rtt_start_tick = timer_get_ticks();
+        }
+
+        /* Wait for ACK or retransmit with exponential backoff */
         uint32_t send_tick = timer_get_ticks();
         while (tcb->snd_una < tcb->snd_nxt) {
-            if (timer_get_ticks() - send_tick > 20) { /* 200ms */
+            uint32_t current_rto = (tcb->rto > 0 ? tcb->rto : 20) * (tcb->rto_backoff > 0 ? tcb->rto_backoff : 1);
+            if (current_rto > 300) current_rto = 300;
+            if (timer_get_ticks() - send_tick > current_rto) {
                 tcp_send_segment(sock, TCP_ACK | TCP_PSH, seq, tcb->rcv_nxt, ptr, chunk);
+                tcb->rto_backoff = (tcb->rto_backoff < 8) ? (tcb->rto_backoff * 2) : 16;
+                tcb->ssthresh = (tcb->cwnd / 2 < 2 * TCP_MSS) ? 2 * TCP_MSS : tcb->cwnd / 2;
+                tcb->cwnd = TCP_MSS;
                 send_tick = timer_get_ticks();
             }
             if (tcb->state != TCP_STATE_ESTABLISHED) break;
@@ -389,6 +425,12 @@ static int tcp_recv(socket_t* sock, void* buf, uint32_t len, int flags) {
 
     kmutex_lock(&sock->lock);
     tcp_cb_t* tcb = (tcp_cb_t*) sock->inet_data;
+
+    if (tcb && tcb->state == TCP_STATE_TIME_WAIT) {
+        if (timer_get_ticks() - tcb->time_wait_start >= 40) {
+            tcb->state = TCP_STATE_CLOSED;
+        }
+    }
     if (!tcb) {
         kmutex_unlock(&sock->lock);
         return -ENOTCONN;
@@ -445,6 +487,12 @@ static int tcp_shutdown(socket_t* sock, int how) {
     if (!sock) return -EINVAL;
     kmutex_lock(&sock->lock);
     tcp_cb_t* tcb = (tcp_cb_t*) sock->inet_data;
+
+    if (tcb && tcb->state == TCP_STATE_TIME_WAIT) {
+        if (timer_get_ticks() - tcb->time_wait_start >= 40) {
+            tcb->state = TCP_STATE_CLOSED;
+        }
+    }
     if (tcb && tcb->state == TCP_STATE_ESTABLISHED) {
         if (how == SHUT_WR || how == SHUT_RDWR) {
             tcp_send_segment(sock, TCP_FIN | TCP_ACK, tcb->snd_nxt, tcb->rcv_nxt, NULL, 0);
@@ -466,6 +514,12 @@ static short tcp_poll(socket_t* sock, short events, void** chan_out) {
 
     kmutex_lock(&sock->lock);
     tcp_cb_t* tcb = (tcp_cb_t*) sock->inet_data;
+
+    if (tcb && tcb->state == TCP_STATE_TIME_WAIT) {
+        if (timer_get_ticks() - tcb->time_wait_start >= 40) {
+            tcb->state = TCP_STATE_CLOSED;
+        }
+    }
 
     if (sock->state == SS_LISTENING) {
         if (sock->accept_count > 0) {
@@ -498,6 +552,12 @@ static void tcp_close(socket_t* sock) {
 
     kmutex_lock(&sock->lock);
     tcp_cb_t* tcb = (tcp_cb_t*) sock->inet_data;
+
+    if (tcb && tcb->state == TCP_STATE_TIME_WAIT) {
+        if (timer_get_ticks() - tcb->time_wait_start >= 40) {
+            tcb->state = TCP_STATE_CLOSED;
+        }
+    }
     if (tcb) {
         if (tcb->state == TCP_STATE_ESTABLISHED) {
             tcp_send_segment(sock, TCP_FIN | TCP_ACK, tcb->snd_nxt, tcb->rcv_nxt, NULL, 0);
@@ -669,8 +729,45 @@ void tcp_rx(netdev_t* dev, pbuf_t* pbuf, const struct ip_hdr* ip) {
     kmutex_lock(&sock->lock);
     tcp_cb_t* tcb = (tcp_cb_t*) sock->inet_data;
 
+    if (tcb && tcb->state == TCP_STATE_TIME_WAIT) {
+        if (timer_get_ticks() - tcb->time_wait_start >= 40) {
+            tcb->state = TCP_STATE_CLOSED;
+        }
+    }
+
+    /* 2. Handle RST flag on matching socket */
+    if (flags & TCP_RST) {
+        if (tcb && tcb->state != TCP_STATE_CLOSED && tcb->state != TCP_STATE_LISTEN) {
+            tcb->state = TCP_STATE_CLOSED;
+            sock->state = SS_UNCONNECTED;
+            sock->so_error = ECONNRESET;
+            scheduler_wake_channel(&tcb->connect_wait);
+            scheduler_wake_channel(&sock->rx_ring.read_wait);
+            scheduler_wake_channel(&sock->rx_ring.write_wait);
+        }
+        kmutex_unlock(&sock->lock);
+        pbuf_free(pbuf);
+        return;
+    }
+
     /* Listening socket receiving SYN */
     if (sock->state == SS_LISTENING && (flags & TCP_SYN) && !(flags & TCP_ACK)) {
+        /* Bounded SYN backlog & SYN flood defense: limit half-open connections */
+        int pending_syns = 0;
+        for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+            if (s_tcp_sockets[i] && s_tcp_sockets[i]->inet_data) {
+                tcp_cb_t* c = (tcp_cb_t*) s_tcp_sockets[i]->inet_data;
+                if (c->parent == sock && c->state == TCP_STATE_SYN_RECEIVED) {
+                    pending_syns++;
+                }
+            }
+        }
+        if (pending_syns >= sock->accept_backlog * 2 || pending_syns >= 8) {
+            kmutex_unlock(&sock->lock);
+            pbuf_free(pbuf);
+            return;
+        }
+
         if (sock->accept_count < sock->accept_backlog) {
             /* Find slot in s_tcp_sockets for child */
             int child_slot = -1;
@@ -760,6 +857,34 @@ void tcp_rx(netdev_t* dev, pbuf_t* pbuf, const struct ip_hdr* ip) {
     if (flags & TCP_ACK) {
         if (ack > tcb->snd_una) {
             tcb->snd_una = ack;
+
+            /* Update RTT estimation */
+            if (tcb->rtt_seq && ack >= tcb->rtt_seq) {
+                uint32_t m = timer_get_ticks() - tcb->rtt_start_tick;
+                if (tcb->srtt == 0) {
+                    tcb->srtt = m;
+                    tcb->rttvar = m / 2;
+                } else {
+                    uint32_t diff = (m > tcb->srtt) ? (m - tcb->srtt) : (tcb->srtt - m);
+                    tcb->rttvar = (3 * tcb->rttvar + diff) / 4;
+                    tcb->srtt = (7 * tcb->srtt + m) / 8;
+                }
+                tcb->rto = tcb->srtt + 4 * tcb->rttvar;
+                if (tcb->rto < 10) tcb->rto = 10;
+                if (tcb->rto > 300) tcb->rto = 300;
+                tcb->rto_backoff = 1;
+                tcb->rtt_seq = 0;
+            }
+
+            /* Congestion control AIMD */
+            if (tcb->state == TCP_STATE_ESTABLISHED) {
+                if (tcb->cwnd < tcb->ssthresh) {
+                    tcb->cwnd += TCP_MSS;
+                } else {
+                    tcb->cwnd += (TCP_MSS * TCP_MSS) / tcb->cwnd;
+                }
+            }
+
             scheduler_wake_channel(&sock->rx_ring.write_wait);
         }
     }
@@ -788,6 +913,7 @@ void tcp_rx(netdev_t* dev, pbuf_t* pbuf, const struct ip_hdr* ip) {
                 tcb->state = TCP_STATE_CLOSE_WAIT;
             } else if (tcb->state == TCP_STATE_FIN_WAIT_1 || tcb->state == TCP_STATE_FIN_WAIT_2) {
                 tcb->state = TCP_STATE_TIME_WAIT;
+                tcb->time_wait_start = timer_get_ticks();
             }
             sock->shutdown_rd = 1;
             scheduler_wake_channel(&sock->rx_ring.read_wait);
