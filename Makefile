@@ -69,3 +69,16 @@ clean:
 	rm -rf isodir dist
 
 .PHONY: all run test clean release
+
+demo: demo-redteam
+
+demo-organizer: all disk.img
+	./tools/record_demo.sh organizer
+
+demo-researcher: all disk.img
+	./tools/record_demo.sh researcher
+
+demo-redteam: all disk.img
+	./tools/record_demo.sh red-team
+
+.PHONY: demo demo-organizer demo-researcher demo-redteam
