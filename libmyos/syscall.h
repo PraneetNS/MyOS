@@ -91,65 +91,107 @@
 #define SYS_AGENT_NET_LEFT       184
 #define SYS_NET_DAEMON_REGISTER  185
 
-static inline int __syscall0(int num) {
-    int ret;
-    __asm__ __volatile__ ("int $0x80" : "=a"(ret) : "a"(num) : "memory");
-    return ret;
-}
+/* On x86-64:
+   Fast syscall convention uses `syscall`:
+     %rax = syscall number
+     %rdi = arg1
+     %rsi = arg2
+     %rdx = arg3
+     %r10 = arg4 (standard x86-64 syscall clobbers rcx with rip, r11 with rflags)
+     %r8  = arg5
+     %r9  = arg6
+     Return value in %rax
+*/
 
-static inline int __syscall1(int num, long a1) {
-    int ret;
-    __asm__ __volatile__ ("int $0x80" : "=a"(ret) : "a"(num), "b"(a1) : "memory");
-    return ret;
-}
-
-static inline int __syscall2(int num, long a1, long a2) {
-    int ret;
-    __asm__ __volatile__ ("int $0x80" : "=a"(ret) : "a"(num), "b"(a1), "c"(a2) : "memory");
-    return ret;
-}
-
-static inline int __syscall3(int num, long a1, long a2, long a3) {
-    int ret;
-    __asm__ __volatile__ ("int $0x80" : "=a"(ret) : "a"(num), "b"(a1), "c"(a2), "d"(a3) : "memory");
-    return ret;
-}
-
-static inline int __syscall4(int num, long a1, long a2, long a3, long a4) {
-    int ret;
-    __asm__ __volatile__ ("int $0x80" : "=a"(ret) : "a"(num), "b"(a1), "c"(a2), "d"(a3), "S"(a4) : "memory");
-    return ret;
-}
-
-static inline int __syscall5(int num, long a1, long a2, long a3, long a4, long a5) {
-    int ret;
-    __asm__ __volatile__ ("int $0x80" : "=a"(ret) : "a"(num), "b"(a1), "c"(a2), "d"(a3), "S"(a4), "D"(a5) : "memory");
-    return ret;
-}
-
-static inline int __syscall6(int num, long a1, long a2, long a3, long a4, long a5, long a6) {
-    int ret;
-    /* Use stack or ebp for 6th parameter */
+static inline long __syscall0(long num) {
+    long ret;
     __asm__ __volatile__ (
-        "pushl %7\n\t"
-        "pushl %%ebp\n\t"
-        "movl 4(%%esp), %%ebp\n\t"
-        "int $0x80\n\t"
-        "popl %%ebp\n\t"
-        "addl $4, %%esp"
+        "syscall"
         : "=a"(ret)
-        : "a"(num), "b"(a1), "c"(a2), "d"(a3), "S"(a4), "D"(a5), "m"(a6)
-        : "memory"
+        : "a"(num)
+        : "rcx", "r11", "memory"
     );
     return ret;
 }
 
-static inline int __check_syscall_err(int ret) {
+static inline long __syscall1(long num, long a1) {
+    long ret;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long __syscall2(long num, long a1, long a2) {
+    long ret;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long __syscall3(long num, long a1, long a2, long a3) {
+    long ret;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long __syscall4(long num, long a1, long a2, long a3, long a4) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long __syscall5(long num, long a1, long a2, long a3, long a4, long a5) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    register long r8  __asm__("r8")  = a5;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long __syscall6(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    register long r8  __asm__("r8")  = a5;
+    register long r9  __asm__("r9")  = a6;
+    __asm__ __volatile__ (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8), "r"(r9)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline int __check_syscall_err(long ret) {
     if (ret < 0) {
-        errno = -ret;
+        errno = (int)(-ret);
         return -1;
     }
-    return ret;
+    return (int)ret;
 }
 
 #endif

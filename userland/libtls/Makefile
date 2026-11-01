@@ -1,11 +1,11 @@
 PREFIX ?= $(HOME)/opt/myos-cross
-TARGET = i686-elf
+TARGET = x86_64-elf
 
 CC = $(PREFIX)/bin/$(TARGET)-gcc
 AR = $(PREFIX)/bin/$(TARGET)-ar
 RANLIB = $(PREFIX)/bin/$(TARGET)-ranlib
 
-CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -Iinc -Isrc -isystem $(PREFIX)/$(TARGET)/include -DBR_LOMUL
+CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -mcmodel=small -Iinc -Isrc -isystem $(PREFIX)/$(TARGET)/include -DBR_LOMUL
 SRCS = $(wildcard src/*/*.c) $(wildcard src/*.c) tls.c
 OBJS = $(SRCS:.c=.o)
 

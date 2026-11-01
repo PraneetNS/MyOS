@@ -1,3 +1,11 @@
 #!/bin/bash
-PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
-exec "$PREFIX/bin/i686-elf-ar" "$@"
+if [ -z "$MYOS_PREFIX" ]; then
+    if [ -d "/root/opt/myos-cross" ]; then
+        PREFIX="/root/opt/myos-cross"
+    else
+        PREFIX="$HOME/opt/myos-cross"
+    fi
+else
+    PREFIX="$MYOS_PREFIX"
+fi
+exec "$PREFIX/bin/x86_64-elf-ar" "$@"

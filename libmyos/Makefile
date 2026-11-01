@@ -1,11 +1,11 @@
-PREFIX ?= $(HOME)/opt/myos-cross
-TARGET = i686-elf
+PREFIX ?= $(if $(MYOS_PREFIX),$(MYOS_PREFIX),$(if $(wildcard /root/opt/myos-cross),/root/opt/myos-cross,$(HOME)/opt/myos-cross))
+TARGET = x86_64-elf
 
 CC = $(PREFIX)/bin/$(TARGET)-gcc
 AR = $(PREFIX)/bin/$(TARGET)-ar
 RANLIB = $(PREFIX)/bin/$(TARGET)-ranlib
 
-CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -Iinclude -isystem $(PREFIX)/$(TARGET)/include
+CFLAGS = -O2 -Wall -fno-pie -fno-stack-protector -mcmodel=small -Iinclude -isystem $(PREFIX)/$(TARGET)/include
 ASFLAGS =
 
 OBJS = stubs.o posix.o init.o setjmp_alias.o net.o

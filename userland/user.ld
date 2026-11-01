@@ -2,8 +2,8 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* Classic Linux x86 32-bit ELF user space entry: 0x08048000 */
-    . = 0x08048000;
+    /* Canonical standard 64-bit ELF user space entry: 0x0000000000400000 (4MB) */
+    . = 0x0000000000400000;
 
     .text ALIGN(4K) : { *(.text .text.*) }
     .rodata ALIGN(4K) : { *(.rodata .rodata.*) }

@@ -8,42 +8,55 @@
 .section .text
 _start:
     /* Clear base pointer for outermost frame */
-    xorl %ebp, %ebp
+    xorq %rbp, %rbp
 
-    /* Pop argc */
-    popl %esi             /* esi = argc */
+    /* In standard 64-bit calling/ELF conventions:
+       Stack on entry:
+         [rsp]     = argc
+         [rsp + 8] = argv[0]
+         ...
+         [rsp + 8*(argc+1)] = NULL
+         [rsp + 8*(argc+2)] = envp[0]
+    */
+    popq %rdi             /* rdi = argc */
+    movq %rsp, %rsi       /* rsi = argv */
 
-    /* Current esp points to argv[0] */
-    movl %esp, %edi       /* edi = argv */
-
-    /* Compute envp: argv + argc + 1 */
-    movl %esi, %eax
-    incl %eax
-    shll $2, %eax
-    addl %esp, %eax       /* eax = &argv[argc + 1] = envp */
+    /* Compute envp: argv + 8*(argc + 1) */
+    movq %rdi, %rax
+    incq %rax
+    shlq $3, %rax
+    addq %rsp, %rax       /* rax = &argv[argc + 1] = envp */
+    movq %rax, %rdx       /* rdx = envp */
 
     /* Store envp into environ */
-    movl %eax, environ
+    movq %rax, environ(%rip)
 
-    /* Run libmyos initialization (e.g., timezone check) */
-    pushl %eax            /* envp */
-    pushl %edi            /* argv */
-    pushl %esi            /* argc */
+    /* Ensure 16-byte stack alignment before calls:
+       Current rsp has popped argc (8 bytes removed from initial 16-byte alignment).
+       Pushing a dummy 8 bytes or aligning */
+    andq $-16, %rsp
+    subq $8, %rsp         /* align stack to 16 bytes before call */
+
+    /* Save argc, argv, envp across initializers */
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+
+    /* Run libmyos initialization: __libmyos_init(argc, argv, envp) */
     call __libmyos_init
-    addl $12, %esp
 
     /* Call C++ / Newlib initializers if present */
     call __libc_init_array
 
-    /* Push args for main(argc, argv, envp) */
-    pushl environ
-    pushl %edi            /* argv */
-    pushl %esi            /* argc */
+    /* Restore args for main(argc, argv, envp) */
+    popq %rdi             /* argc */
+    popq %rsi             /* argv */
+    popq %rdx             /* envp */
 
     call main
 
-    /* Pass main's return value to exit */
-    pushl %eax
+    /* Pass main's return value (eax/edi) to exit */
+    movl %eax, %edi
     call exit
 
     /* If exit returns, halt */
@@ -59,10 +72,10 @@ _init:
 _fini:
     ret
 
-/* Signal return restorer stub for the kernel sigreturn */
+/* Signal return restorer stub for the 64-bit kernel sigreturn */
 .global __sigreturn_restorer
 __sigreturn_restorer:
-    popl %eax
-    movl $119, %eax       /* SYS_SIGRETURN */
+    movq $119, %rax       /* SYS_SIGRETURN */
+    syscall
     int $0x80
     hlt

@@ -29,7 +29,7 @@
 #define SIGWINCH   28
 #define NSIG       32
 
-typedef uint32_t sigset_t;
+typedef unsigned long sigset_t;
 
 #define sigmask(sig) (1U << ((sig) - 1))
 
@@ -64,7 +64,7 @@ int raise(int sig);
 int pause(void);
 
 #define sigemptyset(what)     (*(what) = 0, 0)
-#define sigfillset(what)      (*(what) = 0xFFFFFFFFU, 0)
+#define sigfillset(what)      (*(what) = ~0UL, 0)
 #define sigaddset(what,sig)   (*(what) |= (1U<<((sig)-1)), 0)
 #define sigdelset(what,sig)   (*(what) &= ~(1U<<((sig)-1)), 0)
 #define sigismember(what,sig) (((*(what)) & (1U<<((sig)-1))) != 0)

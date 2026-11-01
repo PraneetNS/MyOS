@@ -422,7 +422,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         errno = -ret;
         return MAP_FAILED;
     }
-    return (void*) ret;
+    return (void*)(uintptr_t)ret;
 }
 
 int munmap(void *addr, size_t length) {

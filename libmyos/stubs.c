@@ -184,7 +184,7 @@ void *_sbrk(ptrdiff_t incr) {
         errno = ENOMEM;
         return (void*)-1;
     }
-    return (void*) ret;
+    return (void*)(uintptr_t)ret;
 }
 
 int _kill(pid_t pid, int sig) {
