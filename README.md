@@ -56,7 +56,26 @@ A monolithic, preemptive 32-bit x86 Unix-like operating system written from scra
   - GUI Widget Toolkit (`libui`): retained widget hierarchy, labels, buttons, checkboxes, radio groups, progress bars, textboxes, multiline textareas, scrollbars, listboxes, tab controls, menubars, and modal dialogs.
   - Desktop Applications: Graphical Terminal Emulator (`term`), Graphical File Manager (`files`), Widget Demo (`uidemo`), Drawing Program (`paint`), Image Viewer (`view`), Screen Capture (`screenshot`), and Window Control CLI (`wmctl`).
 - **Automated Verification**:
-  - 15 end-to-end automated boot sessions validating zero frame leaks, memory integrity, stress concurrency, filesystem consistency (`fsck.fat`), and QEMU monitor screendump pixel correctness.
+  - 21 end-to-end automated boot sessions validating zero frame leaks, memory integrity, stress concurrency, filesystem consistency (`fsck.fat`), windowing correctness, agent sandboxing, semantic search, and network gateway security.
+- **Networking, Stack & Sockets (Phase 6)**:
+  - PCI bus enumeration (`src/pci.c`, `/proc/pci`) with BAR, IRQ discovery, and bus master enable.
+  - Native `virtio-net-pci` network device driver (`src/net/virtio_net.c`) with physically contiguous DMA buffers.
+  - In-kernel zero-copy network stack (`src/net/`): Ethernet framing, dynamic ARP cache with timeouts, IPv4 with fragment drop protection, ICMP echo, and UDP datagram sockets.
+  - Robust TCP stack (`src/net/tcp.c`): full RFC 793 state machine, smoothed RTT estimation and exponential RTO backoff, AIMD congestion control, TIME_WAIT timeout cleanup, bounded SYN backlog (SYN flood protection), and RST flag handling.
+  - DHCP client (`/bin/dhcp`): RFC 2131 lease negotiation on `eth0` with `/etc/resolv.conf` generation.
+  - DNS stub resolver (`libmyos/net.c`): CSPRNG-randomized transaction IDs (16-bit) and ephemeral ports (49152..65535) with TTL caching.
+  - BSD socket API (`AF_INET`, `SOCK_STREAM`, `SOCK_DGRAM`) supporting `poll`, `select`, `O_NONBLOCK`, `setsockopt`, and `getsockopt`.
+  - Comprehensive CLI network tools: `ifconfig`, `ping`, `nc`, `wget`, `nslookup`, `netstat`, `netctl`.
+- **Agent Network Security Gateway & TLS (Phase 6.5)**:
+  - Sandboxed Agent Gateway daemon (`/bin/netd`) exposing `net.http`, `net.resolve`, and `net.status` via the Intent Bus.
+  - Strict RFC URL parser rejecting userinfo, backslashes, control chars, percent tricks, and unpermitted IP literals.
+  - Domain allowlists with strict DNS label boundary matching (`*.example.com` != `evil-example.com`).
+  - SSRF & Rebinding prevention blocking 127/8, RFC1918, 169.254/16, 100.64/10, multicast, broadcast, and QEMU SLIRP.
+  - Secret injection: `/etc/net-secrets.d/` placeholder substitution keeping credentials out of agent code.
+  - Bandwidth budget (`max_net_bytes`): in+out bytes charged via `SYS_AGENT_CHARGE_NET`, enforcing `-EDQUOT` and audit logging upon quota breach.
+  - Hardware network killswitch: `/proc/sys/net/killswitch` strictly unwritable by agents (`-EPERM`).
+  - BearSSL TLS 1.2 port (`libtls.a`): enforces TLS 1.2 minimum, SNI, hostname validation, and fails closed if RTC is before build date.
+  - `modeld` direct backend with `--push-key` pushing API keys into volatile RAM only.
 
 ---
 

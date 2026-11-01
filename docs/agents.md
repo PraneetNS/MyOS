@@ -107,6 +107,8 @@ To prevent runaway loops, infinite recursions, or fork storms from disrupting th
    - Limits concurrent running processes inside the agent. Fork attempts beyond this limit fail immediately with `-EAGAIN`.
 4. **`max_tokens`**:
    - Monitored token consumption budget, queried and charged by AI model daemons.
+5. **`max_net_bytes`**:
+   - Monitored network bandwidth budget (incoming and outgoing payload bytes). Charged via `SYS_AGENT_CHARGE_NET` (183). Exceeding this budget transitions the operation to `-EDQUOT` and appends an immutable `AUDIT_EVENT_BUDGET_EXCEEDED` entry to `/proc/agents/log`.
 
 ---
 

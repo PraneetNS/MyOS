@@ -37,26 +37,36 @@ Queries interface status and link metrics.
   - `interfaces` (array): List of active network interfaces, IP addresses, MAC addresses, and packet counters.
   - `killswitch` (boolean): Current state of the network killswitch.
 
-### 1.4 `net.killswitch`
-Enables or disables the global network killswitch (restricted to non-agent callers or privileged principals).
-- **Parameters**:
-  - `active` (boolean): `true` to sever network, `false` to restore.
+*(Note: `net.killswitch` was removed from the Intent Bus in Phase 6.5 to eliminate bus-based escalation; the network killswitch is controlled directly via `/proc/sys/net/killswitch`, which the kernel strictly denies to agents with `-EPERM`).*
 
 ---
 
 ## 2. Security Enforcements
 
-### 2.1 Domain & Port Allowlists
-`netd` consults `/etc/netd.conf`. Calls from agents are checked against the allowed domain list and ports:
-- Ports are restricted to HTTP (80) and HTTPS (443) unless explicitly overridden.
-- Wildcard domains (e.g. `*.example.com`) are supported.
+### 2.1 Strict URL Parser
+`netd` parses all incoming URLs with an RFC-compliant strict parser:
+- Rejects userinfo components (`user:pass@host`).
+- Rejects backslashes (`\`) and control characters.
+- Rejects percent-encoded host tricks and mixed-case obfuscation.
+- Normalizes trailing dots (`example.com.` -> `example.com`) and paths.
+- Rejects IP literals (`http://10.0.2.2/`) unless the agent principal is explicitly configured with `allow_private=true`.
 
-### 2.2 SSRF Prevention & DNS Rebinding Mitigation
+### 2.2 Domain Label Boundary Matching
+Domain allowlists strictly enforce DNS label boundaries:
+- A pattern `*.example.com` matches `api.example.com` or `dev.sub.example.com`.
+- It **never** matches `evil-example.com` or `notexample.com`.
+
+### 2.3 SSRF Prevention & DNS Rebinding Mitigation
 To prevent agents from weaponizing `net.http` against local services:
-- **Private Subnets Blocked**: All private and link-local subnets (`127.0.0.0/8`, `10.0.0.0/8` [except test gateway], `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `0.0.0.0/8`) are rejected with HTTP 403 unless explicitly allowed.
+- **Private Subnets Blocked**: All private, link-local, carrier-grade NAT, multicast, and broadcast subnets (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `224.0.0.0/4`, `255.255.255.255/32`, `0.0.0.0/8`) are rejected with HTTP 403 unless explicitly allowed for the principal.
 - **Pinning**: DNS resolution pins the destination IP address at connection time; HTTP redirects are re-resolved and re-validated against the blocklist on every hop (up to 5 hops maximum).
+- **No Protocol Downgrades**: HTTPS to HTTP redirect downgrades are strictly forbidden.
 
-### 2.3 Secret Injection
+### 2.4 Per-Agent Concurrency Limits & Quotas
+- **Concurrency**: Agents are capped at a maximum of 4 active in-flight requests simultaneously.
+- **Bandwidth Quota**: Traffic (incoming headers + body, outgoing headers + payload) is charged to the agent's `max_net_bytes` budget via `agent_charge_net()`. Breaches trigger `-EDQUOT` and log `AUDIT_EVENT_BUDGET_EXCEEDED`.
+
+### 2.5 Secret Injection
 Agents must never hold sensitive API tokens directly in memory or prompts. Instead:
 - Configuration files in `/etc/net-secrets.d/<principal>.conf` define secret mappings per principal:
   ```ini
