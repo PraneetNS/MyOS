@@ -30,9 +30,13 @@ mmd -i "$IMAGE" "::/usr/share" || true
 mmd -i "$IMAGE" "::/usr/share/keymaps" || true
 
 mmd -i "$IMAGE" "::/etc/myos" || true
+mmd -i "$IMAGE" "::/etc/ssl" || true
+mmd -i "$IMAGE" "::/etc/net-secrets.d" || true
 mmd -i "$IMAGE" "::/var" || true
 mmd -i "$IMAGE" "::/var/mem" || true
 mmd -i "$IMAGE" "::/var/index" || true
+mmd -i "$IMAGE" "::/var/log" || true
+mmd -i "$IMAGE" "::/var/lib" || true
 mmd -i "$IMAGE" "::/share/docs" || true
 
 echo "Installing /etc/memory.conf, /etc/index.conf and sample docs..."
@@ -61,10 +65,35 @@ respawn /dev/null /bin/modeld.elf
 respawn /dev/null /bin/uibridge.elf
 respawn /dev/null /bin/memd.elf
 respawn /dev/null /bin/indexd.elf
+respawn /dev/null /bin/netd.elf
 respawn /dev/console /bin/sh.elf
 EOF
 mcopy -i "$IMAGE" /tmp/myos_init_conf "::/etc/init.conf"
 rm -f /tmp/myos_init_conf
+
+if [ -f "userland/data/netd.conf" ]; then
+    echo "Copying /etc/netd.conf..."
+    mcopy -o -i "$IMAGE" userland/data/netd.conf "::/etc/netd.conf"
+fi
+
+if [ -d "userland/data/net-secrets.d" ]; then
+    echo "Copying /etc/net-secrets.d/*.conf..."
+    for f in userland/data/net-secrets.d/*.conf; do
+        if [ -f "$f" ]; then
+            mcopy -o -i "$IMAGE" "$f" "::/etc/net-secrets.d/$(basename "$f")"
+        fi
+    done
+fi
+
+if [ -f "build/ssl/test_ca.crt" ]; then
+    echo "Installing SSL CA anchors..."
+    mcopy -o -i "$IMAGE" build/ssl/test_ca.crt "::/etc/ssl/anchors.pem"
+fi
+
+echo "Generating random seed..."
+dd if=/dev/urandom of=/tmp/myos_random_seed bs=32 count=1 status=none
+mcopy -o -i "$IMAGE" /tmp/myos_random_seed "::/var/lib/random-seed"
+rm -f /tmp/myos_random_seed
 
 mmd -i "$IMAGE" "::/etc/agents.d" || true
 if [ -d "userland/data/agents.d" ]; then

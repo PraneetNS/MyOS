@@ -1,5 +1,13 @@
 #!/bin/bash
-PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
+if [ -z "$MYOS_PREFIX" ]; then
+    if [ -d "/root/opt/myos-cross" ]; then
+        PREFIX="/root/opt/myos-cross"
+    else
+        PREFIX="$HOME/opt/myos-cross"
+    fi
+else
+    PREFIX="$MYOS_PREFIX"
+fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CC="$PREFIX/bin/i686-elf-gcc"
@@ -29,6 +37,8 @@ BASE_FLAGS=(
     -isystem "$ROOT_DIR/userland/libgfx"
     -isystem "$ROOT_DIR/userland/libintent"
     -isystem "$ROOT_DIR/userland/libjson"
+    -isystem "$ROOT_DIR/userland/libtls"
+    -isystem "$ROOT_DIR/userland/libtls/inc"
     -isystem "$ROOT_DIR/userland/llm"
     -isystem "$LIBMYOS_INC"
     -isystem "$SYSROOT/include"
@@ -50,9 +60,10 @@ if [ "$IS_LINKING" -eq 1 ]; then
         -L"$ROOT_DIR/userland/libgfx" \
         -L"$ROOT_DIR/userland/libintent" \
         -L"$ROOT_DIR/userland/libjson" \
+        -L"$ROOT_DIR/userland/libtls" \
         -L"$ROOT_DIR/userland/llm" \
         -L"$SYSROOT/lib" \
-        -Wl,--start-group -lllm -lintent -ljson -lui -lwin -lgfx -lmyos -lc -lm -Wl,--end-group -lgcc
+        -Wl,--start-group -ltls -lllm -lintent -ljson -lui -lwin -lgfx -lmyos -lc -lm -Wl,--end-group -lgcc
 else
     exec "$CC" "${BASE_FLAGS[@]}" "$@"
 fi

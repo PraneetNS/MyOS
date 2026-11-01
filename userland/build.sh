@@ -4,13 +4,22 @@ set -e
 cd "$(dirname "$0")"
 
 MYOS_GCC="../tools/myos-gcc"
-PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
+if [ -z "$MYOS_PREFIX" ]; then
+    if [ -d "/root/opt/myos-cross" ]; then
+        PREFIX="/root/opt/myos-cross"
+    else
+        PREFIX="$HOME/opt/myos-cross"
+    fi
+else
+    PREFIX="$MYOS_PREFIX"
+fi
 STRIP="$PREFIX/bin/i686-elf-strip"
 
 if [ -x "$PREFIX/bin/i686-elf-gcc" ]; then
     make -C ../libmyos all
     make -C libjson all
     make -C libintent all
+    make -C libtls all
     make -C llm all
     make -C libgfx all
     make -C libwin all
