@@ -862,6 +862,12 @@ static int run_builtin(const command_t* cmd, int* last_status) {
         return 1;
     }
 
+    if (strcmp(cmd->argv[0], "sync") == 0) {
+        sync();
+        *last_status = 0;
+        return 1;
+    }
+
     if (strcmp(cmd->argv[0], "env") == 0) {
         return builtin_env(last_status);
     }

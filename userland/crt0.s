@@ -1,34 +1,33 @@
 .global environ
 .data
 environ:
-    .long 0
+    .quad 0
 
 .section .text
 .global _start
 .type _start, @function
 
 _start:
-    xor %ebp, %ebp          # Clear frame pointer for stack traces
+    xorq %rbp, %rbp
 
-    # System V ABI i386 initial stack layout:
-    # 0(%esp) = argc
-    # 4(%esp) = argv[0] (address of argv array is %esp + 4)
-    mov (%esp), %eax        # eax = argc
-    lea 4(%esp), %edx       # edx = argv
-    lea 8(%esp, %eax, 4), %ecx  # ecx = envp
-    mov %ecx, environ
+    popq %rdi             /* argc */
+    movq %rsp, %rsi       /* argv */
 
-    # Align stack to 16 bytes before calling main:
-    and $-16, %esp
-    sub $4, %esp
-    push %ecx               # arg 3: envp
-    push %edx               # arg 2: argv
-    push %eax               # arg 1: argc
+    /* Compute envp: argv + 8*(argc + 1) */
+    movq %rdi, %rax
+    incq %rax
+    shlq $3, %rax
+    addq %rsp, %rax       /* envp */
+    movq %rax, %rdx
+    movq %rax, environ(%rip)
+
+    andq $-16, %rsp
+
     call main
 
-    # Exit with main's return code
-    mov %eax, %ebx
-    mov $0, %eax
+    movl %eax, %edi
+    movq $0, %rax         /* SYS_EXIT */
+    syscall
     int $0x80
 
 1:  hlt
@@ -39,9 +38,10 @@ _start:
 .global __sigreturn_restorer
 .type __sigreturn_restorer, @function
 __sigreturn_restorer:
-    pop %eax
-    mov $119, %eax
+    movq $119, %rax       /* SYS_SIGRETURN */
+    syscall
     int $0x80
 .size __sigreturn_restorer, . - __sigreturn_restorer
 
 .section .note.GNU-stack,"",@progbits
+
