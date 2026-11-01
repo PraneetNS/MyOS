@@ -1359,8 +1359,8 @@ echo "[TEST] Asserting Session 21 results..."
 grep -q "ALL PHASE 6 NETWORK TESTS PASSED!" "$LOGFILE21" || { echo "FAIL: nettest suite failed"; cleanup_testnet; rm -f "$LOGFILE21"; exit 1; }
 grep -q "FAILED:" "$LOGFILE21" && { echo "FAIL: nettest reported a failure"; cleanup_testnet; rm -f "$LOGFILE21"; exit 1; }
 
-for t in "Network hardware and interfaces" "Direct agent socket isolation" "Agent gateway HTTP GET" "Secret injection" "SSRF prevention" "Network killswitch toggle" "BearSSL TLS 1.2 client handshake"; do
-    grep -q "PASSED: $t" "$LOGFILE21" || { echo "FAIL: missing '$t'"; cleanup_testnet; rm -f "$LOGFILE21"; exit 1; }
+for t in "Network hardware and interfaces" "Direct agent socket isolation" "Strict URL parser rejection rules" "Domain allowlist strict label boundary matching" "SSRF prevention" "Agent gateway HTTP GET" "Secret injection" "Secret scrubbing" "Redirect security" "Slow-loris and endless headers defense" "Per-agent rate limiting" "DNS rebinding defense" "max_net_bytes budget enforcement" "Killswitch security" "BearSSL TLS 1.2 client handshake" "TLS negatives" "1MB checksummed TCP transfer" "200 connect/transfer/close socket cycles" "modeld direct backend" "SHA-256 hash chain"; do
+    grep -q "PASSED:.*$t" "$LOGFILE21" || { echo "FAIL: missing test containing '$t'"; cleanup_testnet; rm -f "$LOGFILE21"; exit 1; }
 done
 
 cleanup_testnet

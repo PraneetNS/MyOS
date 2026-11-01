@@ -23,13 +23,13 @@ LOGFILE=$(mktemp)
     printf "ping -c 2 10.0.2.2\n"
     sleep 2
     printf "nettest\n"
-    sleep 35
+    sleep 50
     printf "cat /proc/sys/net/killswitch\n"
     sleep 0.5
     printf "netstat -a\n"
     sleep 0.5
     printf "exit\n"
-) | timeout 70s qemu-system-i386 -vga std -m 256 -device virtio-net-pci,netdev=n0 -netdev user,id=n0 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE" 2>&1 || true
+) | timeout 100s qemu-system-i386 -vga std -m 256 -device virtio-net-pci,netdev=n0 -netdev user,id=n0 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE" > "${LOGFILE}.tmp" && mv "${LOGFILE}.tmp" "$LOGFILE"
 cat "$LOGFILE"
