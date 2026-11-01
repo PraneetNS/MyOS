@@ -6,6 +6,7 @@
 #include "pipe.h"
 #include "socket.h"
 #include "scheduler.h"
+#include "io.h"
 
 #define MAX_MOUNTS 16
 #define VNODE_POOL_SIZE 256
@@ -129,18 +130,16 @@ int vfs_truncate(vnode_t* vn, uint32_t length) {
     return vn->ops->truncate(vn, length);
 }
 
-static inline uint32_t vfs_lock(void) {
-    uint32_t flags;
-    asm volatile ("pushf; pop %0; cli" : "=r"(flags));
-    return flags;
+static inline uint64_t vfs_lock(void) {
+    return irq_save();
 }
 
-static inline void vfs_unlock(uint32_t flags) {
-    asm volatile ("push %0; popf" : : "r"(flags));
+static inline void vfs_unlock(uint64_t flags) {
+    irq_restore(flags);
 }
 
 vnode_t* vnode_alloc(vnode_type_t type, const struct fs_ops* ops, void* fs_data) {
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     for (int i = 0; i < VNODE_POOL_SIZE; i++) {
         if (vnode_pool[i].refcount == 0) {
             vnode_pool[i].type = type;
@@ -159,14 +158,14 @@ vnode_t* vnode_alloc(vnode_type_t type, const struct fs_ops* ops, void* fs_data)
 
 void vnode_ref(vnode_t* vn) {
     if (!vn) return;
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     vn->refcount++;
     vfs_unlock(f);
 }
 
 void vnode_unref(vnode_t* vn) {
     if (!vn) return;
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     if (vn->refcount > 0) {
         if (vn->refcount > 500) { vfs_unlock(f); return; } /* permanent vnode (e.g. devfs) */
         vn->refcount--;
@@ -192,7 +191,7 @@ void vnode_unref(vnode_t* vn) {
 
 void vfs_for_each_vnode(void (*cb)(vnode_t*, void*), void* arg) {
     if (!cb) return;
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     for (int i = 0; i < VNODE_POOL_SIZE; i++) {
         if (vnode_pool[i].refcount > 0) {
             cb(&vnode_pool[i], arg);
@@ -202,7 +201,7 @@ void vfs_for_each_vnode(void (*cb)(vnode_t*, void*), void* arg) {
 }
 
 open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     for (int i = 0; i < OPEN_FILE_POOL_SIZE; i++) {
         if (of_pool[i].refcount == 0) {
             of_pool[i].type = type;
@@ -224,7 +223,7 @@ open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
 
 void open_file_ref(open_file_t* of) {
     if (!of) return;
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     if (of->refcount <= 0) {
         kprintf("[vfs] ASSERTION FAILED: open_file %p refcount <= 0 in ref (%d)\n", of, of->refcount);
     }
@@ -234,7 +233,7 @@ void open_file_ref(open_file_t* of) {
 
 void open_file_unref(open_file_t* of) {
     if (!of) return;
-    uint32_t f = vfs_lock();
+    uint64_t f = vfs_lock();
     if (of->refcount <= 0) {
         kprintf("[vfs] ASSERTION FAILED: open_file %p refcount <= 0 in unref (%d)\n", of, of->refcount);
         vfs_unlock(f);

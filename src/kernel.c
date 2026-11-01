@@ -70,9 +70,9 @@ const char* kernel_get_cmdline(void) {
     return kernel_cmdline;
 }
 
-static void save_cmdline(uint32_t mb_info_addr) {
+static void save_cmdline(uint64_t mb_info_addr) {
     if (!mb_info_addr) return;
-    uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
+    uint8_t* ptr = (uint8_t*) P2V(mb_info_addr);
     uint32_t total_size = *(uint32_t*) ptr;
     uint8_t* end = ptr + total_size;
     uint8_t* tag_ptr = ptr + 8;
@@ -182,9 +182,9 @@ void kernel_reboot(uint32_t cmd) {
     }
 }
 
-static int check_boot_flag(uint32_t mb_info_addr, const char* needle) {
+static int check_boot_flag(uint64_t mb_info_addr, const char* needle) {
     if (!mb_info_addr || !needle) return 0;
-    uint8_t* ptr = (uint8_t*)(uintptr_t) mb_info_addr;
+    uint8_t* ptr = (uint8_t*) P2V(mb_info_addr);
     uint32_t total_size = *(uint32_t*) ptr;
     uint8_t* end = ptr + total_size;
     uint8_t* tag_ptr = ptr + 8;
@@ -207,7 +207,7 @@ static int check_boot_flag(uint32_t mb_info_addr, const char* needle) {
     return 0;
 }
 
-void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
+void kernel_main(uint64_t magic, uint64_t mb_info_addr) {
     (void) magic;
 
     serial_init();
@@ -253,9 +253,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr) {
 
     kprintf("Free physical frames: %u\n", pmm_free_frame_count());
 
-    tss_install(5, 0x10, 0);
+    tss_install(6, 0);
     kprintf("[ok] TSS installed\n");
-    /* TSS.esp0 is updated per-process by the scheduler on every switch
+    /* TSS.rsp0 is updated per-process by the scheduler on every switch
        (see scheduler.c's enter_process()) -- no one-shot setup needed
        here anymore, unlike Stage 5/6. */
 
