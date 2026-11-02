@@ -51,9 +51,9 @@ typedef void (*_sig_func_ptr)(int);
 
 struct sigaction {
     void (*sa_handler)(int);
-    sigset_t sa_mask;
-    int sa_flags;
+    unsigned long sa_flags;
     void (*sa_restorer)(void);
+    sigset_t sa_mask;
 };
 
 int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);

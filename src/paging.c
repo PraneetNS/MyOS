@@ -15,6 +15,17 @@
 extern void paging_flush(uint64_t pml4_phys);
 extern void invlpg_page(uint64_t vaddr);
 
+int smep_enabled = 0;
+int smap_enabled = 0;
+
+static volatile int test_smap_active = 0;
+static volatile int test_smap_fault_occurred = 0;
+static volatile uint64_t test_smap_resume_rip = 0;
+
+static volatile int test_smep_active = 0;
+static volatile int test_smep_fault_occurred = 0;
+static volatile uint64_t test_smep_resume_rip = 0;
+
 static void page_fault_handler(struct registers* regs) {
     uint64_t faulting_addr;
     asm volatile ("mov %%cr2, %0" : "=r"(faulting_addr));
@@ -170,6 +181,28 @@ static void page_fault_handler(struct registers* regs) {
         }
     }
 
+    if (test_smap_active && !(regs->err_code & 0x4)) {
+        test_smap_fault_occurred = 1;
+        test_smap_active = 0;
+        serial_printf("[cpu-harden-test] SMAP fault intercepted: kernel touched user addr 0x%lx with AC=0 (err=0x%lx, rip=0x%lx)\n",
+                      faulting_addr, regs->err_code, regs->rip);
+        kprintf("[cpu-harden-test] SMAP fault intercepted: kernel touched user addr 0x%lx with AC=0 (err=0x%lx, rip=0x%lx)\n",
+                faulting_addr, regs->err_code, regs->rip);
+        regs->rip = test_smap_resume_rip;
+        return;
+    }
+
+    if (test_smep_active && !(regs->err_code & 0x4)) {
+        test_smep_fault_occurred = 1;
+        test_smep_active = 0;
+        serial_printf("[cpu-harden-test] SMEP fault intercepted: kernel executed user code at 0x%lx (err=0x%lx, rip=0x%lx)\n",
+                      faulting_addr, regs->err_code, regs->rip);
+        kprintf("[cpu-harden-test] SMEP fault intercepted: kernel executed user code at 0x%lx (err=0x%lx, rip=0x%lx)\n",
+                faulting_addr, regs->err_code, regs->rip);
+        regs->rip = test_smep_resume_rip;
+        return;
+    }
+
     if (in_uaccess) {
         regs->rip = (uint64_t) copy_user_fault;
         return;
@@ -210,7 +243,66 @@ static void page_fault_handler(struct registers* regs) {
     for (;;) asm volatile ("hlt");
 }
 
-int smap_enabled = 0;
+int test_smap_behavior(void* user_ptr) {
+    if (!smap_enabled) {
+        serial_printf("[cpu-harden-test] SMAP not supported by CPU, skipping behavioral fault test\n");
+        return 2; /* 2 = SKIPPED */
+    }
+    test_smap_fault_occurred = 0;
+    test_smap_active = 1;
+
+    /* Ensure AC=0 */
+    asm volatile ("clac" ::: "cc");
+
+    /* Attempt to read user memory from supervisor mode without STAC */
+    asm volatile (
+        "lea 1f(%%rip), %%rax\n\t"
+        "movq %%rax, %0\n\t"
+        "movb (%1), %%al\n\t"
+        "1:\n\t"
+        : "=m"(test_smap_resume_rip)
+        : "r"(user_ptr)
+        : "rax", "memory"
+    );
+
+    test_smap_active = 0;
+    if (test_smap_fault_occurred) {
+        serial_printf("[cpu-harden-test] PASSED: SMAP hardware fault caught and verified\n");
+        return 0;
+    } else {
+        serial_printf("[cpu-harden-test] FAILED: SMAP did not fault on user memory read\n");
+        return -1;
+    }
+}
+
+int test_smep_behavior(void* user_func) {
+    if (!smep_enabled) {
+        serial_printf("[cpu-harden-test] SMEP not supported by CPU, skipping behavioral fault test\n");
+        return 2; /* 2 = SKIPPED */
+    }
+    test_smep_fault_occurred = 0;
+    test_smep_active = 1;
+
+    /* Attempt to execute user page from supervisor mode */
+    asm volatile (
+        "lea 1f(%%rip), %%rax\n\t"
+        "movq %%rax, %0\n\t"
+        "jmp *%1\n\t"
+        "1:\n\t"
+        : "=m"(test_smep_resume_rip)
+        : "r"(user_func)
+        : "rax", "memory"
+    );
+
+    test_smep_active = 0;
+    if (test_smep_fault_occurred) {
+        serial_printf("[cpu-harden-test] PASSED: SMEP hardware fault caught and verified\n");
+        return 0;
+    } else {
+        serial_printf("[cpu-harden-test] FAILED: SMEP did not fault on jump to user code\n");
+        return -1;
+    }
+}
 
 /* Check CPUID and enable SMEP (Supervisor Mode Execution Prevention) and SMAP (Supervisor Mode Access Prevention) */
 static void cpu_enable_smep_smap(void) {
@@ -222,6 +314,7 @@ static void cpu_enable_smep_smap(void) {
 
     if (ebx & (1U << 7)) {
         cr4 |= (1ULL << 20); /* CR4.SMEP (bit 20) */
+        smep_enabled = 1;
         kprintf("[cpu] SMEP enabled (CR4.SMEP=1)\n");
     }
 

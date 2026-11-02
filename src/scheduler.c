@@ -50,6 +50,9 @@ static process_t* pick_next_from(int idx) {
 static void enter_process(process_t* next) {
     tss_set_kernel_stack(next->kernel_stack_top);
     vmm_switch(&next->as);
+    if (!next->is_kernel_task) {
+        wrmsr64(MSR_FS_BASE, next->fs_base);
+    }
 }
 
 void wake_waiters_for(int pid) {

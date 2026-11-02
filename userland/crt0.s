@@ -38,7 +38,7 @@ _start:
 .global __sigreturn_restorer
 .type __sigreturn_restorer, @function
 __sigreturn_restorer:
-    movq $119, %rax       /* SYS_SIGRETURN */
+    movq $15, %rax        /* Linux x86-64 __NR_rt_sigreturn */
     syscall
     int $0x80
 .size __sigreturn_restorer, . - __sigreturn_restorer

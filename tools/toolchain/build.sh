@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG_FILE="$SCRIPT_DIR/build.log"
 
 PREFIX="${MYOS_PREFIX:-$HOME/opt/myos-cross}"
-TARGET="i686-elf"
+TARGET="${MYOS_TARGET:-x86_64-elf}"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
 SRC_DIR="/root/toolchain_src"

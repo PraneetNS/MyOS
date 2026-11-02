@@ -28,7 +28,7 @@ fi
 
 for src in *.c; do
     name="${src%.c}"
-    if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ]; then
+    if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ] || [ "../libmyos/libmyos.a" -nt "$name.elf" ] || [ "../libmyos/crt0.o" -nt "$name.elf" ]; then
         if [ -x "$PREFIX/bin/x86_64-elf-gcc" ]; then
             "$MYOS_GCC" -O2 "$src" -o "$name.elf"
             echo "Built userland/$name.elf"

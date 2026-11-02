@@ -31,93 +31,7 @@
 #include "random.h"
 #include "agent.h"
 
-#define SYS_EXIT       0
-#define SYS_WRITE      1
-#define SYS_GETPID     2
-#define SYS_OPEN       3
-#define SYS_READ       4
-#define SYS_CLOSE      5
-#define SYS_FORK       7
-#define SYS_PIPE       8
-#define SYS_EXEC       10
-#define SYS_WAITPID    11
-#define SYS_SBRK       12
-#define SYS_SYNC       13
-#define SYS_LSEEK      14
-#define SYS_STAT       15
-#define SYS_FSTAT      16
-#define SYS_GETDENTS   17
-#define SYS_MKDIR      18
-#define SYS_RMDIR      19
-#define SYS_UNLINK     20
-#define SYS_RENAME     21
-#define SYS_CHDIR      22
-#define SYS_GETCWD     23
-#define SYS_DUP        24
-#define SYS_DUP2       25
-#define SYS_FCNTL      26
-#define SYS_SLEEP      27
-#define SYS_TICKS      28
-#define SYS_FREE_FRAMES 29
-#define SYS_MMAP       30
-#define SYS_MUNMAP     31
-#define SYS_MPROTECT   32
-#define SYS_IOCTL      54
-#define SYS_TCGETATTR  55
-#define SYS_TCSETATTR  56
-#define SYS_SETPGID    57
-#define SYS_GETPGID    58
-#define SYS_GETPPID    64
-#define SYS_GETSID     65
-#define SYS_SETSID     66
-#define SYS_KILL       37
-#define SYS_SIGACTION  67
-#define SYS_SIGPROCMASK 68
-#define SYS_SIGRETURN  119
-#define SYS_PAUSE      70
-#define SYS_ALARM      71
-#define SYS_TIME       72
-#define SYS_GETTIMEOFDAY 73
-#define SYS_CLOCK_GETTIME 74
-#define SYS_NANOSLEEP  75
-#define SYS_NICE       77
-#define SYS_REBOOT     88
-#define SYS_TRUNCATE   92
-#define SYS_FTRUNCATE  93
-#define SYS_SOCKET     102
-#define SYS_BIND       103
-#define SYS_LISTEN     104
-#define SYS_ACCEPT     105
-#define SYS_CONNECT    106
-#define SYS_SHUTDOWN   107
-#define SYS_GETSOCKNAME 108
-#define SYS_GETPEERNAME 109
-#define SYS_SOCKETPAIR 110
-#define SYS_SEND       111
-#define SYS_RECV       112
-#define SYS_SETSOCKOPT 113
-#define SYS_GETSOCKOPT 114
-#define SYS_SENDTO     115
-#define SYS_RECVFROM   116
-#define SYS_MSYNC      144
-#define SYS_POLL       168
-
-#define SYS_AGENT_CREATE  170
-#define SYS_AGENT_ATTACH  171
-#define SYS_AGENT_KILL    172
-#define SYS_AGENT_SUSPEND 173
-#define SYS_AGENT_RESUME  174
-#define SYS_AGENT_INFO    175
-#define SYS_SOCK_PEERINFO        176
-#define SYS_BUS_DAEMON_REGISTER  177
-#define SYS_AUDIT_APPEND         178
-#define SYS_AGENT_CHARGE_TOKENS  179
-#define SYS_AGENT_TOKENS_LEFT    180
-#define SYS_MODEL_DAEMON_REGISTER 181
-#define SYS_AGENT_KILLSWITCH_STATE 182
-#define SYS_AGENT_CHARGE_NET     183
-#define SYS_AGENT_NET_LEFT       184
-#define SYS_NET_DAEMON_REGISTER  185
+#include "../libmyos/include/myos_syscalls.h"
 
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
@@ -330,6 +244,32 @@ typedef struct {
     agent_budget_t budget;
     agent_usage_t usage;
 } agent_info_v4_t;
+
+static size_t kstrlen(const char* s) {
+    size_t len = 0;
+    while (s && s[len]) len++;
+    return len;
+}
+
+static void kernel_stat_to_linux_stat64(const struct stat* ks, struct linux_stat64* ls) {
+    memset(ls, 0, sizeof(*ls));
+    ls->st_dev = ks->st_dev;
+    ls->st_ino = ks->st_ino;
+    ls->st_mode = ks->st_mode;
+    ls->st_nlink = ks->st_nlink;
+    ls->st_uid = 0;
+    ls->st_gid = 0;
+    ls->st_rdev = 0;
+    ls->st_size = ks->st_size;
+    ls->st_blksize = ks->st_blksize ? ks->st_blksize : 512;
+    ls->st_blocks = ks->st_blocks;
+    ls->st_atim.tv_sec = ks->st_atime;
+    ls->st_atim.tv_nsec = 0;
+    ls->st_mtim.tv_sec = ks->st_mtime;
+    ls->st_mtim.tv_nsec = 0;
+    ls->st_ctim.tv_sec = ks->st_ctime;
+    ls->st_ctim.tv_nsec = 0;
+}
 
 static void syscall_handler_internal(struct syscall_args* regs) {
     agent_killswitch_check_deferred();
@@ -733,9 +673,18 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
+            me = scheduler_current();
+            me->aslr_mmap_offset  = ((uint64_t)(random_u32() & 0x1FFFFULL)) << 12;
+            me->aslr_stack_offset = (((uint64_t)(random_u32() & 0x7FFULL)) << 12) | (((uint64_t)(random_u32() & 0x1FULL)) << 4);
+            me->aslr_brk_offset   = ((uint64_t)(random_u32() & 0x1FFFFULL)) << 12;
+            me->aslr_pie_offset   = ((uint64_t)(random_u32() & 0x3FFFFULL)) << 12;
+            me->fs_base = 0;
+            me->gs_base = 0;
+            me->clear_child_tid = 0;
+
             uint64_t entry, stack_top;
             vma_t* new_vmas = NULL;
-            if (elf_load_into(buf, (uint32_t) n, vn, &new_as, argc, kargv, envc, kenvp, &entry, &stack_top, &new_vmas) != 0) {
+            if (elf_load_into(buf, (uint32_t) n, vn, me, &new_as, argc, kargv, envc, kenvp, &entry, &stack_top, &new_vmas) != 0) {
                 vnode_unref(vn);
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
@@ -745,8 +694,6 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             }
             vnode_unref(vn);
             kfree(buf);
-
-            me = scheduler_current();
 
             /* Close file descriptors marked with FD_CLOEXEC */
             for (int fd = 0; fd < MAX_FDS; fd++) {
@@ -762,14 +709,13 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 vma_free_list(me->vma_list);
             }
             me->vma_list = new_vmas;
-            me->aslr_mmap_offset = ((uint64_t)(random_u32() & 0x1FFFFULL)) << 12;
 
             address_space_t old_as = me->as;
             me->as = new_as;
             me->entry_point = entry;
             me->user_stack_top = stack_top;
-            me->heap_end = HEAP_BASE;
-            me->heap_mapped_up_to = HEAP_BASE;
+            me->heap_end = HEAP_BASE + me->aslr_brk_offset;
+            me->heap_mapped_up_to = me->heap_end;
 
             const char* base = ep->kname;
             for (int k = 0; ep->kname[k]; k++) {
@@ -890,24 +836,28 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_SBRK: {
-            int64_t increment = (int64_t) regs->ebx;
+        case SYS_BRK: {
+            uint64_t new_break = (uint64_t) regs->ebx;
             process_t* me = scheduler_current();
+            uint64_t heap_base = HEAP_BASE + me->aslr_brk_offset;
+            uint64_t cur_break = me->heap_end;
+            if (cur_break < heap_base) cur_break = heap_base;
 
-            uint64_t old_break = me->heap_end;
-            uint64_t new_break = old_break + increment;
+            /* Linux brk(0) returns current break */
+            if (new_break == 0 || new_break == cur_break) {
+                regs->eax = cur_break;
+                break;
+            }
 
-            if (increment > 0) {
-                if (new_break > HEAP_MAX || new_break < old_break) {
-                    regs->eax = (uint64_t) -1;
-                    break;
-                }
-            } else if (increment < 0) {
-                if (new_break < HEAP_BASE) {
-                    new_break = HEAP_BASE;
-                }
+            if (new_break < heap_base || new_break > (heap_base + 2ULL * 1024ULL * 1024ULL * 1024ULL)) {
+                /* Failure: return current break unchanged */
+                regs->eax = cur_break;
+                break;
+            }
+
+            if (new_break < cur_break) {
                 /* Shrinking: unmap pages above new_break */
-                uint64_t old_page = (old_break + 4095ULL) & ~4095ULL;
+                uint64_t old_page = (cur_break + 4095ULL) & ~4095ULL;
                 uint64_t new_page = (new_break + 4095ULL) & ~4095ULL;
                 for (uint64_t va = new_page; va < old_page; va += 4096) {
                     vmm_unmap_user_page(&me->as, va);
@@ -925,7 +875,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                     v = v->next;
                 }
             }
-            regs->eax = old_break;
+            regs->eax = new_break;
             break;
         }
 
@@ -952,12 +902,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
         case SYS_STAT: {
             const char* path = (const char*) regs->ebx;
-            struct stat* st = (struct stat*) regs->ecx;
+            struct linux_stat64* u_ls = (struct linux_stat64*) regs->ecx;
 
             int err = validate_user_string(path);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
-            err = validate_user_buffer(st, sizeof(struct stat), 1);
+            err = validate_user_buffer(u_ls, sizeof(struct linux_stat64), 1);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
@@ -968,17 +918,27 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
-            ret = vfs_stat(vn, st);
+            struct stat ks;
+            memset(&ks, 0, sizeof(ks));
+            ret = vfs_stat(vn, &ks);
             vnode_unref(vn);
+            if (ret == 0) {
+                struct linux_stat64 ls;
+                kernel_stat_to_linux_stat64(&ks, &ls);
+                if (copy_to_user(u_ls, &ls, sizeof(ls)) != 0) {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
+            }
             regs->eax = (uint32_t) ret;
             break;
         }
 
         case SYS_FSTAT: {
             int fd = (int) regs->ebx;
-            struct stat* st = (struct stat*) regs->ecx;
+            struct linux_stat64* u_ls = (struct linux_stat64*) regs->ecx;
 
-            int err = validate_user_buffer(st, sizeof(struct stat), 1);
+            int err = validate_user_buffer(u_ls, sizeof(struct linux_stat64), 1);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
@@ -987,34 +947,39 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
+            struct stat ks;
+            memset(&ks, 0, sizeof(ks));
+            int ret = -EBADF;
+
             open_file_t* of = me->fds[fd];
             if (of->type == OPEN_FILE_CONSOLE) {
                 if (of->vnode) {
-                    regs->eax = (uint32_t) vfs_stat(of->vnode, st);
+                    ret = vfs_stat(of->vnode, &ks);
                 } else {
-                    st->st_dev = 0; st->st_ino = 0; st->st_mode = S_IFCHR | 0666;
-                    st->st_nlink = 1; st->st_size = 0; st->st_blksize = 512; st->st_blocks = 0;
-                    regs->eax = 0;
+                    ks.st_dev = 0; ks.st_ino = 0; ks.st_mode = S_IFCHR | 0666;
+                    ks.st_nlink = 1; ks.st_size = 0; ks.st_blksize = 512; ks.st_blocks = 0;
+                    ret = 0;
                 }
-                break;
+            } else if (of->type == OPEN_FILE_PIPE) {
+                ks.st_mode = S_IFIFO | 0600;
+                ks.st_nlink = 1;
+                ks.st_blksize = 512;
+                ret = 0;
+            } else if (of->type == OPEN_FILE_VNODE && of->vnode) {
+                ret = vfs_stat(of->vnode, &ks);
+            } else if (of->type == OPEN_FILE_SOCKET && of->sock) {
+                ret = socket_stat((socket_t*) of->sock, &ks);
             }
-            if (of->type == OPEN_FILE_PIPE) {
-                memset(st, 0, sizeof(struct stat));
-                st->st_mode = S_IFIFO | 0600;
-                st->st_nlink = 1;
-                st->st_blksize = 512;
-                regs->eax = 0;
-                break;
+
+            if (ret == 0) {
+                struct linux_stat64 ls;
+                kernel_stat_to_linux_stat64(&ks, &ls);
+                if (copy_to_user(u_ls, &ls, sizeof(ls)) != 0) {
+                    regs->eax = (uint32_t) -EFAULT;
+                    break;
+                }
             }
-            if (of->type == OPEN_FILE_VNODE && of->vnode) {
-                regs->eax = (uint32_t) vfs_stat(of->vnode, st);
-                break;
-            }
-            if (of->type == OPEN_FILE_SOCKET && of->sock) {
-                regs->eax = (uint32_t) socket_stat((socket_t*) of->sock, st);
-                break;
-            }
-            regs->eax = (uint32_t) -EBADF;
+            regs->eax = (uint32_t) ret;
             break;
         }
 
@@ -1078,15 +1043,15 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
         case SYS_GETDENTS: {
             int fd = (int) regs->ebx;
-            struct dirent* dirp = (struct dirent*) regs->ecx;
-            uint32_t count = regs->edx;
+            void* dirp = (void*) regs->ecx;
+            uint32_t count = (uint32_t) regs->edx;
 
-            if (count < sizeof(struct dirent)) {
+            if (count < 24) {
                 regs->eax = (uint32_t) -EINVAL;
                 break;
             }
 
-            int err = validate_user_buffer(dirp, sizeof(struct dirent), 1);
+            int err = validate_user_buffer(dirp, count, 1);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
@@ -1095,13 +1060,59 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
-            int ret = vfs_readdir(me->fds[fd], dirp);
-            if (ret == 1) {
-                regs->eax = (uint32_t) sizeof(struct dirent);
-            } else if (ret == 0) {
-                regs->eax = 0; /* EOF */
-            } else {
-                regs->eax = (uint32_t) ret;
+            uint32_t bytes_written = 0;
+            uint8_t* u_buf = (uint8_t*) dirp;
+
+            while (bytes_written < count) {
+                struct dirent k_ent;
+                memset(&k_ent, 0, sizeof(k_ent));
+                int ret = vfs_readdir(me->fds[fd], &k_ent);
+                if (ret <= 0) {
+                    if (ret < 0 && bytes_written == 0) {
+                        regs->eax = (uint32_t) ret;
+                        break;
+                    }
+                    /* EOF or error after writing some entries: return bytes written */
+                    regs->eax = bytes_written;
+                    break;
+                }
+
+                size_t name_len = kstrlen(k_ent.d_name);
+                /* 19 bytes header (ino 8, off 8, reclen 2, type 1) + name_len + 1 null + padding to 8-byte boundary */
+                uint16_t reclen = (uint16_t)(((19 + name_len + 1) + 7) & ~7);
+                if (bytes_written + reclen > count) {
+                    if (bytes_written == 0) {
+                        regs->eax = (uint32_t) -EINVAL;
+                    } else {
+                        /* Rewind by 1 so this entry will be read on next call */
+                        if (me->fds[fd]->offset > 0) me->fds[fd]->offset--;
+                        regs->eax = bytes_written;
+                    }
+                    break;
+                }
+
+                uint8_t rec_buf[512];
+                memset(rec_buf, 0, reclen);
+                struct linux_dirent64* ld = (struct linux_dirent64*) rec_buf;
+                ld->d_ino = k_ent.d_ino ? k_ent.d_ino : 1;
+                ld->d_off = me->fds[fd]->offset;
+                ld->d_reclen = reclen;
+                ld->d_type = (k_ent.d_type == 2) ? 4 : 8; /* DT_DIR = 4, DT_REG = 8 */
+                memcpy(ld->d_name, k_ent.d_name, name_len + 1);
+
+                if (copy_to_user(u_buf + bytes_written, rec_buf, reclen) != 0) {
+                    if (bytes_written == 0) regs->eax = (uint32_t) -EFAULT;
+                    else regs->eax = bytes_written;
+                    break;
+                }
+
+                bytes_written += reclen;
+                /* Single entry per call or loop? Standard getdents fills up as much as fits!
+                   Let's break if remaining space is too small for another entry (< 32 bytes) */
+                if (count - bytes_written < 32) {
+                    regs->eax = bytes_written;
+                    break;
+                }
             }
             break;
         }
@@ -1382,24 +1393,6 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 }
             } else {
                 regs->eax = (uint32_t) -EINVAL;
-            }
-            break;
-        }
-
-        case SYS_SLEEP: {
-            uint32_t sec = regs->ebx;
-            process_t* me = scheduler_current();
-            if (sec == 0) { regs->eax = 0; break; }
-            uint32_t start = timer_get_ticks();
-            uint32_t deadline = start + sec * 100u;
-            timer_sleep_enqueue(me, deadline);
-            scheduler_wait_channel(&me->sleep_deadline);
-            timer_sleep_dequeue(me);
-            uint32_t now = timer_get_ticks();
-            if (now < deadline) {
-                regs->eax = (uint32_t) -EINTR;
-            } else {
-                regs->eax = 0;
             }
             break;
         }
@@ -2433,58 +2426,6 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_SEND: {
-            int fd = (int) regs->ebx;
-            const void* buf = (const void*) regs->ecx;
-            uint32_t len = regs->edx;
-            int flags = (int) regs->esi;
-
-            int err = validate_user_buffer(buf, len, 0);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
-
-            process_t* me = scheduler_current();
-            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
-                regs->eax = (uint32_t) -EBADF;
-                break;
-            }
-            open_file_t* of = me->fds[fd];
-            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
-                regs->eax = (uint32_t) -ENOTSOCK;
-                break;
-            }
-            if (me) me->current_op_flags = of->flags;
-
-            int n = socket_send((socket_t*) of->sock, buf, len, flags);
-            regs->eax = (uint32_t) n;
-            break;
-        }
-
-        case SYS_RECV: {
-            int fd = (int) regs->ebx;
-            void* buf = (void*) regs->ecx;
-            uint32_t len = regs->edx;
-            int flags = (int) regs->esi;
-
-            int err = validate_user_buffer(buf, len, 1);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
-
-            process_t* me = scheduler_current();
-            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
-                regs->eax = (uint32_t) -EBADF;
-                break;
-            }
-            open_file_t* of = me->fds[fd];
-            if (of->type != OPEN_FILE_SOCKET || !of->sock) {
-                regs->eax = (uint32_t) -ENOTSOCK;
-                break;
-            }
-            if (me) me->current_op_flags = of->flags;
-
-            int n = socket_recv((socket_t*) of->sock, buf, len, flags);
-            regs->eax = (uint32_t) n;
-            break;
-        }
-
         case SYS_SENDTO: {
             int fd = (int) regs->ebx;
             const void* buf = (const void*) regs->ecx;
@@ -2891,6 +2832,19 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             process_t* me = scheduler_current();
             int ret = agent_net_daemon_register(me);
             regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case SYS_TEST_HARDENING: {
+            int type = (int) regs->ebx;
+            void* ptr = (void*) regs->ecx;
+            if (type == 1) {
+                regs->eax = (uint64_t) test_smap_behavior(ptr);
+            } else if (type == 2) {
+                regs->eax = (uint64_t) test_smep_behavior(ptr);
+            } else {
+                regs->eax = (uint64_t) -EINVAL;
+            }
             break;
         }
 

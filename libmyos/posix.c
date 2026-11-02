@@ -34,7 +34,7 @@ struct kernel_dirent {
 
 /* Process & Execution */
 pid_t waitpid(pid_t pid, int *status, int options) {
-    int ret = __syscall3(SYS_WAITPID, pid, (long)status, options);
+    int ret = __syscall4(SYS_WAITPID, pid, (long)status, options, 0);
     return __check_syscall_err(ret);
 }
 
@@ -212,14 +212,21 @@ struct dirent *readdir(DIR *dirp) {
         return NULL;
     }
 
-    int ret = __syscall3(SYS_GETDENTS, dirp->fd, (long)&dirp->ent, sizeof(dirp->ent));
-    if (ret < 0) {
-        errno = -ret;
+    uint8_t d_buf[512];
+    int nread = __syscall3(SYS_GETDENTS, dirp->fd, (long)d_buf, sizeof(d_buf));
+    if (nread < 0) {
+        errno = -nread;
         return NULL;
     }
-    if (ret == 0) {
+    if (nread == 0) {
         return NULL; /* EOF */
     }
+
+    struct linux_dirent64* ld = (struct linux_dirent64*) d_buf;
+    memset(&dirp->ent, 0, sizeof(dirp->ent));
+    dirp->ent.d_ino = (uint32_t) ld->d_ino;
+    dirp->ent.d_type = (ld->d_type == 4) ? 2 : 1;
+    strncpy(dirp->ent.d_name, ld->d_name, sizeof(dirp->ent.d_name) - 1);
 
     return &dirp->ent;
 }
@@ -256,12 +263,12 @@ int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact)
         }
         act = &real_act;
     }
-    int ret = __syscall3(SYS_SIGACTION, signum, (long)act, (long)oldact);
+    int ret = __syscall4(SYS_SIGACTION, signum, (long)act, (long)oldact, sizeof(sigset_t));
     return __check_syscall_err(ret);
 }
 
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
-    int ret = __syscall3(SYS_SIGPROCMASK, how, (long)set, (long)oldset);
+    int ret = __syscall4(SYS_SIGPROCMASK, how, (long)set, (long)oldset, sizeof(sigset_t));
     return __check_syscall_err(ret);
 }
 

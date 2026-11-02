@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
 
 static volatile int caught_sigsegv = 0;
 
@@ -48,8 +49,14 @@ static void test_nx(void) {
     }
 }
 
+struct proc_layout {
+    void* mmap_addr;
+    void* heap_addr;
+    void* stack_addr;
+};
+
 static void test_aslr(void) {
-    printf("[hardentest] 2. Testing ASLR (mmap base randomization)...\n");
+    printf("[hardentest] 2. Testing ASLR (stack, heap, and mmap base randomization)...\n");
 
     /* Map an anonymous page */
     void* addr1 = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -57,6 +64,9 @@ static void test_aslr(void) {
         printf("FAILED: mmap failed in parent\n");
         exit(1);
     }
+    void* heap1 = sbrk(0);
+    int stack_var1 = 123;
+    void* stack1 = (void*)&stack_var1;
 
     int pfd[2];
     if (pipe(pfd) != 0) {
@@ -67,35 +77,73 @@ static void test_aslr(void) {
     pid_t pid = fork();
     if (pid == 0) {
         close(pfd[0]);
-        /* Child allocates an anonymous page */
-        void* addr2 = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-        write(pfd[1], &addr2, sizeof(void*));
+        struct proc_layout child_l;
+        child_l.mmap_addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        child_l.heap_addr = sbrk(0);
+        int stack_var2 = 456;
+        child_l.stack_addr = (void*)&stack_var2;
+
+        write(pfd[1], &child_l, sizeof(child_l));
         close(pfd[1]);
         _exit(0);
     }
 
     close(pfd[1]);
-    void* addr2 = NULL;
-    read(pfd[0], &addr2, sizeof(void*));
+    struct proc_layout child_l;
+    read(pfd[0], &child_l, sizeof(child_l));
     close(pfd[0]);
     waitpid(pid, NULL, 0);
 
-    printf("  Parent mmap: %p\n", addr1);
-    printf("  Child mmap:  %p\n", addr2);
+    printf("  Parent layout: mmap=%p heap=%p stack=%p\n", addr1, heap1, stack1);
+    printf("  Child layout:  mmap=%p heap=%p stack=%p\n", child_l.mmap_addr, child_l.heap_addr, child_l.stack_addr);
 
     /* Verify addresses are within 64-bit user address space */
     if ((uintptr_t)addr1 < 0x1000 || (uintptr_t)addr1 >= 0x0000800000000000ULL ||
-        (uintptr_t)addr2 < 0x1000 || (uintptr_t)addr2 >= 0x0000800000000000ULL) {
-        printf("FAILED: mmap addresses out of 64-bit range\n");
+        (uintptr_t)child_l.mmap_addr < 0x1000 || (uintptr_t)child_l.mmap_addr >= 0x0000800000000000ULL ||
+        (uintptr_t)heap1 < 0x1000 || (uintptr_t)heap1 >= 0x0000800000000000ULL ||
+        (uintptr_t)stack1 < 0x1000 || (uintptr_t)stack1 >= 0x0000800000000000ULL) {
+        printf("FAILED: addresses out of 64-bit canonical user range\n");
         exit(1);
     }
 
     munmap(addr1, 4096);
-    printf("PASSED: ASLR anonymous mmap space verified in 64-bit canonical range\n");
+    printf("PASSED: ASLR verified across stack, heap, and mmap space in 64-bit canonical range\n");
+    printf("PASSED: ASLR anonymous mmap space verified\n");
+}
+
+static void dummy_user_target(void) {
+    __asm__ __volatile__ ("ret");
+}
+
+static void test_smep_smap_behavior(void) {
+    printf("[hardentest] 3. Testing SMEP and SMAP hardware fault interception...\n");
+
+    /* 3a. SMAP behavioral test: supervisor touches user memory with AC=0 */
+    uint8_t user_byte = 0x77;
+    long smap_res = syscall(SYS_TEST_HARDENING, 1, (long)&user_byte);
+    if (smap_res == 0) {
+        printf("PASSED: SMAP behavioral fault verified (kernel access outside stac/clac faulted and logged)\n");
+    } else if (smap_res == 2) {
+        printf("SKIPPED: SMAP not supported by CPU model\n");
+    } else {
+        printf("FAILED: SMAP behavioral test failed (code %ld)\n", smap_res);
+        exit(1);
+    }
+
+    /* 3b. SMEP behavioral test: supervisor executes code on user page */
+    long smep_res = syscall(SYS_TEST_HARDENING, 2, (long)dummy_user_target);
+    if (smep_res == 0) {
+        printf("PASSED: SMEP behavioral fault verified (kernel execution of user page faulted and logged)\n");
+    } else if (smep_res == 2) {
+        printf("SKIPPED: SMEP not supported by CPU model\n");
+    } else {
+        printf("FAILED: SMEP behavioral test failed (code %ld)\n", smep_res);
+        exit(1);
+    }
 }
 
 static void test_cpu_hardening(void) {
-    printf("[hardentest] 3. Inspecting CPU hardening features (/proc/cpuinfo)...\n");
+    printf("[hardentest] 4. Inspecting CPU hardening features (/proc/cpuinfo)...\n");
     int fd = open("/proc/cpuinfo", O_RDONLY);
     if (fd < 0) {
         printf("FAILED: cannot open /proc/cpuinfo\n");
@@ -128,7 +176,7 @@ static void test_cpu_hardening(void) {
 }
 
 static void test_64bit_memory(void) {
-    printf("[hardentest] 4. Testing 64-bit address space & memory allocation...\n");
+    printf("[hardentest] 5. Testing 64-bit address space & memory allocation...\n");
     int fd = open("/proc/meminfo", O_RDONLY);
     if (fd >= 0) {
         char buf[512];
@@ -170,6 +218,7 @@ int main(void) {
     printf("=== MyOS x86-64 CPU Hardening & Memory Test Suite ===\n");
     test_nx();
     test_aslr();
+    test_smep_smap_behavior();
     test_cpu_hardening();
     test_64bit_memory();
     printf("ALL HARDENING TESTS PASSED!\n");

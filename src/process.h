@@ -23,6 +23,20 @@
 #define USER_STACK_TOP        0x00007FFFFFFFE000ULL
 #define USER_STACK_MAX_GROWTH (16ULL * 1024ULL * 1024ULL) /* 16MB max stack */
 #define USER_STACK_BOTTOM     (USER_STACK_TOP - USER_STACK_MAX_GROWTH)
+#define MSR_FS_BASE 0xC0000100
+#define MSR_GS_BASE 0xC0000101
+
+static inline void wrmsr64(uint32_t msr, uint64_t val) {
+    uint32_t low = val & 0xFFFFFFFF;
+    uint32_t high = (val >> 32) & 0xFFFFFFFF;
+    asm volatile ("wrmsr" : : "c"(msr), "a"(low), "d"(high));
+}
+
+static inline uint64_t rdmsr64(uint32_t msr) {
+    uint32_t low, high;
+    asm volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
 #define USER_STACK_GUARD_GAP  (4096ULL)
 
 #include "vfs.h"
@@ -69,7 +83,13 @@ typedef struct process {
     uint64_t heap_mapped_up_to; /* how far the heap has actually been paged in */
 
     struct vma* vma_list;       /* sorted list of memory areas (VMAs) */
-    uint64_t aslr_mmap_offset;  /* ASLR random slide for mmap allocations */
+    uint64_t aslr_mmap_offset;  /* ASLR random slide for mmap allocations (17 bits) */
+    uint64_t aslr_stack_offset; /* ASLR random slide for user stack top (16 bits) */
+    uint64_t aslr_brk_offset;   /* ASLR random slide for heap/brk base (17 bits) */
+    uint64_t aslr_pie_offset;   /* ASLR random slide for ET_DYN / PIE base (18 bits) */
+    uint64_t fs_base;           /* Thread-local storage (FS base MSR) */
+    uint64_t gs_base;           /* User GS base MSR */
+    int*     clear_child_tid;   /* set_tid_address / exit_group child tid */
 
     uint32_t sleep_deadline;    /* Tick deadline for sleep/nanosleep */
     struct process* sleep_next; /* Next pointer in timer sleep wait queue */

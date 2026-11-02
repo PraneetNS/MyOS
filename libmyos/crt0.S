@@ -74,7 +74,7 @@ _fini:
 /* Signal return restorer stub for the 64-bit kernel sigreturn */
 .global __sigreturn_restorer
 __sigreturn_restorer:
-    movq $119, %rax       /* SYS_SIGRETURN */
+    movq $15, %rax        /* Linux x86-64 __NR_rt_sigreturn */
     syscall
     int $0x80
     hlt

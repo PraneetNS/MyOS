@@ -107,7 +107,14 @@ Every security-relevant decision is recorded to `/proc/agents/log`:
 To maintain complete transparency, the following design constraints and known limitations exist in the current MyOS release:
 
 1. **Single-Core x86-64 Architecture**: MyOS runs on single-core 64-bit x86-64 long mode. It does not yet utilize SMP (multi-core scheduling via APIC) or hardware hypervisor virtualization extensions (VT-x / AMD-V).
-2. **CPU Hardening Scope**: Hardware No-Execute (NX), SMEP, SMAP (with `stac`/`clac` bracketing), and userland mmap ASLR are enforced. Kernel base ASLR (KASLR) and user stack-canary instrumentation remain optional or future work.
+2. **CPU Hardening & ASLR Implementation**:
+   - **Hardware Protections**: Hardware No-Execute (NX), SMEP (Supervisor Mode Execution Prevention, `CR4.SMEP=1`), SMAP (Supervisor Mode Access Prevention, `CR4.SMAP=1` with strict `stac`/`clac` uaccess bracketing) are enforced at boot.
+   - **Userland ASLR Coverage**: Full 64-bit address space layout randomization is applied on process creation and `execve`:
+     - **Stack Top**: 16 bits of entropy (8MB page slide + 5 bits of 16-byte sub-page alignment below `USER_STACK_TOP` `0x00007FFFFFFFE000`).
+     - **Heap / Brk Base**: 17 bits of entropy (512MB slide above `HEAP_BASE` `0x0000000010000000`).
+     - **Mmap Allocations**: 17 bits of entropy (512MB downward slide from `MMAP_TOP_START` `0x00007F0000000000`).
+     - **PIE / ET_DYN Load Base**: 18 bits of entropy (1GB slide above standard base `0x0000555555550000`).
+   - **KASLR Status**: Kernel Address Space Layout Randomization (KASLR) is **NOT** implemented; the kernel image remains deterministically mapped at `-2GB` (`0xFFFFFFFF80100000`). User stack-canary instrumentation remains optional compiler-assisted hardening.
 3. **Allowed-Domain Exfiltration**: If an agent is granted network access to an allowlisted external domain (e.g., `api.github.com`), malicious payloads can potentially exfiltrate data via standard HTTP query parameters or POST bodies within that domain.
 4. **Bootstrapped Entropy in QEMU**: In virtualized environments lacking the `RDRAND` instruction, initial seed entropy relies on PIT timer jitter, RTC CMOS readings, and saved `/var/lib/random-seed`.
 5. **Local Model Incompetence**: 15M parameter local language models are toy demonstrators. They cannot be trusted to follow JSON output schemas or obey complex instructions. Production agent autonomy requires the Host Bridge or direct API backend.

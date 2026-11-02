@@ -34,6 +34,12 @@
 
 extern uint64_t boot_pml4[512];
 
+extern int smep_enabled;
+extern int smap_enabled;
+
+int test_smap_behavior(void* user_ptr);
+int test_smep_behavior(void* user_func);
+
 void paging_init(void);
 uint64_t paging_get_kernel_pml4_phys(void);
 uint64_t* paging_get_kernel_pml4_virt(void);

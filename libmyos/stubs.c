@@ -21,55 +21,24 @@ struct kernel_stat {
     unsigned int k_ctime;
 };
 
-static void translate_kernel_stat(const struct kernel_stat* kst, struct stat* st) {
+static void translate_linux_stat64(const struct linux_stat64* ls, struct stat* st) {
     memset(st, 0, sizeof(*st));
-    st->st_dev = (dev_t) kst->k_dev;
-    st->st_ino = (ino_t) kst->k_ino;
-
-#ifndef S_IFSOCK
-#define S_IFSOCK 0xC000
-#endif
-#ifndef S_IFIFO
-#define S_IFIFO  0x1000
-#endif
-#ifndef S_IFLNK
-#define S_IFLNK  0xA000
-#endif
-#ifndef S_IFBLK
-#define S_IFBLK  0x6000
-#endif
-
-    mode_t m = 0;
-    unsigned int km = kst->k_mode;
-    if ((km & 0xF000) == 0x8000) m |= S_IFREG;
-    else if ((km & 0xF000) == 0x4000) m |= S_IFDIR;
-    else if ((km & 0xF000) == 0x2000) m |= S_IFCHR;
-    else if ((km & 0xF000) == 0xC000) m |= S_IFSOCK;
-    else if ((km & 0xF000) == 0x1000) m |= S_IFIFO;
-    else if ((km & 0xF000) == 0xA000) m |= S_IFLNK;
-    else if ((km & 0xF000) == 0x6000) m |= S_IFBLK;
-
-    m |= (km & 0777);
-    if ((m & S_IFMT) == 0) m |= S_IFREG;
-    if ((m & 0777) == 0) {
-        if (S_ISDIR(m)) m |= 0755;
-        else m |= 0644;
-    }
-    st->st_mode = m;
-
-    st->st_nlink = (nlink_t) (kst->k_nlink ? kst->k_nlink : 1);
-    st->st_uid = 0;
-    st->st_gid = 0;
-    st->st_rdev = 0;
-    st->st_size = (off_t) kst->k_size;
-    st->st_atim.tv_sec = kst->k_atime;
-    st->st_atim.tv_nsec = 0;
-    st->st_mtim.tv_sec = kst->k_mtime;
-    st->st_mtim.tv_nsec = 0;
-    st->st_ctim.tv_sec = kst->k_ctime;
-    st->st_ctim.tv_nsec = 0;
-    st->st_blksize = (blksize_t) (kst->k_blksize ? kst->k_blksize : 512);
-    st->st_blocks = (blkcnt_t) (kst->k_blocks ? kst->k_blocks : ((kst->k_size + 511) / 512));
+    st->st_dev = (dev_t) ls->st_dev;
+    st->st_ino = (ino_t) ls->st_ino;
+    st->st_mode = (mode_t) ls->st_mode;
+    st->st_nlink = (nlink_t) ls->st_nlink;
+    st->st_uid = (uid_t) ls->st_uid;
+    st->st_gid = (gid_t) ls->st_gid;
+    st->st_rdev = (dev_t) ls->st_rdev;
+    st->st_size = (off_t) ls->st_size;
+    st->st_blksize = (blksize_t) ls->st_blksize;
+    st->st_blocks = (blkcnt_t) ls->st_blocks;
+    st->st_atim.tv_sec = ls->st_atim.tv_sec;
+    st->st_atim.tv_nsec = ls->st_atim.tv_nsec;
+    st->st_mtim.tv_sec = ls->st_mtim.tv_sec;
+    st->st_mtim.tv_nsec = ls->st_mtim.tv_nsec;
+    st->st_ctim.tv_sec = ls->st_ctim.tv_sec;
+    st->st_ctim.tv_nsec = ls->st_ctim.tv_nsec;
 }
 
 void _exit(int status) {
@@ -148,43 +117,58 @@ off_t _lseek(int fd, off_t offset, int whence) {
 }
 
 int _fstat(int fd, struct stat *st) {
-    struct kernel_stat kst;
-    int ret = __syscall2(SYS_FSTAT, fd, (long)&kst);
+    struct linux_stat64 ls;
+    int ret = __syscall2(SYS_FSTAT, fd, (long)&ls);
     if (ret < 0) {
         errno = -ret;
         return -1;
     }
-    translate_kernel_stat(&kst, st);
+    translate_linux_stat64(&ls, st);
     return 0;
 }
 
 int _stat(const char *file, struct stat *st) {
-    struct kernel_stat kst;
-    int ret = __syscall2(SYS_STAT, (long)file, (long)&kst);
+    struct linux_stat64 ls;
+    int ret = __syscall2(SYS_STAT, (long)file, (long)&ls);
     if (ret < 0) {
         errno = -ret;
         return -1;
     }
-    translate_kernel_stat(&kst, st);
+    translate_linux_stat64(&ls, st);
     return 0;
 }
 
 int _isatty(int fd) {
-    /* Use SYS_TCGETATTR (55) to check whether fd is a terminal */
+    /* Use ioctl TCGETS (0x5401) to check whether fd is a terminal */
     uint8_t termios_buf[128];
-    int ret = __syscall2(SYS_TCGETATTR, fd, (long)termios_buf);
+    int ret = __syscall3(SYS_IOCTL, fd, 0x5401, (long)termios_buf);
     if (ret == 0) return 1;
     errno = ENOTTY;
     return 0;
 }
 
+static void* s_current_brk = 0;
+
 void *_sbrk(ptrdiff_t incr) {
-    long ret = __syscall1(SYS_SBRK, (long)incr);
-    if (ret == -1) {
+    if (!s_current_brk) {
+        long cur = __syscall1(SYS_BRK, 0);
+        if (cur < 0) {
+            errno = ENOMEM;
+            return (void*)-1;
+        }
+        s_current_brk = (void*)cur;
+    }
+    if (incr == 0) return s_current_brk;
+
+    void* target = (void*)((uintptr_t)s_current_brk + incr);
+    long res = __syscall1(SYS_BRK, (long)target);
+    if ((uintptr_t)res < (uintptr_t)target) {
         errno = ENOMEM;
         return (void*)-1;
     }
-    return (void*)ret;
+    void* old = s_current_brk;
+    s_current_brk = (void*)res;
+    return old;
 }
 
 int _kill(pid_t pid, int sig) {

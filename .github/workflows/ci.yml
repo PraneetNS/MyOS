@@ -27,12 +27,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/myos-cross
-          key: ${{ runner.os }}-i686-elf-toolchain-v1
+          key: ${{ runner.os }}-x86_64-elf-toolchain-v1
 
       - name: Fallback Toolchain Setup
         if: steps.cache-cross.outputs.cache-hit != 'true'
         run: |
-          echo "Toolchain cache miss. Using system gcc-multilib (-m32)..."
+          echo "Toolchain cache miss. Checking x86_64-elf-gcc..."
           sudo mkdir -p /opt/myos-cross
 
       - name: Build Kernel & Userland
@@ -53,11 +53,13 @@ jobs:
           import subprocess, sys, time
 
           cmd = [
-              "qemu-system-i386", "-m", "64",
-              "-kernel", "isodir/boot/myos.bin",
+              "qemu-system-x86_64", "-m", "256",
+              "-cdrom", "myos.iso",
               "-drive", "file=disk.img,format=raw,index=0,media=disk",
+              "-boot", "d",
               "-serial", "stdio",
-              "-display", "none"
+              "-display", "none",
+              "-no-reboot"
           ]
           proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
           start_time = time.time()

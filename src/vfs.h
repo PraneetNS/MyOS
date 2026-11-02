@@ -81,10 +81,13 @@ struct timeval {
     uint32_t tv_usec;
 };
 
+#ifndef _STRUCT_TIMESPEC
+#define _STRUCT_TIMESPEC
 struct timespec {
-    uint32_t tv_sec;
-    uint32_t tv_nsec;
+    int64_t tv_sec;
+    int64_t tv_nsec;
 };
+#endif
 
 struct timezone {
     int tz_minuteswest;

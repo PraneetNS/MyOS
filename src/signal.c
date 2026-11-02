@@ -252,11 +252,11 @@ void signal_handle_pending(struct registers* regs) {
     fpu_save(me);
     memcpy(frame.fpu_state, fpu_get_state_ptr(me), 512);
 
-    /* Trampoline: mov $119, %rax; syscall; int $0x80 */
+    /* Trampoline: mov $15, %rax (__NR_rt_sigreturn); syscall; int $0x80 */
     frame.trampoline[0] = 0x48;
     frame.trampoline[1] = 0xC7;
     frame.trampoline[2] = 0xC0;
-    frame.trampoline[3] = 119;
+    frame.trampoline[3] = 15; /* __NR_rt_sigreturn */
     frame.trampoline[4] = 0x00;
     frame.trampoline[5] = 0x00;
     frame.trampoline[6] = 0x00;
