@@ -122,15 +122,40 @@ int elf_load_into(const uint8_t* image, uint64_t image_size,
         }
 
         if (phdrs[i].p_type != PT_LOAD) continue;
+        if (phdrs[i].p_memsz == 0) continue;
 
+        if (phdr_va == 0 && eh->e_phoff >= phdrs[i].p_offset &&
+            eh->e_phoff < phdrs[i].p_offset + phdrs[i].p_filesz) {
+            phdr_va = load_base + phdrs[i].p_vaddr + (eh->e_phoff - phdrs[i].p_offset);
+        }
+
+        uint64_t page_off  = (load_base + phdrs[i].p_vaddr) & (PAGE_SIZE - 1);
         uint64_t seg_start = (load_base + phdrs[i].p_vaddr) & ~(PAGE_SIZE - 1);
         uint64_t seg_end   = (load_base + phdrs[i].p_vaddr + phdrs[i].p_memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        uint64_t file_off  = (phdrs[i].p_offset >= page_off) ? (phdrs[i].p_offset - page_off) : 0;
+        uint64_t file_sz   = (phdrs[i].p_filesz > 0) ? (phdrs[i].p_filesz + page_off) : 0;
+
         uint32_t prot = 0;
         if (phdrs[i].p_flags & 4) prot |= VMA_PROT_READ;
         if (phdrs[i].p_flags & 2) prot |= VMA_PROT_WRITE;
         if (phdrs[i].p_flags & 1) prot |= VMA_PROT_EXEC;
 
-        vma_t* vma = vma_create(seg_start, seg_end, prot, VMA_FLAG_FILE, vn, phdrs[i].p_offset, phdrs[i].p_filesz);
+        /* Handle PT_LOAD segments that share a 4KB boundary page */
+        vma_t* prev = vmas;
+        while (prev && prev->next) prev = prev->next;
+        if (prev && prev->end > seg_start) {
+            if (prev->start == seg_start) {
+                if (seg_end > prev->end) prev->end = seg_end;
+                prev->prot |= prot;
+                if (file_sz > prev->file_size) prev->file_size = file_sz;
+                continue;
+            } else {
+                prev->end = seg_start;
+                prot |= prev->prot;
+            }
+        }
+
+        vma_t* vma = vma_create(seg_start, seg_end, prot, VMA_FLAG_FILE, vn, file_off, file_sz);
         if (vma) {
             vma_insert(&vmas, vma);
         }

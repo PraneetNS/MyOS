@@ -76,5 +76,4 @@ _fini:
 __sigreturn_restorer:
     movq $15, %rax        /* Linux x86-64 __NR_rt_sigreturn */
     syscall
-    int $0x80
     hlt

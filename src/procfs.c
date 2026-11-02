@@ -36,11 +36,15 @@ static vnode_t proc_net_route_vnode;
 static vnode_t proc_self_dir_vnode;
 static vnode_t proc_self_status_vnode;
 static vnode_t proc_self_cmdline_vnode;
+static vnode_t proc_self_exe_vnode;
+static vnode_t proc_self_maps_vnode;
 static vnode_t proc_self_fd_dir_vnode;
 
 static vnode_t proc_dir_vnodes[MAX_PROCESSES];
 static vnode_t proc_status_vnodes[MAX_PROCESSES];
 static vnode_t proc_cmdline_vnodes[MAX_PROCESSES];
+static vnode_t proc_exe_vnodes[MAX_PROCESSES];
+static vnode_t proc_maps_vnodes[MAX_PROCESSES];
 static vnode_t proc_fd_dir_vnodes[MAX_PROCESSES];
 
 static vnode_t proc_agents_dir_vnode;
@@ -191,7 +195,7 @@ static int proc_uptime_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t
 /* /proc/version */
 static int proc_version_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    const char* text = "MyOS version 1.0.0-x86_64 (gcc 13.2.0) #1 SMP PREEMPT Thu Oct 15 2026 x86_64 GNU/Linux\n";
+    const char* text = "Linux version 6.1.0-myos (gcc 13.2.0) #1 SMP PREEMPT Thu Oct 15 2026 x86_64 GNU/Linux\n";
     int len = 0;
     while (text[len]) len++;
     return procfs_read_helper(text, len, offset, buf, count);
@@ -414,6 +418,100 @@ static const struct fs_ops status_ops = {
 
 static const struct fs_ops cmdline_ops = {
     .read = proc_cmdline_read,
+    .stat = procfs_file_stat
+};
+
+static void append_hex64(char* buf, int* pos, int max, uint64_t val, int width) {
+    char tmp[16];
+    const char hex_chars[] = "0123456789abcdef";
+    for (int i = width - 1; i >= 0; i--) {
+        tmp[i] = hex_chars[val & 0xF];
+        val >>= 4;
+    }
+    for (int i = 0; i < width; i++) {
+        append_char(buf, pos, max, tmp[i]);
+    }
+}
+
+/* /proc/<pid>/exe */
+static int proc_exe_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    int slot = (int)(uintptr_t)vn->fs_data;
+    process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+    if (!p || p->state == PROC_UNUSED) return -ENOENT;
+
+    char text[280];
+    int pos = 0;
+    const char* ex = p->exe_path[0] ? p->exe_path : "/bin/sh";
+    append_str(text, &pos, sizeof(text), ex);
+    append_char(text, &pos, sizeof(text), '\n');
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static int proc_exe_stat(vnode_t* vn, struct stat* st) {
+    int slot = (int)(uintptr_t)vn->fs_data;
+    process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+    if (!p || p->state == PROC_UNUSED) return -ENOENT;
+
+    const char* ex = p->exe_path[0] ? p->exe_path : "/bin/sh";
+    uint32_t slen = 0;
+    while (ex[slen]) slen++;
+
+    st->st_dev = 0;
+    st->st_ino = (uint32_t)(uintptr_t)vn;
+    st->st_mode = S_IFLNK | 0777;
+    st->st_nlink = 1;
+    st->st_size = slen;
+    st->st_blksize = 512;
+    st->st_blocks = 1;
+    st->st_mtime = rtc_get_epoch();
+    st->st_ctime = st->st_mtime;
+    st->st_atime = st->st_mtime;
+    return 0;
+}
+
+static const struct fs_ops exe_ops = {
+    .read = proc_exe_read,
+    .stat = proc_exe_stat
+};
+
+/* /proc/<pid>/maps */
+static int proc_maps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
+    int slot = (int)(uintptr_t)vn->fs_data;
+    process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
+    if (!p || p->state == PROC_UNUSED) return -ENOENT;
+
+    char text[2048];
+    int pos = 0;
+    vma_t* v = p->vma_list;
+    while (v && pos < (int)sizeof(text) - 128) {
+        append_hex64(text, &pos, sizeof(text), v->start, 12);
+        append_char(text, &pos, sizeof(text), '-');
+        append_hex64(text, &pos, sizeof(text), v->end, 12);
+        append_char(text, &pos, sizeof(text), ' ');
+        append_char(text, &pos, sizeof(text), (v->prot & VMA_PROT_READ) ? 'r' : '-');
+        append_char(text, &pos, sizeof(text), (v->prot & VMA_PROT_WRITE) ? 'w' : '-');
+        append_char(text, &pos, sizeof(text), (v->prot & VMA_PROT_EXEC) ? 'x' : '-');
+        append_char(text, &pos, sizeof(text), (v->flags & VMA_FLAG_SHARED) ? 's' : 'p');
+        append_char(text, &pos, sizeof(text), ' ');
+        append_hex64(text, &pos, sizeof(text), v->offset, 8);
+        append_str(text, &pos, sizeof(text), " 00:00 0 ");
+        if (v->flags & VMA_FLAG_HEAP) {
+            append_str(text, &pos, sizeof(text), "                 [heap]");
+        } else if (v->flags & VMA_FLAG_STACK) {
+            append_str(text, &pos, sizeof(text), "                 [stack]");
+        } else if (v->flags & VMA_FLAG_FILE) {
+            append_str(text, &pos, sizeof(text), "                 ");
+            append_str(text, &pos, sizeof(text), p->exe_path[0] ? p->exe_path : p->name);
+        }
+        append_char(text, &pos, sizeof(text), '\n');
+        v = v->next;
+    }
+
+    return procfs_read_helper(text, pos, offset, buf, count);
+}
+
+static const struct fs_ops maps_ops = {
+    .read = proc_maps_read,
     .stat = procfs_file_stat
 };
 
@@ -810,7 +908,12 @@ static int proc_fd_entry_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32
     } else if (of->type == OPEN_FILE_CONSOLE) {
         append_str(text, &pos, sizeof(text), "/dev/console\n");
     } else if (of->type == OPEN_FILE_VNODE && of->vnode) {
-        append_str(text, &pos, sizeof(text), "vnode\n");
+        if (of->path[0]) {
+            append_str(text, &pos, sizeof(text), of->path);
+            append_char(text, &pos, sizeof(text), '\n');
+        } else {
+            append_str(text, &pos, sizeof(text), "vnode\n");
+        }
     } else {
         append_str(text, &pos, sizeof(text), "unknown\n");
     }
@@ -938,6 +1041,18 @@ static int proc_pid_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         vnode_ref(target);
         return 0;
     }
+    if (streq(name, "exe")) {
+        vnode_t* target = (slot < 0) ? &proc_self_exe_vnode : &proc_exe_vnodes[slot];
+        *out = target;
+        vnode_ref(target);
+        return 0;
+    }
+    if (streq(name, "maps")) {
+        vnode_t* target = (slot < 0) ? &proc_self_maps_vnode : &proc_maps_vnodes[slot];
+        *out = target;
+        vnode_ref(target);
+        return 0;
+    }
     if (streq(name, "fd")) {
         vnode_t* target = (slot < 0) ? &proc_self_fd_dir_vnode : &proc_fd_dir_vnodes[slot];
         *out = target;
@@ -972,6 +1087,16 @@ static int proc_pid_dir_readdir(vnode_t* dir, uint32_t index, struct dirent* ent
     if (index == 4) {
         entry->d_ino = 5; entry->d_type = 2; entry->d_size = 0;
         append_str(entry->d_name, &(int){0}, sizeof(entry->d_name), "fd");
+        return 1;
+    }
+    if (index == 5) {
+        entry->d_ino = 6; entry->d_type = 1; entry->d_size = 0;
+        append_str(entry->d_name, &(int){0}, sizeof(entry->d_name), "exe");
+        return 1;
+    }
+    if (index == 6) {
+        entry->d_ino = 7; entry->d_type = 1; entry->d_size = 0;
+        append_str(entry->d_name, &(int){0}, sizeof(entry->d_name), "maps");
         return 1;
     }
     return 0;
@@ -1618,6 +1743,20 @@ void procfs_init(void) {
     proc_self_cmdline_vnode.refcount = 1000;
     proc_self_cmdline_vnode.parent = &proc_self_dir_vnode;
 
+    proc_self_exe_vnode.type = VNODE_FILE;
+    proc_self_exe_vnode.size = 0;
+    proc_self_exe_vnode.fs_data = (void*)(uintptr_t)-1;
+    proc_self_exe_vnode.ops = &exe_ops;
+    proc_self_exe_vnode.refcount = 1000;
+    proc_self_exe_vnode.parent = &proc_self_dir_vnode;
+
+    proc_self_maps_vnode.type = VNODE_FILE;
+    proc_self_maps_vnode.size = 0;
+    proc_self_maps_vnode.fs_data = (void*)(uintptr_t)-1;
+    proc_self_maps_vnode.ops = &maps_ops;
+    proc_self_maps_vnode.refcount = 1000;
+    proc_self_maps_vnode.parent = &proc_self_dir_vnode;
+
     proc_self_fd_dir_vnode.type = VNODE_DIR;
     proc_self_fd_dir_vnode.size = 0;
     proc_self_fd_dir_vnode.fs_data = (void*)(uintptr_t)-1;
@@ -1646,6 +1785,20 @@ void procfs_init(void) {
         proc_cmdline_vnodes[i].ops = &cmdline_ops;
         proc_cmdline_vnodes[i].refcount = 1000;
         proc_cmdline_vnodes[i].parent = &proc_dir_vnodes[i];
+
+        proc_exe_vnodes[i].type = VNODE_FILE;
+        proc_exe_vnodes[i].size = 0;
+        proc_exe_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_exe_vnodes[i].ops = &exe_ops;
+        proc_exe_vnodes[i].refcount = 1000;
+        proc_exe_vnodes[i].parent = &proc_dir_vnodes[i];
+
+        proc_maps_vnodes[i].type = VNODE_FILE;
+        proc_maps_vnodes[i].size = 0;
+        proc_maps_vnodes[i].fs_data = (void*)(uintptr_t)i;
+        proc_maps_vnodes[i].ops = &maps_ops;
+        proc_maps_vnodes[i].refcount = 1000;
+        proc_maps_vnodes[i].parent = &proc_dir_vnodes[i];
 
         proc_fd_dir_vnodes[i].type = VNODE_DIR;
         proc_fd_dir_vnodes[i].size = 0;

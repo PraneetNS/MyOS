@@ -136,6 +136,18 @@ static int validate_user_string(const char* s) {
     if (va < 0x1000 || va >= 0x0000800000000000ULL) return -EFAULT;
 
     if (me->vma_list) {
+        if (va >= USER_STACK_BOTTOM && va < USER_STACK_TOP) {
+            vma_t* sv = me->vma_list;
+            while (sv) {
+                if (sv->flags & VMA_FLAG_STACK) {
+                    if (va < sv->start) {
+                        sv->start = va & ~0xFFFULL;
+                    }
+                    break;
+                }
+                sv = sv->next;
+            }
+        }
         vma_t* vma = vma_find(me, va);
         if (!vma || !(vma->prot & VMA_PROT_READ)) return -EFAULT;
         int len = 0;
@@ -271,6 +283,364 @@ static void kernel_stat_to_linux_stat64(const struct stat* ks, struct linux_stat
     ls->st_ctim.tv_nsec = 0;
 }
 
+static int resolve_dirfd_base(process_t* me, int dirfd, const char* path, const char** base_out) {
+    if (path && path[0] == '/') {
+        *base_out = "/";
+        return 0;
+    }
+    if (dirfd == AT_FDCWD) {
+        *base_out = me->cwd;
+        return 0;
+    }
+    if (dirfd < 0 || dirfd >= MAX_FDS || !me->fds[dirfd]) {
+        return -EBADF;
+    }
+    open_file_t* dof = me->fds[dirfd];
+    if (dof->type != OPEN_FILE_VNODE || !dof->vnode || dof->vnode->type != VNODE_DIR) {
+        return -ENOTDIR;
+    }
+    *base_out = dof->path[0] ? dof->path : me->cwd;
+    return 0;
+}
+
+static int do_sys_openat(int dirfd, const char* path, int flags, int mode) {
+    (void) mode;
+    int err = validate_user_string(path);
+    if (err != 0) return err;
+
+    process_t* me = scheduler_current();
+    const char* base_cwd = me->cwd;
+    err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
+    if (err != 0) return err;
+
+    char full_path[PATH_MAX];
+    vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
+
+    if (me->agent_id > 0) {
+        if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) {
+            int aerr = agent_check_access(me, CAP_FS_WRITE, full_path, "open_write");
+            if (aerr < 0) return aerr;
+        }
+        if (((flags & 3) == O_RDONLY) || (flags & O_RDWR)) {
+            int aerr = agent_check_access(me, CAP_FS_READ, full_path, "open_read");
+            if (aerr < 0) return aerr;
+        }
+    }
+
+    int slot = -1;
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (!me->fds[i]) { slot = i; break; }
+    }
+    if (slot < 0) return -EMFILE;
+
+    vnode_t* vn = 0;
+    char resolved_canon[PATH_MAX];
+    resolved_canon[0] = '\0';
+    int follow = (flags & O_NOFOLLOW) ? 0 : 1;
+    int ret = vfs_resolve_path_ex(path, base_cwd, &vn, follow, resolved_canon, sizeof(resolved_canon));
+    if (ret == 0 && vn) {
+        if ((flags & O_NOFOLLOW) && vfs_is_symlink(vn, 0, 0) > 0) {
+            vnode_unref(vn);
+            return -ELOOP;
+        }
+        if ((flags & O_DIRECTORY) && vn->type != VNODE_DIR) {
+            vnode_unref(vn);
+            return -ENOTDIR;
+        }
+        if (me->agent_id > 0 && resolved_canon[0]) {
+            if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, resolved_canon, "open_write");
+                if (aerr < 0) { vnode_unref(vn); return aerr; }
+            }
+            if (((flags & 3) == O_RDONLY) || (flags & O_RDWR)) {
+                int aerr = agent_check_access(me, CAP_FS_READ, resolved_canon, "open_read");
+                if (aerr < 0) { vnode_unref(vn); return aerr; }
+            }
+        }
+        if ((flags & O_CREAT) && (flags & O_EXCL)) {
+            vnode_unref(vn);
+            return -EEXIST;
+        }
+        if (vn->type == VNODE_DIR && ((flags & O_WRONLY) || (flags & O_RDWR))) {
+            vnode_unref(vn);
+            return -EISDIR;
+        }
+        if (flags & O_TRUNC) {
+            if (vn->ops && vn->ops->truncate) {
+                vn->ops->truncate(vn, 0);
+                vn->size = 0;
+            }
+        }
+    } else {
+        if (ret == -ELOOP || ret == -ENOTDIR || ret == -ENAMETOOLONG) {
+            return ret;
+        }
+        if (!(flags & O_CREAT)) {
+            return -ENOENT;
+        }
+        /* Create file */
+        vnode_t* parent = 0;
+        char child_name[NAME_MAX + 1];
+        char parent_canon[PATH_MAX];
+        parent_canon[0] = '\0';
+        ret = vfs_resolve_parent_ex(path, base_cwd, &parent, child_name, sizeof(child_name), parent_canon, sizeof(parent_canon));
+        if (ret != 0 || !parent) {
+            return (ret ? ret : -ENOENT);
+        }
+        if (me->agent_id > 0 && parent_canon[0]) {
+            char target_canon[PATH_MAX];
+            vfs_path_canonical(child_name, parent_canon, target_canon, sizeof(target_canon));
+            int aerr = agent_check_access(me, CAP_FS_WRITE, target_canon, "open_create");
+            if (aerr < 0) { vnode_unref(parent); return aerr; }
+            int ci = 0;
+            while (target_canon[ci] && ci < PATH_MAX - 1) { resolved_canon[ci] = target_canon[ci]; ci++; }
+            resolved_canon[ci] = '\0';
+        } else {
+            vfs_path_canonical(child_name, parent_canon[0] ? parent_canon : base_cwd, resolved_canon, sizeof(resolved_canon));
+        }
+        if (!parent->ops || !parent->ops->create) {
+            vnode_unref(parent);
+            return -ENOSYS;
+        }
+        ret = parent->ops->create(parent, child_name, &vn);
+        vnode_unref(parent);
+        if (ret != 0 || !vn) {
+            return ret;
+        }
+    }
+
+    if (devfs_is_ptmx_vnode(vn)) {
+        vnode_t* master_vn = NULL;
+        int pty_err = pty_create(&master_vn);
+        vnode_unref(vn);
+        if (pty_err != 0 || !master_vn) {
+            return (pty_err ? pty_err : -ENOMEM);
+        }
+        vn = master_vn;
+    }
+
+    open_file_type_t of_type = (vn->type == VNODE_CONSOLE) ? OPEN_FILE_CONSOLE : OPEN_FILE_VNODE;
+    open_file_t* of = open_file_alloc(of_type, vn, flags);
+    vnode_unref(vn);
+    if (!of) {
+        return -ENFILE;
+    }
+    if (flags & O_APPEND) {
+        of->offset = vn->size;
+    }
+    const char* psrc = resolved_canon[0] ? resolved_canon : full_path;
+    int pi = 0;
+    while (psrc[pi] && pi < 255) { of->path[pi] = psrc[pi]; pi++; }
+    of->path[pi] = '\0';
+
+    me->fds[slot] = of;
+    me->fd_flags[slot] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+    return slot;
+}
+
+static int do_sys_fstat(int fd, struct linux_stat64* u_ls) {
+    int err = validate_user_buffer(u_ls, sizeof(struct linux_stat64), 1);
+    if (err != 0) return err;
+
+    process_t* me = scheduler_current();
+    if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+        return -EBADF;
+    }
+
+    struct stat ks;
+    memset(&ks, 0, sizeof(ks));
+    int ret = -EBADF;
+
+    open_file_t* of = me->fds[fd];
+    if (of->type == OPEN_FILE_CONSOLE) {
+        if (of->vnode) {
+            ret = vfs_stat(of->vnode, &ks);
+        } else {
+            ks.st_dev = 0; ks.st_ino = 0; ks.st_mode = S_IFCHR | 0666;
+            ks.st_nlink = 1; ks.st_size = 0; ks.st_blksize = 512; ks.st_blocks = 0;
+            ret = 0;
+        }
+    } else if (of->type == OPEN_FILE_PIPE) {
+        ks.st_mode = S_IFIFO | 0600;
+        ks.st_nlink = 1;
+        ks.st_blksize = 512;
+        ret = 0;
+    } else if (of->type == OPEN_FILE_VNODE && of->vnode) {
+        ret = vfs_stat(of->vnode, &ks);
+    } else if (of->type == OPEN_FILE_SOCKET && of->sock) {
+        ret = socket_stat((socket_t*) of->sock, &ks);
+    }
+
+    if (ret == 0) {
+        struct linux_stat64 ls;
+        kernel_stat_to_linux_stat64(&ks, &ls);
+        if (copy_to_user(u_ls, &ls, sizeof(ls)) != 0) {
+            return -EFAULT;
+        }
+    }
+    return ret;
+}
+
+static int do_sys_statat(int dirfd, const char* path, struct linux_stat64* u_ls, int flags) {
+    int err = validate_user_string(path);
+    if (err != 0) return err;
+
+    if ((flags & AT_EMPTY_PATH) && path[0] == '\0') {
+        return do_sys_fstat(dirfd, u_ls);
+    }
+
+    err = validate_user_buffer(u_ls, sizeof(struct linux_stat64), 1);
+    if (err != 0) return err;
+
+    process_t* me = scheduler_current();
+    const char* base_cwd = me->cwd;
+    err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
+    if (err != 0) return err;
+
+    char full_path[PATH_MAX];
+    vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
+    if (me->agent_id > 0) {
+        int aerr = agent_check_access(me, CAP_FS_READ, full_path, "stat");
+        if (aerr < 0) return aerr;
+    }
+
+    vnode_t* vn = 0;
+    char resolved_canon[PATH_MAX];
+    resolved_canon[0] = '\0';
+    int follow = (flags & AT_SYMLINK_NOFOLLOW) ? 0 : 1;
+    int ret = vfs_resolve_path_ex(path, base_cwd, &vn, follow, resolved_canon, sizeof(resolved_canon));
+    if (ret != 0 || !vn) {
+        return (ret ? ret : -ENOENT);
+    }
+
+    if (me->agent_id > 0 && resolved_canon[0]) {
+        int aerr = agent_check_access(me, CAP_FS_READ, resolved_canon, "stat");
+        if (aerr < 0) {
+            vnode_unref(vn);
+            return aerr;
+        }
+    }
+
+    struct stat ks;
+    memset(&ks, 0, sizeof(ks));
+    ret = vfs_stat(vn, &ks);
+    vnode_unref(vn);
+    if (ret == 0) {
+        struct linux_stat64 ls;
+        kernel_stat_to_linux_stat64(&ks, &ls);
+        if (copy_to_user(u_ls, &ls, sizeof(ls)) != 0) {
+            return -EFAULT;
+        }
+    }
+    return ret;
+}
+
+static int do_sys_symlinkat(const char* target, int newdirfd, const char* linkpath) {
+    int err = validate_user_string(target);
+    if (err != 0) return err;
+    err = validate_user_string(linkpath);
+    if (err != 0) return err;
+
+    process_t* me = scheduler_current();
+    const char* base_cwd = me->cwd;
+    err = resolve_dirfd_base(me, newdirfd, linkpath, &base_cwd);
+    if (err != 0) return err;
+
+    char full_path[PATH_MAX];
+    vfs_path_canonical(linkpath, base_cwd, full_path, sizeof(full_path));
+    if (me->agent_id > 0) {
+        int aerr = agent_check_access(me, CAP_FS_WRITE, full_path, "symlink");
+        if (aerr < 0) return aerr;
+    }
+
+    vnode_t* existing = 0;
+    if (vfs_resolve_path_ex(linkpath, base_cwd, &existing, 0, 0, 0) == 0 && existing) {
+        vnode_unref(existing);
+        return -EEXIST;
+    }
+
+    vnode_t* parent = 0;
+    char child_name[NAME_MAX + 1];
+    char parent_canon[PATH_MAX];
+    parent_canon[0] = '\0';
+    int ret = vfs_resolve_parent_ex(linkpath, base_cwd, &parent, child_name, sizeof(child_name), parent_canon, sizeof(parent_canon));
+    if (ret != 0 || !parent) return (ret ? ret : -ENOENT);
+
+    if (me->agent_id > 0 && parent_canon[0]) {
+        char target_canon[PATH_MAX];
+        vfs_path_canonical(child_name, parent_canon, target_canon, sizeof(target_canon));
+        int aerr = agent_check_access(me, CAP_FS_WRITE, target_canon, "symlink");
+        if (aerr < 0) { vnode_unref(parent); return aerr; }
+    }
+
+    if (!parent->ops || !parent->ops->create) {
+        vnode_unref(parent);
+        return -ENOSYS;
+    }
+
+    vnode_t* vn = 0;
+    ret = parent->ops->create(parent, child_name, &vn);
+    vnode_unref(parent);
+    if (ret != 0 || !vn) return (ret ? ret : -EIO);
+
+    char sym_buf[520];
+    const char* hdr = "MYOSLNK\n";
+    int pos = 0;
+    for (int i = 0; i < 8; i++) sym_buf[pos++] = hdr[i];
+    for (int i = 0; target[i] && pos < 511; i++) sym_buf[pos++] = target[i];
+
+    if (!vn->ops || !vn->ops->write) {
+        vnode_unref(vn);
+        return -EIO;
+    }
+    int wn = vn->ops->write(vn, 0, (const uint8_t*)sym_buf, (uint32_t)pos);
+    vnode_unref(vn);
+    return (wn == pos) ? 0 : -EIO;
+}
+
+static int do_sys_readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz) {
+    if (bufsiz == 0) return -EINVAL;
+    int err = validate_user_string(path);
+    if (err != 0) return err;
+    err = validate_user_buffer(buf, bufsiz, 1);
+    if (err != 0) return err;
+
+    process_t* me = scheduler_current();
+    const char* base_cwd = me->cwd;
+    err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
+    if (err != 0) return err;
+
+    char full_path[PATH_MAX];
+    vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
+    if (me->agent_id > 0) {
+        int aerr = agent_check_access(me, CAP_FS_READ, full_path, "readlink");
+        if (aerr < 0) return aerr;
+    }
+
+    vnode_t* vn = 0;
+    char resolved_canon[PATH_MAX];
+    resolved_canon[0] = '\0';
+    int ret = vfs_resolve_path_ex(path, base_cwd, &vn, 0, resolved_canon, sizeof(resolved_canon));
+    if (ret != 0 || !vn) return (ret ? ret : -ENOENT);
+
+    if (me->agent_id > 0 && resolved_canon[0]) {
+        int aerr = agent_check_access(me, CAP_FS_READ, resolved_canon, "readlink");
+        if (aerr < 0) {
+            vnode_unref(vn);
+            return aerr;
+        }
+    }
+
+    char target_buf[512];
+    int len = vfs_is_symlink(vn, target_buf, sizeof(target_buf));
+    vnode_unref(vn);
+    if (len <= 0) return -EINVAL;
+
+    size_t to_copy = ((size_t)len < bufsiz) ? (size_t)len : bufsiz;
+    if (copy_to_user(buf, target_buf, (uint32_t)to_copy) != 0) return -EFAULT;
+    return (int)to_copy;
+}
+
 static void syscall_handler_internal(struct syscall_args* regs) {
     agent_killswitch_check_deferred();
     switch (regs->eax) {
@@ -293,7 +663,8 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_EXIT: {
+        case SYS_EXIT:
+        case SYS_EXIT_GROUP: {
             int status = (int) regs->ebx;
             kprintf("[ok] process exited (pid %d, status %d)\n", scheduler_current()->pid, status);
             scheduler_exit_current(status); /* never returns */
@@ -301,6 +672,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_GETPID:
+        case __NR_gettid:
             regs->eax = (uint32_t) scheduler_current()->pid;
             break;
 
@@ -308,99 +680,23 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             const char* path = (const char*) regs->ebx;
             int flags = (int) regs->ecx;
             int mode = (int) regs->edx;
-            (void) mode;
+            regs->eax = (uint32_t) do_sys_openat(AT_FDCWD, path, flags, mode);
+            break;
+        }
 
-            int err = validate_user_string(path);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
+        case SYS_OPENAT: {
+            int dirfd = (int) regs->ebx;
+            const char* path = (const char*) regs->ecx;
+            int flags = (int) regs->edx;
+            int mode = (int) regs->esi;
+            regs->eax = (uint32_t) do_sys_openat(dirfd, path, flags, mode);
+            break;
+        }
 
-            process_t* me = scheduler_current();
-            if (me->agent_id > 0) {
-                if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) {
-                    int aerr = agent_check_access(me, CAP_FS_WRITE, path, "open_write");
-                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
-                }
-                if (((flags & 3) == O_RDONLY) || (flags & O_RDWR)) {
-                    int aerr = agent_check_access(me, CAP_FS_READ, path, "open_read");
-                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
-                }
-            }
-
-            int slot = -1;
-            for (int i = 3; i < MAX_FDS; i++) {
-                if (!me->fds[i]) { slot = i; break; }
-            }
-            if (slot < 0) { regs->eax = (uint32_t) -EMFILE; break; }
-
-            vnode_t* vn = 0;
-            int ret = vfs_resolve_path(path, me->cwd, &vn);
-            if (ret == 0 && vn) {
-                if ((flags & O_CREAT) && (flags & O_EXCL)) {
-                    vnode_unref(vn);
-                    regs->eax = (uint32_t) -EEXIST;
-                    break;
-                }
-                if (vn->type == VNODE_DIR && ((flags & O_WRONLY) || (flags & O_RDWR))) {
-                    vnode_unref(vn);
-                    regs->eax = (uint32_t) -EISDIR;
-                    break;
-                }
-                if (flags & O_TRUNC) {
-                    if (vn->ops && vn->ops->truncate) {
-                        vn->ops->truncate(vn, 0);
-                        vn->size = 0;
-                    }
-                }
-            } else {
-                if (!(flags & O_CREAT)) {
-                    regs->eax = (uint32_t) -ENOENT;
-                    break;
-                }
-                /* Create file */
-                vnode_t* parent = 0;
-                char child_name[NAME_MAX + 1];
-                ret = vfs_resolve_parent(path, me->cwd, &parent, child_name, sizeof(child_name));
-                if (ret != 0 || !parent) {
-                    regs->eax = (uint32_t) (ret ? ret : -ENOENT);
-                    break;
-                }
-                if (!parent->ops || !parent->ops->create) {
-                    vnode_unref(parent);
-                    regs->eax = (uint32_t) -ENOSYS;
-                    break;
-                }
-                ret = parent->ops->create(parent, child_name, &vn);
-                vnode_unref(parent);
-                if (ret != 0 || !vn) {
-                    regs->eax = (uint32_t) ret;
-                    break;
-                }
-            }
-
-            if (devfs_is_ptmx_vnode(vn)) {
-                vnode_t* master_vn = NULL;
-                int pty_err = pty_create(&master_vn);
-                vnode_unref(vn);
-                if (pty_err != 0 || !master_vn) {
-                    regs->eax = (uint32_t) (pty_err ? pty_err : -ENOMEM);
-                    break;
-                }
-                vn = master_vn;
-            }
-
-            open_file_type_t of_type = (vn->type == VNODE_CONSOLE) ? OPEN_FILE_CONSOLE : OPEN_FILE_VNODE;
-            open_file_t* of = open_file_alloc(of_type, vn, flags);
-            vnode_unref(vn);
-            if (!of) {
-                regs->eax = (uint32_t) -ENFILE;
-                break;
-            }
-            if (flags & O_APPEND) {
-                of->offset = vn->size;
-            }
-
-            me->fds[slot] = of;
-            me->fd_flags[slot] = (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
-            regs->eax = (uint32_t) slot;
+        case __NR_creat: {
+            const char* path = (const char*) regs->ebx;
+            int mode = (int) regs->ecx;
+            regs->eax = (uint32_t) do_sys_openat(AT_FDCWD, path, O_CREAT | O_WRONLY | O_TRUNC, mode);
             break;
         }
 
@@ -440,15 +736,55 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
 
 
-        case SYS_FORK: {
+        case SYS_FORK:
+        case __NR_vfork: {
             process_t* me = scheduler_current();
             process_t* child = process_fork(me, regs->raw);
-            regs->eax = child ? (uint64_t) child->pid : (uint64_t)-1;
+            regs->eax = child ? (uint64_t) child->pid : (uint64_t) -EAGAIN;
             break;
         }
 
-        case SYS_PIPE: {
+        case SYS_CLONE: {
+            unsigned long clone_flags = (unsigned long) regs->ebx;
+            void* child_stack = (void*) regs->ecx;
+            int* ptid = (int*) regs->edx;
+            int* ctid = (int*) regs->esi;
+            unsigned long newtls = (unsigned long) regs->edi;
+
+            /* CLONE_VM (0x100) without CLONE_VFORK (0x4000) is thread creation (Phase 9B) */
+            if ((clone_flags & 0x00000100UL) && !(clone_flags & 0x00004000UL)) {
+                regs->eax = (uint64_t) -ENOSYS;
+                break;
+            }
+
+            process_t* me = scheduler_current();
+            process_t* child = process_fork(me, regs->raw);
+            if (!child) {
+                regs->eax = (uint64_t) -EAGAIN;
+                break;
+            }
+            if (child_stack) {
+                child->saved_regs.rsp = (uint64_t) child_stack;
+            }
+            if (clone_flags & 0x00080000UL /* CLONE_SETTLS */) {
+                child->fs_base = newtls;
+            }
+            if ((clone_flags & 0x00200000UL /* CLONE_CHILD_CLEARTID */) && ctid) {
+                child->clear_child_tid = ctid;
+            }
+            if ((clone_flags & 0x00010000UL /* CLONE_PARENT_SETTID */) && ptid) {
+                if (validate_user_buffer(ptid, sizeof(int), 1) == 0) {
+                    *ptid = child->pid;
+                }
+            }
+            regs->eax = (uint64_t) child->pid;
+            break;
+        }
+
+        case SYS_PIPE:
+        case SYS_PIPE2: {
             int* user_fds = (int*) regs->ebx;
+            int pipe_flags = (regs->eax == SYS_PIPE2) ? (int) regs->ecx : 0;
             int err = validate_user_buffer(user_fds, sizeof(int) * 2, 1);
             if (err != 0) {
                 regs->eax = (uint32_t) err;
@@ -476,7 +812,9 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
-            open_file_t* of_read = open_file_alloc(OPEN_FILE_PIPE, 0, O_RDONLY);
+            int rflags = O_RDONLY | (pipe_flags & (O_NONBLOCK | O_NONBLOCK_LINUX));
+            int wflags = O_WRONLY | (pipe_flags & (O_NONBLOCK | O_NONBLOCK_LINUX));
+            open_file_t* of_read = open_file_alloc(OPEN_FILE_PIPE, 0, rflags);
             if (!of_read) {
                 pipe_close_end(p, O_RDONLY);
                 pipe_close_end(p, O_WRONLY);
@@ -484,7 +822,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
-            open_file_t* of_write = open_file_alloc(OPEN_FILE_PIPE, 0, O_WRONLY);
+            open_file_t* of_write = open_file_alloc(OPEN_FILE_PIPE, 0, wflags);
             if (!of_write) {
                 of_read->pipe = 0;
                 open_file_unref(of_read);
@@ -497,10 +835,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             of_read->pipe = p;
             of_write->pipe = p;
 
+            uint8_t cloexec = (pipe_flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
             me->fds[fd0] = of_read;
-            me->fd_flags[fd0] = 0;
+            me->fd_flags[fd0] = cloexec;
             me->fds[fd1] = of_write;
-            me->fd_flags[fd1] = 0;
+            me->fd_flags[fd1] = cloexec;
 
             user_fds[0] = fd0;
             user_fds[1] = fd1;
@@ -525,7 +864,8 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             typedef struct {
                 char kname[PATH_MAX];
                 char bin_path[PATH_MAX];
-                char kargv_buf[16][NAME_MAX + 1];
+                char resolved_canon[PATH_MAX];
+                char kargv_buf[32][NAME_MAX + 1];
                 char kenvp_buf[32][128];
             } exec_params_t;
 
@@ -541,9 +881,10 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 ki++;
             }
             ep->kname[ki] = '\0';
+            ep->resolved_canon[0] = '\0';
 
             vnode_t* vn = 0;
-            if (vfs_resolve_path(ep->kname, me->cwd, &vn) != 0 || !vn) {
+            if (vfs_resolve_path_ex(ep->kname, me->cwd, &vn, 1, ep->resolved_canon, sizeof(ep->resolved_canon)) != 0 || !vn) {
                 ep->bin_path[0] = '/'; ep->bin_path[1] = 'b'; ep->bin_path[2] = 'i'; ep->bin_path[3] = 'n'; ep->bin_path[4] = '/';
                 int l = 0;
                 while (ep->kname[l] && l < PATH_MAX - 6) {
@@ -551,19 +892,29 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                     l++;
                 }
                 ep->bin_path[5 + l] = '\0';
-                if (vfs_resolve_path(ep->bin_path, me->cwd, &vn) != 0 || !vn) {
+                if (vfs_resolve_path_ex(ep->bin_path, me->cwd, &vn, 1, ep->resolved_canon, sizeof(ep->resolved_canon)) != 0 || !vn) {
                     kfree(ep);
-                    regs->eax = (uint32_t)-1;
+                    regs->eax = (uint32_t) -ENOENT;
+                    break;
+                }
+            }
+
+            if (me->agent_id > 0 && ep->resolved_canon[0]) {
+                int aerr = agent_check_access(me, CAP_EXEC, ep->resolved_canon, "exec");
+                if (aerr < 0) {
+                    vnode_unref(vn);
+                    kfree(ep);
+                    regs->eax = (uint32_t) aerr;
                     break;
                 }
             }
 
             /* Copy arguments from user space before tearing down address space */
             int argc = 0;
-            const char* kargv[17];
+            const char* kargv[33];
             if (uargv) {
                 int bad = 0;
-                while (argc < 16) {
+                while (argc < 32) {
                     if (validate_user_buffer(&uargv[argc], sizeof(char*), 0) != 0) {
                         bad = 1; break;
                     }
@@ -607,7 +958,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 "HOME=/",
                 "PWD=/",
                 "USER=root",
-                "PATH=/bin:/",
+                "PATH=/bin:/usr/bin:/",
                 0
             };
 
@@ -646,12 +997,19 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 kenvp[envc] = 0;
             }
 
+            if (vn->size == 0) {
+                vnode_unref(vn);
+                kfree(ep);
+                regs->eax = (uint32_t) -ENOEXEC;
+                break;
+            }
+
             uint32_t alloc_size = ((vn->size + 511) / 512) * 512;
             uint8_t* buf = (uint8_t*) kmalloc(alloc_size);
             if (!buf) {
                 vnode_unref(vn);
                 kfree(ep);
-                regs->eax = (uint32_t)-1;
+                regs->eax = (uint32_t) -ENOMEM;
                 break;
             }
 
@@ -660,8 +1018,68 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 vnode_unref(vn);
                 kfree(buf);
                 kfree(ep);
-                regs->eax = (uint32_t)-1;
+                regs->eax = (uint32_t) -EIO;
                 break;
+            }
+
+            /* Support #! shebang scripts */
+            if (n >= 4 && buf[0] == '#' && buf[1] == '!') {
+                int p = 2;
+                while (p < n && (buf[p] == ' ' || buf[p] == '\t')) p++;
+                char interp[128];
+                int il = 0;
+                while (p < n && buf[p] != '\n' && buf[p] != '\r' && buf[p] != ' ' && buf[p] != '\t' && il < 127) {
+                    interp[il++] = (char)buf[p++];
+                }
+                interp[il] = '\0';
+                kfree(buf);
+                vnode_unref(vn);
+                vn = 0;
+                if (il == 0 || vfs_resolve_path_ex(interp, me->cwd, &vn, 1, ep->resolved_canon, sizeof(ep->resolved_canon)) != 0 || !vn) {
+                    kfree(ep);
+                    regs->eax = (uint32_t) -ENOENT;
+                    break;
+                }
+                if (me->agent_id > 0 && ep->resolved_canon[0]) {
+                    int aerr = agent_check_access(me, CAP_EXEC, ep->resolved_canon, "exec_interp");
+                    if (aerr < 0) {
+                        vnode_unref(vn);
+                        kfree(ep);
+                        regs->eax = (uint32_t) aerr;
+                        break;
+                    }
+                }
+                if (argc < 31) {
+                    for (int a = argc; a >= 1; a--) {
+                        for (int c = 0; c <= NAME_MAX; c++) ep->kargv_buf[a][c] = ep->kargv_buf[a - 1][c];
+                        kargv[a] = ep->kargv_buf[a];
+                    }
+                    int c = 0;
+                    while (ep->kname[c] && c < NAME_MAX) { ep->kargv_buf[1][c] = ep->kname[c]; c++; }
+                    ep->kargv_buf[1][c] = '\0';
+                    c = 0;
+                    while (interp[c] && c < NAME_MAX) { ep->kargv_buf[0][c] = interp[c]; c++; }
+                    ep->kargv_buf[0][c] = '\0';
+                    kargv[0] = ep->kargv_buf[0];
+                    argc++;
+                    kargv[argc] = 0;
+                }
+                alloc_size = ((vn->size + 511) / 512) * 512;
+                buf = (uint8_t*) kmalloc(alloc_size);
+                if (!buf) {
+                    vnode_unref(vn);
+                    kfree(ep);
+                    regs->eax = (uint32_t) -ENOMEM;
+                    break;
+                }
+                n = vn->ops->read(vn, 0, buf, vn->size);
+                if (n <= 0) {
+                    vnode_unref(vn);
+                    kfree(buf);
+                    kfree(ep);
+                    regs->eax = (uint32_t) -EIO;
+                    break;
+                }
             }
 
             address_space_t new_as = vmm_create_address_space();
@@ -669,7 +1087,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 vnode_unref(vn);
                 kfree(buf);
                 kfree(ep);
-                regs->eax = (uint64_t)-1;
+                regs->eax = (uint64_t) -ENOMEM;
                 break;
             }
 
@@ -689,7 +1107,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 kfree(buf);
                 vmm_destroy_address_space(&new_as);
                 kfree(ep);
-                regs->eax = (uint32_t)-1;
+                regs->eax = (uint32_t) -ENOEXEC;
                 break;
             }
             vnode_unref(vn);
@@ -717,6 +1135,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             me->heap_end = HEAP_BASE + me->aslr_brk_offset;
             me->heap_mapped_up_to = me->heap_end;
 
+            const char* ex_src = ep->resolved_canon[0] ? ep->resolved_canon : ep->kname;
+            int exi = 0;
+            while (ex_src[exi] && exi < 255) { me->exe_path[exi] = ex_src[exi]; exi++; }
+            me->exe_path[exi] = '\0';
+
             const char* base = ep->kname;
             for (int k = 0; ep->kname[k]; k++) {
                 if (ep->kname[k] == '/') base = &ep->kname[k + 1];
@@ -732,6 +1155,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                     me->sig_actions[sig].sa_restorer = 0;
                 }
             }
+            wrmsr64(MSR_FS_BASE, 0);
 
             vmm_switch(&me->as);
             vmm_destroy_address_space(&old_as);
@@ -879,8 +1303,153 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_SYNC: {
+        case SYS_SYNC:
+        case __NR_fdatasync: {
             regs->eax = (uint32_t) bcache_sync();
+            break;
+        }
+
+        case __NR_readv: {
+            int fd = (int) regs->ebx;
+            const struct iovec* uiov = (const struct iovec*) regs->ecx;
+            int iovcnt = (int) regs->edx;
+            if (iovcnt < 0 || iovcnt > 1024) { regs->eax = (uint32_t) -EINVAL; break; }
+            if (iovcnt == 0) { regs->eax = 0; break; }
+            int err = validate_user_buffer(uiov, (uint64_t)iovcnt * sizeof(struct iovec), 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            int64_t total = 0;
+            for (int i = 0; i < iovcnt; i++) {
+                if (uiov[i].iov_len == 0) continue;
+                err = validate_user_buffer(uiov[i].iov_base, uiov[i].iov_len, 1);
+                if (err != 0) {
+                    if (total == 0) total = err;
+                    break;
+                }
+                int n = vfs_read(me->fds[fd], uiov[i].iov_base, (uint32_t)uiov[i].iov_len);
+                if (n < 0) {
+                    if (total == 0) total = n;
+                    break;
+                }
+                total += n;
+                if ((size_t)n < uiov[i].iov_len) break;
+            }
+            regs->eax = (uint64_t) total;
+            break;
+        }
+
+        case __NR_writev: {
+            int fd = (int) regs->ebx;
+            const struct iovec* uiov = (const struct iovec*) regs->ecx;
+            int iovcnt = (int) regs->edx;
+            if (iovcnt < 0 || iovcnt > 1024) { regs->eax = (uint32_t) -EINVAL; break; }
+            if (iovcnt == 0) { regs->eax = 0; break; }
+            int err = validate_user_buffer(uiov, (uint64_t)iovcnt * sizeof(struct iovec), 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            int64_t total = 0;
+            for (int i = 0; i < iovcnt; i++) {
+                if (uiov[i].iov_len == 0) continue;
+                err = validate_user_buffer(uiov[i].iov_base, uiov[i].iov_len, 0);
+                if (err != 0) {
+                    if (total == 0) total = err;
+                    break;
+                }
+                int n = vfs_write(me->fds[fd], uiov[i].iov_base, (uint32_t)uiov[i].iov_len);
+                if (n < 0) {
+                    if (total == 0) total = n;
+                    break;
+                }
+                total += n;
+                if ((size_t)n < uiov[i].iov_len) break;
+            }
+            regs->eax = (uint64_t) total;
+            break;
+        }
+
+        case __NR_pread64: {
+            int fd = (int) regs->ebx;
+            void* buf = (void*) regs->ecx;
+            uint32_t count = (uint32_t) regs->edx;
+            int64_t pos = (int64_t) regs->esi;
+            if (pos < 0) { regs->eax = (uint32_t) -EINVAL; break; }
+            int err = validate_user_buffer(buf, count, 1);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) { regs->eax = (uint32_t) -EBADF; break; }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_VNODE || !of->vnode) { regs->eax = (uint32_t) -ESPIPE; break; }
+            uint32_t old_off = of->offset;
+            of->offset = (uint32_t) pos;
+            int n = vfs_read(of, buf, count);
+            of->offset = old_off;
+            regs->eax = (uint32_t) n;
+            break;
+        }
+
+        case __NR_pwrite64: {
+            int fd = (int) regs->ebx;
+            const void* buf = (const void*) regs->ecx;
+            uint32_t count = (uint32_t) regs->edx;
+            int64_t pos = (int64_t) regs->esi;
+            if (pos < 0) { regs->eax = (uint32_t) -EINVAL; break; }
+            int err = validate_user_buffer(buf, count, 0);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) { regs->eax = (uint32_t) -EBADF; break; }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_VNODE || !of->vnode) { regs->eax = (uint32_t) -ESPIPE; break; }
+            uint32_t old_off = of->offset;
+            of->offset = (uint32_t) pos;
+            int n = vfs_write(of, buf, count);
+            of->offset = old_off;
+            regs->eax = (uint32_t) n;
+            break;
+        }
+
+        case __NR_sendfile: {
+            int out_fd = (int) regs->ebx;
+            int in_fd = (int) regs->ecx;
+            int64_t* offset_ptr = (int64_t*) regs->edx;
+            uint32_t count = (uint32_t) regs->esi;
+            process_t* me = scheduler_current();
+            if (out_fd < 0 || out_fd >= MAX_FDS || !me->fds[out_fd] ||
+                in_fd < 0 || in_fd >= MAX_FDS || !me->fds[in_fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            if (offset_ptr) {
+                int err = validate_user_buffer(offset_ptr, sizeof(int64_t), 1);
+                if (err != 0) { regs->eax = (uint32_t) err; break; }
+            }
+            uint8_t kbuf[512];
+            uint32_t total = 0;
+            uint32_t saved_off = me->fds[in_fd]->offset;
+            if (offset_ptr) me->fds[in_fd]->offset = (uint32_t)(*offset_ptr);
+            while (total < count) {
+                uint32_t chunk = (count - total > sizeof(kbuf)) ? sizeof(kbuf) : (count - total);
+                int r = vfs_read(me->fds[in_fd], kbuf, chunk);
+                if (r <= 0) break;
+                int w = vfs_write(me->fds[out_fd], kbuf, (uint32_t)r);
+                if (w <= 0) break;
+                total += (uint32_t)w;
+                if (w < r) break;
+            }
+            if (offset_ptr) {
+                *offset_ptr = (int64_t)me->fds[in_fd]->offset;
+                me->fds[in_fd]->offset = saved_off;
+            }
+            regs->eax = total;
             break;
         }
 
@@ -903,83 +1472,35 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         case SYS_STAT: {
             const char* path = (const char*) regs->ebx;
             struct linux_stat64* u_ls = (struct linux_stat64*) regs->ecx;
+            regs->eax = (uint32_t) do_sys_statat(AT_FDCWD, path, u_ls, 0);
+            break;
+        }
 
-            int err = validate_user_string(path);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
+        case __NR_lstat: {
+            const char* path = (const char*) regs->ebx;
+            struct linux_stat64* u_ls = (struct linux_stat64*) regs->ecx;
+            regs->eax = (uint32_t) do_sys_statat(AT_FDCWD, path, u_ls, AT_SYMLINK_NOFOLLOW);
+            break;
+        }
 
-            err = validate_user_buffer(u_ls, sizeof(struct linux_stat64), 1);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
-
-            process_t* me = scheduler_current();
-            vnode_t* vn = 0;
-            int ret = vfs_resolve_path(path, me->cwd, &vn);
-            if (ret != 0 || !vn) {
-                regs->eax = (uint32_t) (ret ? ret : -ENOENT);
-                break;
-            }
-
-            struct stat ks;
-            memset(&ks, 0, sizeof(ks));
-            ret = vfs_stat(vn, &ks);
-            vnode_unref(vn);
-            if (ret == 0) {
-                struct linux_stat64 ls;
-                kernel_stat_to_linux_stat64(&ks, &ls);
-                if (copy_to_user(u_ls, &ls, sizeof(ls)) != 0) {
-                    regs->eax = (uint32_t) -EFAULT;
-                    break;
-                }
-            }
-            regs->eax = (uint32_t) ret;
+        case SYS_NEWFSTATAT: {
+            int dirfd = (int) regs->ebx;
+            const char* path = (const char*) regs->ecx;
+            struct linux_stat64* u_ls = (struct linux_stat64*) regs->edx;
+            int flags = (int) regs->esi;
+            regs->eax = (uint32_t) do_sys_statat(dirfd, path, u_ls, flags);
             break;
         }
 
         case SYS_FSTAT: {
             int fd = (int) regs->ebx;
             struct linux_stat64* u_ls = (struct linux_stat64*) regs->ecx;
+            regs->eax = (uint32_t) do_sys_fstat(fd, u_ls);
+            break;
+        }
 
-            int err = validate_user_buffer(u_ls, sizeof(struct linux_stat64), 1);
-            if (err != 0) { regs->eax = (uint32_t) err; break; }
-
-            process_t* me = scheduler_current();
-            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
-                regs->eax = (uint32_t) -EBADF;
-                break;
-            }
-
-            struct stat ks;
-            memset(&ks, 0, sizeof(ks));
-            int ret = -EBADF;
-
-            open_file_t* of = me->fds[fd];
-            if (of->type == OPEN_FILE_CONSOLE) {
-                if (of->vnode) {
-                    ret = vfs_stat(of->vnode, &ks);
-                } else {
-                    ks.st_dev = 0; ks.st_ino = 0; ks.st_mode = S_IFCHR | 0666;
-                    ks.st_nlink = 1; ks.st_size = 0; ks.st_blksize = 512; ks.st_blocks = 0;
-                    ret = 0;
-                }
-            } else if (of->type == OPEN_FILE_PIPE) {
-                ks.st_mode = S_IFIFO | 0600;
-                ks.st_nlink = 1;
-                ks.st_blksize = 512;
-                ret = 0;
-            } else if (of->type == OPEN_FILE_VNODE && of->vnode) {
-                ret = vfs_stat(of->vnode, &ks);
-            } else if (of->type == OPEN_FILE_SOCKET && of->sock) {
-                ret = socket_stat((socket_t*) of->sock, &ks);
-            }
-
-            if (ret == 0) {
-                struct linux_stat64 ls;
-                kernel_stat_to_linux_stat64(&ks, &ls);
-                if (copy_to_user(u_ls, &ls, sizeof(ls)) != 0) {
-                    regs->eax = (uint32_t) -EFAULT;
-                    break;
-                }
-            }
-            regs->eax = (uint32_t) ret;
+        case __NR_statx: {
+            regs->eax = (uint32_t) -ENOSYS;
             break;
         }
 
@@ -1041,7 +1562,8 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_GETDENTS: {
+        case SYS_GETDENTS:
+        case __NR_getdents: {
             int fd = (int) regs->ebx;
             void* dirp = (void*) regs->ecx;
             uint32_t count = (uint32_t) regs->edx;
@@ -1072,23 +1594,29 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                         regs->eax = (uint32_t) ret;
                         break;
                     }
-                    /* EOF or error after writing some entries: return bytes written */
                     regs->eax = bytes_written;
                     break;
                 }
 
                 size_t name_len = kstrlen(k_ent.d_name);
-                /* 19 bytes header (ino 8, off 8, reclen 2, type 1) + name_len + 1 null + padding to 8-byte boundary */
                 uint16_t reclen = (uint16_t)(((19 + name_len + 1) + 7) & ~7);
                 if (bytes_written + reclen > count) {
                     if (bytes_written == 0) {
                         regs->eax = (uint32_t) -EINVAL;
                     } else {
-                        /* Rewind by 1 so this entry will be read on next call */
                         if (me->fds[fd]->offset > 0) me->fds[fd]->offset--;
                         regs->eax = bytes_written;
                     }
                     break;
+                }
+
+                uint8_t dtype = (k_ent.d_type == 2) ? 4 : 8; /* DT_DIR = 4, DT_REG = 8 */
+                if (dtype == 8 && me->fds[fd]->vnode && me->fds[fd]->vnode->ops && me->fds[fd]->vnode->ops->lookup) {
+                    vnode_t* ch_vn = 0;
+                    if (me->fds[fd]->vnode->ops->lookup(me->fds[fd]->vnode, k_ent.d_name, &ch_vn) == 0 && ch_vn) {
+                        if (vfs_is_symlink(ch_vn, 0, 0) > 0) dtype = 10; /* DT_LNK = 10 */
+                        vnode_unref(ch_vn);
+                    }
                 }
 
                 uint8_t rec_buf[512];
@@ -1097,7 +1625,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 ld->d_ino = k_ent.d_ino ? k_ent.d_ino : 1;
                 ld->d_off = me->fds[fd]->offset;
                 ld->d_reclen = reclen;
-                ld->d_type = (k_ent.d_type == 2) ? 4 : 8; /* DT_DIR = 4, DT_REG = 8 */
+                ld->d_type = dtype;
                 memcpy(ld->d_name, k_ent.d_name, name_len + 1);
 
                 if (copy_to_user(u_buf + bytes_written, rec_buf, reclen) != 0) {
@@ -1107,35 +1635,47 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 }
 
                 bytes_written += reclen;
-                /* Single entry per call or loop? Standard getdents fills up as much as fits!
-                   Let's break if remaining space is too small for another entry (< 32 bytes) */
-                if (count - bytes_written < 32) {
-                    regs->eax = bytes_written;
-                    break;
-                }
+                regs->eax = bytes_written;
+                break;
             }
             break;
         }
 
-        case SYS_MKDIR: {
-            const char* path = (const char*) regs->ebx;
-            int mode = (int) regs->ecx;
+        case SYS_MKDIR:
+        case __NR_mkdirat: {
+            int dirfd = (regs->eax == __NR_mkdirat) ? (int) regs->ebx : AT_FDCWD;
+            const char* path = (const char*) ((regs->eax == __NR_mkdirat) ? regs->ecx : regs->ebx);
+            int mode = (int) ((regs->eax == __NR_mkdirat) ? regs->edx : regs->ecx);
             (void) mode;
 
             int err = validate_user_string(path);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            const char* base_cwd = me->cwd;
+            err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            char full_path[PATH_MAX];
+            vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
             if (me->agent_id > 0) {
-                int aerr = agent_check_access(me, CAP_FS_WRITE, path, "mkdir");
+                int aerr = agent_check_access(me, CAP_FS_WRITE, full_path, "mkdir");
                 if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
             }
             vnode_t* parent = 0;
             char child[NAME_MAX + 1];
-            int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
+            char parent_canon[PATH_MAX];
+            parent_canon[0] = '\0';
+            int ret = vfs_resolve_parent_ex(path, base_cwd, &parent, child, sizeof(child), parent_canon, sizeof(parent_canon));
             if (ret != 0 || !parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
                 break;
+            }
+            if (me->agent_id > 0 && parent_canon[0]) {
+                char target_canon[PATH_MAX];
+                vfs_path_canonical(child, parent_canon, target_canon, sizeof(target_canon));
+                int aerr = agent_check_access(me, CAP_FS_WRITE, target_canon, "mkdir");
+                if (aerr < 0) { vnode_unref(parent); regs->eax = (uint32_t) aerr; break; }
             }
             if (!parent->ops || !parent->ops->mkdir) {
                 vnode_unref(parent);
@@ -1150,67 +1690,69 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_RMDIR: {
-            const char* path = (const char*) regs->ebx;
+        case SYS_RMDIR:
+        case SYS_UNLINK:
+        case SYS_UNLINKAT: {
+            int dirfd = (regs->eax == SYS_UNLINKAT) ? (int) regs->ebx : AT_FDCWD;
+            const char* path = (const char*) ((regs->eax == SYS_UNLINKAT) ? regs->ecx : regs->ebx);
+            int uflags = (regs->eax == SYS_UNLINKAT) ? (int) regs->edx : ((regs->eax == SYS_RMDIR) ? AT_REMOVEDIR : 0);
 
             int err = validate_user_string(path);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
-            if (me->agent_id > 0) {
-                int aerr = agent_check_access(me, CAP_FS_WRITE, path, "rmdir");
-                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
-            }
-            vnode_t* parent = 0;
-            char child[NAME_MAX + 1];
-            int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
-            if (ret != 0 || !parent) {
-                regs->eax = (uint32_t) (ret ? ret : -ENOENT);
-                break;
-            }
-            if (!parent->ops || !parent->ops->rmdir) {
-                vnode_unref(parent);
-                regs->eax = (uint32_t) -ENOSYS;
-                break;
-            }
-            ret = parent->ops->rmdir(parent, child);
-            vnode_unref(parent);
-            regs->eax = (uint32_t) ret;
-            break;
-        }
-
-        case SYS_UNLINK: {
-            const char* path = (const char*) regs->ebx;
-
-            int err = validate_user_string(path);
+            const char* base_cwd = me->cwd;
+            err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
-            process_t* me = scheduler_current();
+            char full_path[PATH_MAX];
+            vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
             if (me->agent_id > 0) {
-                int aerr = agent_check_access(me, CAP_FS_WRITE, path, "unlink");
+                int aerr = agent_check_access(me, CAP_FS_WRITE, full_path, (uflags & AT_REMOVEDIR) ? "rmdir" : "unlink");
                 if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
             }
             vnode_t* parent = 0;
             char child[NAME_MAX + 1];
-            int ret = vfs_resolve_parent(path, me->cwd, &parent, child, sizeof(child));
+            char parent_canon[PATH_MAX];
+            parent_canon[0] = '\0';
+            int ret = vfs_resolve_parent_ex(path, base_cwd, &parent, child, sizeof(child), parent_canon, sizeof(parent_canon));
             if (ret != 0 || !parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
                 break;
             }
-            if (!parent->ops || !parent->ops->unlink) {
-                vnode_unref(parent);
-                regs->eax = (uint32_t) -ENOSYS;
-                break;
+            if (me->agent_id > 0 && parent_canon[0]) {
+                char target_canon[PATH_MAX];
+                vfs_path_canonical(child, parent_canon, target_canon, sizeof(target_canon));
+                int aerr = agent_check_access(me, CAP_FS_WRITE, target_canon, (uflags & AT_REMOVEDIR) ? "rmdir" : "unlink");
+                if (aerr < 0) { vnode_unref(parent); regs->eax = (uint32_t) aerr; break; }
             }
-            ret = parent->ops->unlink(parent, child);
+            if (uflags & AT_REMOVEDIR) {
+                if (!parent->ops || !parent->ops->rmdir) {
+                    vnode_unref(parent);
+                    regs->eax = (uint32_t) -ENOSYS;
+                    break;
+                }
+                ret = parent->ops->rmdir(parent, child);
+            } else {
+                if (!parent->ops || !parent->ops->unlink) {
+                    vnode_unref(parent);
+                    regs->eax = (uint32_t) -ENOSYS;
+                    break;
+                }
+                ret = parent->ops->unlink(parent, child);
+            }
             vnode_unref(parent);
             regs->eax = (uint32_t) ret;
             break;
         }
 
-        case SYS_RENAME: {
-            const char* oldpath = (const char*) regs->ebx;
-            const char* newpath = (const char*) regs->ecx;
+        case SYS_RENAME:
+        case SYS_RENAMEAT:
+        case SYS_RENAMEAT2: {
+            int olddirfd = (regs->eax == SYS_RENAME) ? AT_FDCWD : (int) regs->ebx;
+            const char* oldpath = (const char*) ((regs->eax == SYS_RENAME) ? regs->ebx : regs->ecx);
+            int newdirfd = (regs->eax == SYS_RENAME) ? AT_FDCWD : (int) regs->edx;
+            const char* newpath = (const char*) ((regs->eax == SYS_RENAME) ? regs->ecx : regs->esi);
 
             int err = validate_user_string(oldpath);
             if (err != 0) { regs->eax = (uint32_t) err; break; }
@@ -1218,24 +1760,51 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            const char* old_base = me->cwd;
+            const char* new_base = me->cwd;
+            err = resolve_dirfd_base(me, olddirfd, oldpath, &old_base);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+            err = resolve_dirfd_base(me, newdirfd, newpath, &new_base);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            char old_full[PATH_MAX], new_full[PATH_MAX];
+            vfs_path_canonical(oldpath, old_base, old_full, sizeof(old_full));
+            vfs_path_canonical(newpath, new_base, new_full, sizeof(new_full));
+
             if (me->agent_id > 0) {
-                int aerr = agent_check_access(me, CAP_FS_WRITE, oldpath, "rename_old");
+                int aerr = agent_check_access(me, CAP_FS_WRITE, old_full, "rename_old");
                 if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
-                aerr = agent_check_access(me, CAP_FS_WRITE, newpath, "rename_new");
+                aerr = agent_check_access(me, CAP_FS_WRITE, new_full, "rename_new");
                 if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
             }
             vnode_t *old_parent = 0, *new_parent = 0;
             char old_child[NAME_MAX + 1], new_child[NAME_MAX + 1];
-            int ret = vfs_resolve_parent(oldpath, me->cwd, &old_parent, old_child, sizeof(old_child));
+            char old_pcanon[PATH_MAX], new_pcanon[PATH_MAX];
+            old_pcanon[0] = '\0'; new_pcanon[0] = '\0';
+            int ret = vfs_resolve_parent_ex(oldpath, old_base, &old_parent, old_child, sizeof(old_child), old_pcanon, sizeof(old_pcanon));
             if (ret != 0 || !old_parent) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
                 break;
             }
-            ret = vfs_resolve_parent(newpath, me->cwd, &new_parent, new_child, sizeof(new_child));
+            ret = vfs_resolve_parent_ex(newpath, new_base, &new_parent, new_child, sizeof(new_child), new_pcanon, sizeof(new_pcanon));
             if (ret != 0 || !new_parent) {
                 vnode_unref(old_parent);
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
                 break;
+            }
+            if (me->agent_id > 0) {
+                if (old_pcanon[0]) {
+                    char tc[PATH_MAX];
+                    vfs_path_canonical(old_child, old_pcanon, tc, sizeof(tc));
+                    int aerr = agent_check_access(me, CAP_FS_WRITE, tc, "rename_old");
+                    if (aerr < 0) { vnode_unref(old_parent); vnode_unref(new_parent); regs->eax = (uint32_t) aerr; break; }
+                }
+                if (new_pcanon[0]) {
+                    char tc[PATH_MAX];
+                    vfs_path_canonical(new_child, new_pcanon, tc, sizeof(tc));
+                    int aerr = agent_check_access(me, CAP_FS_WRITE, tc, "rename_new");
+                    if (aerr < 0) { vnode_unref(old_parent); vnode_unref(new_parent); regs->eax = (uint32_t) aerr; break; }
+                }
             }
             if (!old_parent->ops || !old_parent->ops->rename) {
                 vnode_unref(old_parent);
@@ -1250,6 +1819,144 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
+        case SYS_SYMLINK: {
+            const char* target = (const char*) regs->ebx;
+            const char* linkpath = (const char*) regs->ecx;
+            regs->eax = (uint32_t) do_sys_symlinkat(target, AT_FDCWD, linkpath);
+            break;
+        }
+
+        case SYS_SYMLINKAT: {
+            const char* target = (const char*) regs->ebx;
+            int newdirfd = (int) regs->ecx;
+            const char* linkpath = (const char*) regs->edx;
+            regs->eax = (uint32_t) do_sys_symlinkat(target, newdirfd, linkpath);
+            break;
+        }
+
+        case SYS_READLINK: {
+            const char* path = (const char*) regs->ebx;
+            char* buf = (char*) regs->ecx;
+            size_t bufsiz = (size_t) regs->edx;
+            regs->eax = (uint32_t) do_sys_readlinkat(AT_FDCWD, path, buf, bufsiz);
+            break;
+        }
+
+        case SYS_READLINKAT: {
+            int dirfd = (int) regs->ebx;
+            const char* path = (const char*) regs->ecx;
+            char* buf = (char*) regs->edx;
+            size_t bufsiz = (size_t) regs->esi;
+            regs->eax = (uint32_t) do_sys_readlinkat(dirfd, path, buf, bufsiz);
+            break;
+        }
+
+        case __NR_access:
+        case SYS_FACCESSAT:
+        case __NR_faccessat2: {
+            int dirfd = (regs->eax == __NR_access) ? AT_FDCWD : (int) regs->ebx;
+            const char* path = (const char*) ((regs->eax == __NR_access) ? regs->ebx : regs->ecx);
+            int amode = (int) ((regs->eax == __NR_access) ? regs->ecx : regs->edx);
+
+            int err = validate_user_string(path);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            const char* base_cwd = me->cwd;
+            err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            char full_path[PATH_MAX];
+            vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
+            if (me->agent_id > 0) {
+                uint32_t cap = (amode & 2 /* W_OK */) ? CAP_FS_WRITE : CAP_FS_READ;
+                int aerr = agent_check_access(me, cap, full_path, "access");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
+
+            vnode_t* vn = 0;
+            char resolved_canon[PATH_MAX];
+            resolved_canon[0] = '\0';
+            int ret = vfs_resolve_path_ex(path, base_cwd, &vn, 1, resolved_canon, sizeof(resolved_canon));
+            if (ret != 0 || !vn) {
+                regs->eax = (uint32_t) (ret ? ret : -ENOENT);
+                break;
+            }
+            vnode_unref(vn);
+            if (me->agent_id > 0 && resolved_canon[0]) {
+                uint32_t cap = (amode & 2 /* W_OK */) ? CAP_FS_WRITE : CAP_FS_READ;
+                int aerr = agent_check_access(me, cap, resolved_canon, "access");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_CHMOD:
+        case SYS_FCHMODAT:
+        case SYS_CHOWN:
+        case __NR_lchown:
+        case __NR_fchownat:
+        case SYS_UTIMENSAT: {
+            int has_dirfd = (regs->eax == SYS_FCHMODAT || regs->eax == __NR_fchownat || regs->eax == SYS_UTIMENSAT);
+            int dirfd = has_dirfd ? (int) regs->ebx : AT_FDCWD;
+            const char* path = (const char*) (has_dirfd ? regs->ecx : regs->ebx);
+
+            if (regs->eax == SYS_UTIMENSAT && !path) {
+                regs->eax = 0;
+                break;
+            }
+            int err = validate_user_string(path);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            process_t* me = scheduler_current();
+            const char* base_cwd = me->cwd;
+            err = resolve_dirfd_base(me, dirfd, path, &base_cwd);
+            if (err != 0) { regs->eax = (uint32_t) err; break; }
+
+            char full_path[PATH_MAX];
+            vfs_path_canonical(path, base_cwd, full_path, sizeof(full_path));
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, full_path, "chmod_chown");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
+            vnode_t* vn = 0;
+            char resolved_canon[PATH_MAX];
+            resolved_canon[0] = '\0';
+            int ret = vfs_resolve_path_ex(path, base_cwd, &vn, (regs->eax == __NR_lchown) ? 0 : 1, resolved_canon, sizeof(resolved_canon));
+            if (ret != 0 || !vn) {
+                regs->eax = (uint32_t) (ret ? ret : -ENOENT);
+                break;
+            }
+            vnode_unref(vn);
+            if (me->agent_id > 0 && resolved_canon[0]) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, resolved_canon, "chmod_chown");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_FCHMOD:
+        case __NR_fchown: {
+            int fd = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_UMASK: {
+            process_t* me = scheduler_current();
+            uint32_t old = me->umask_val;
+            me->umask_val = (uint32_t) regs->ebx & 0777U;
+            regs->eax = old;
+            break;
+        }
+
         case SYS_CHDIR: {
             const char* path = (const char*) regs->ebx;
 
@@ -1258,7 +1965,9 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
             process_t* me = scheduler_current();
             vnode_t* vn = 0;
-            int ret = vfs_resolve_path(path, me->cwd, &vn);
+            char resolved_canon[PATH_MAX];
+            resolved_canon[0] = '\0';
+            int ret = vfs_resolve_path_ex(path, me->cwd, &vn, 1, resolved_canon, sizeof(resolved_canon));
             if (ret != 0 || !vn) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
                 break;
@@ -1270,7 +1979,40 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             }
             vnode_unref(vn);
 
-            vfs_path_canonical(path, me->cwd, me->cwd, sizeof(me->cwd));
+            if (resolved_canon[0]) {
+                int ci = 0;
+                while (resolved_canon[ci] && ci < (int)sizeof(me->cwd) - 1) {
+                    me->cwd[ci] = resolved_canon[ci];
+                    ci++;
+                }
+                me->cwd[ci] = '\0';
+            } else {
+                vfs_path_canonical(path, me->cwd, me->cwd, sizeof(me->cwd));
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_fchdir: {
+            int fd = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                regs->eax = (uint32_t) -EBADF;
+                break;
+            }
+            open_file_t* of = me->fds[fd];
+            if (of->type != OPEN_FILE_VNODE || !of->vnode || of->vnode->type != VNODE_DIR) {
+                regs->eax = (uint32_t) -ENOTDIR;
+                break;
+            }
+            if (of->path[0]) {
+                int ci = 0;
+                while (of->path[ci] && ci < (int)sizeof(me->cwd) - 1) {
+                    me->cwd[ci] = of->path[ci];
+                    ci++;
+                }
+                me->cwd[ci] = '\0';
+            }
             regs->eax = 0;
             break;
         }
@@ -1325,9 +2067,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_DUP2: {
+        case SYS_DUP2:
+        case SYS_DUP3: {
             int oldfd = (int) regs->ebx;
             int newfd = (int) regs->ecx;
+            int dflags = (regs->eax == SYS_DUP3) ? (int) regs->edx : 0;
             process_t* me = scheduler_current();
             if (oldfd < 0 || oldfd >= MAX_FDS || !me->fds[oldfd]) {
                 regs->eax = (uint32_t) -EBADF;
@@ -1338,7 +2082,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
             if (oldfd == newfd) {
-                regs->eax = (uint32_t) newfd;
+                regs->eax = (regs->eax == SYS_DUP3) ? (uint32_t) -EINVAL : (uint32_t) newfd;
                 break;
             }
             if (me->fds[newfd]) {
@@ -1348,7 +2092,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 vfs_close(old_of);
             }
             me->fds[newfd] = me->fds[oldfd];
-            me->fd_flags[newfd] = 0;
+            me->fd_flags[newfd] = (dflags & O_CLOEXEC) ? FD_CLOEXEC : 0;
             open_file_ref(me->fds[newfd]);
             regs->eax = (uint32_t) newfd;
             break;
@@ -1374,10 +2118,13 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 int allowed = O_APPEND | O_NONBLOCK | O_NONBLOCK_LINUX;
                 me->fds[fd]->flags = (me->fds[fd]->flags & ~allowed) | (arg & allowed);
                 regs->eax = 0;
-            } else if (cmd == F_DUPFD) {
-                int min_fd = arg >= 0 ? arg : 0;
+            } else if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+                if (arg < 0 || arg >= MAX_FDS) {
+                    regs->eax = (uint32_t) -EINVAL;
+                    break;
+                }
                 int new_fd = -1;
-                for (int i = min_fd; i < MAX_FDS; i++) {
+                for (int i = arg; i < MAX_FDS; i++) {
                     if (!me->fds[i]) {
                         new_fd = i;
                         break;
@@ -1387,13 +2134,607 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                     regs->eax = (uint32_t) -EMFILE;
                 } else {
                     me->fds[new_fd] = me->fds[fd];
-                    me->fd_flags[new_fd] = 0;
+                    me->fd_flags[new_fd] = (cmd == F_DUPFD_CLOEXEC) ? FD_CLOEXEC : 0;
                     open_file_ref(me->fds[new_fd]);
                     regs->eax = (uint32_t) new_fd;
                 }
             } else {
                 regs->eax = (uint32_t) -EINVAL;
             }
+            break;
+        }
+
+        case __NR_madvise: {
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_arch_prctl: {
+            int code = (int) regs->ebx;
+            uint64_t addr = regs->ecx;
+            process_t* me = scheduler_current();
+            if (!me) { regs->eax = (uint64_t) -ESRCH; break; }
+            if (code == 0x1002) { /* ARCH_SET_FS */
+                if (addr >= 0x0000800000000000ULL) {
+                    regs->eax = (uint64_t) -EPERM;
+                    break;
+                }
+                me->fs_base = addr;
+                wrmsr64(MSR_FS_BASE, addr);
+                regs->eax = 0;
+            } else if (code == 0x1003) { /* ARCH_GET_FS */
+                uint64_t* uptr = (uint64_t*) addr;
+                int err = validate_user_buffer(uptr, sizeof(uint64_t), 1);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                copy_to_user(uptr, &me->fs_base, sizeof(uint64_t));
+                regs->eax = 0;
+            } else if (code == 0x1001) { /* ARCH_SET_GS */
+                if (addr >= 0x0000800000000000ULL) {
+                    regs->eax = (uint64_t) -EPERM;
+                    break;
+                }
+                me->gs_base = addr;
+                regs->eax = 0;
+            } else if (code == 0x1004) { /* ARCH_GET_GS */
+                uint64_t* uptr = (uint64_t*) addr;
+                int err = validate_user_buffer(uptr, sizeof(uint64_t), 1);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                copy_to_user(uptr, &me->gs_base, sizeof(uint64_t));
+                regs->eax = 0;
+            } else {
+                regs->eax = (uint64_t) -EINVAL;
+            }
+            break;
+        }
+
+        case __NR_prctl: {
+            int option = (int) regs->ebx;
+            uint64_t arg2 = regs->ecx;
+            process_t* me = scheduler_current();
+            if (option == 15 && me) { /* PR_SET_NAME */
+                const char* uname = (const char*) arg2;
+                if (validate_user_string(uname) == 0) {
+                    int i = 0;
+                    while (uname[i] && i < 15) {
+                        me->name[i] = uname[i];
+                        i++;
+                    }
+                    me->name[i] = '\0';
+                }
+                regs->eax = 0;
+            } else if (option == 16 && me) { /* PR_GET_NAME */
+                char* uname = (char*) arg2;
+                if (validate_user_buffer(uname, 16, 1) == 0) {
+                    char buf[16];
+                    memset(buf, 0, 16);
+                    for (int i = 0; i < 15 && me->name[i]; i++) buf[i] = me->name[i];
+                    copy_to_user(uname, buf, 16);
+                    regs->eax = 0;
+                } else {
+                    regs->eax = (uint64_t) -EFAULT;
+                }
+            } else {
+                regs->eax = 0;
+            }
+            break;
+        }
+
+        case __NR_set_tid_address: {
+            int* tidptr = (int*) regs->ebx;
+            process_t* me = scheduler_current();
+            if (me) {
+                me->clear_child_tid = tidptr;
+                regs->eax = (uint64_t) me->pid;
+            } else {
+                regs->eax = 0;
+            }
+            break;
+        }
+
+        case __NR_set_robust_list: {
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_futex: {
+            int* uaddr = (int*) regs->ebx;
+            int futex_op = (int) regs->ecx;
+            int val = (int) regs->edx;
+            int cmd = futex_op & 0x7F;
+            if (cmd == 0 || cmd == 9) { /* FUTEX_WAIT / FUTEX_WAIT_BITSET */
+                int err = validate_user_buffer(uaddr, sizeof(int), 0);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                int cur_val = 0;
+                copy_from_user(&cur_val, uaddr, sizeof(int));
+                if (cur_val != val) {
+                    regs->eax = (uint64_t) -EAGAIN;
+                    break;
+                }
+                scheduler_yield();
+                regs->eax = 0;
+            } else if (cmd == 1 || cmd == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */
+                regs->eax = 0;
+            } else {
+                regs->eax = (uint64_t) -ENOSYS;
+            }
+            break;
+        }
+
+        case SYS_GETUID:
+        case SYS_GETGID:
+        case SYS_GETEUID:
+        case SYS_GETEGID: {
+            process_t* me = scheduler_current();
+            regs->eax = (me && me->agent_id > 0) ? (uint64_t)(1000 + me->agent_id) : 0;
+            break;
+        }
+
+        case SYS_SETUID:
+        case SYS_SETGID:
+        case __NR_setreuid:
+        case __NR_setregid:
+        case __NR_setresuid:
+        case __NR_setresgid:
+        case __NR_setgroups: {
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint64_t) -EPERM;
+            } else {
+                regs->eax = 0;
+            }
+            break;
+        }
+
+        case __NR_getresuid:
+        case __NR_getresgid: {
+            uint32_t* r = (uint32_t*) regs->ebx;
+            uint32_t* e = (uint32_t*) regs->ecx;
+            uint32_t* s = (uint32_t*) regs->edx;
+            process_t* me = scheduler_current();
+            uint32_t id = (me && me->agent_id > 0) ? (uint32_t)(1000 + me->agent_id) : 0;
+            if (r) {
+                if (validate_user_buffer(r, sizeof(uint32_t), 1) != 0) { regs->eax = (uint64_t)-EFAULT; break; }
+                copy_to_user(r, &id, sizeof(uint32_t));
+            }
+            if (e) {
+                if (validate_user_buffer(e, sizeof(uint32_t), 1) != 0) { regs->eax = (uint64_t)-EFAULT; break; }
+                copy_to_user(e, &id, sizeof(uint32_t));
+            }
+            if (s) {
+                if (validate_user_buffer(s, sizeof(uint32_t), 1) != 0) { regs->eax = (uint64_t)-EFAULT; break; }
+                copy_to_user(s, &id, sizeof(uint32_t));
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_getgroups: {
+            int size = (int) regs->ebx;
+            uint32_t* list = (uint32_t*) regs->ecx;
+            if (size < 0) { regs->eax = (uint64_t) -EINVAL; break; }
+            if (size == 0) { regs->eax = 1; break; }
+            if (validate_user_buffer(list, sizeof(uint32_t), 1) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+            process_t* me = scheduler_current();
+            uint32_t gid = (me && me->agent_id > 0) ? (uint32_t)(1000 + me->agent_id) : 0;
+            copy_to_user(list, &gid, sizeof(uint32_t));
+            regs->eax = 1;
+            break;
+        }
+
+        case __NR_getpgrp: {
+            process_t* me = scheduler_current();
+            regs->eax = (uint64_t)(me ? me->pgid : 0);
+            break;
+        }
+
+        case __NR_tkill: {
+            int tid = (int) regs->ebx;
+            int sig = (int) regs->ecx;
+            regs->eax = (uint64_t) sys_kill(tid, sig);
+            break;
+        }
+
+        case __NR_tgkill: {
+            int tgid = (int) regs->ebx;
+            int tid  = (int) regs->ecx;
+            int sig  = (int) regs->edx;
+            (void)tgid;
+            regs->eax = (uint64_t) sys_kill(tid, sig);
+            break;
+        }
+
+        case __NR_sched_yield: {
+            scheduler_yield();
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_UNAME: {
+            void* ubuf = (void*) regs->ebx;
+            struct linux_utsname {
+                char sysname[65];
+                char nodename[65];
+                char release[65];
+                char version[65];
+                char machine[65];
+                char domainname[65];
+            };
+            int err = validate_user_buffer(ubuf, sizeof(struct linux_utsname), 1);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            struct linux_utsname kuts;
+            memset(&kuts, 0, sizeof(kuts));
+            memcpy(kuts.sysname, "MyOS", 5);
+            memcpy(kuts.nodename, "myos", 5);
+            memcpy(kuts.release, "6.1.0-myos", 11);
+            memcpy(kuts.version, "#1 SMP PREEMPT_DYNAMIC x86_64", 30);
+            memcpy(kuts.machine, "x86_64", 7);
+            memcpy(kuts.domainname, "(none)", 7);
+            copy_to_user(ubuf, &kuts, sizeof(kuts));
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_SYSINFO: {
+            void* uinfo = (void*) regs->ebx;
+            struct linux_sysinfo {
+                int64_t  uptime;
+                uint64_t loads[3];
+                uint64_t totalram;
+                uint64_t freeram;
+                uint64_t sharedram;
+                uint64_t bufferram;
+                uint64_t totalswap;
+                uint64_t freeswap;
+                uint16_t procs;
+                uint16_t pad;
+                uint32_t pad2;
+                uint64_t totalhigh;
+                uint64_t freehigh;
+                uint32_t mem_unit;
+                char     _f[8];
+            };
+            int err = validate_user_buffer(uinfo, sizeof(struct linux_sysinfo), 1);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            struct linux_sysinfo ksi;
+            memset(&ksi, 0, sizeof(ksi));
+            ksi.uptime = timer_get_ticks() / 100u;
+            ksi.totalram = (uint64_t) pmm_total_count() * 4096ULL;
+            ksi.freeram = (uint64_t) pmm_free_frame_count() * 4096ULL;
+            uint16_t nprocs = 0;
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                process_t* p = process_table_entry(i);
+                if (p && p->state != PROC_UNUSED) nprocs++;
+            }
+            ksi.procs = nprocs;
+            ksi.mem_unit = 1;
+            copy_to_user(uinfo, &ksi, sizeof(ksi));
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_GETRLIMIT:
+        case __NR_setrlimit:
+        case SYS_PRLIMIT64: {
+            struct linux_rlimit64 {
+                uint64_t rlim_cur;
+                uint64_t rlim_max;
+            };
+            int resource;
+            const struct linux_rlimit64* new_rlim = NULL;
+            struct linux_rlimit64* old_rlim = NULL;
+            if (regs->eax == SYS_PRLIMIT64) {
+                resource = (int) regs->ecx;
+                new_rlim = (const struct linux_rlimit64*) regs->edx;
+                old_rlim = (struct linux_rlimit64*) regs->esi;
+            } else if (regs->eax == SYS_GETRLIMIT) {
+                resource = (int) regs->ebx;
+                old_rlim = (struct linux_rlimit64*) regs->ecx;
+            } else {
+                resource = (int) regs->ebx;
+                new_rlim = (const struct linux_rlimit64*) regs->ecx;
+            }
+            if (new_rlim) {
+                int err = validate_user_buffer(new_rlim, sizeof(struct linux_rlimit64), 0);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+            }
+            if (old_rlim) {
+                int err = validate_user_buffer(old_rlim, sizeof(struct linux_rlimit64), 1);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                struct linux_rlimit64 kr;
+                if (resource == 3) { /* RLIMIT_STACK */
+                    kr.rlim_cur = USER_STACK_MAX_GROWTH;
+                    kr.rlim_max = USER_STACK_MAX_GROWTH;
+                } else if (resource == 7) { /* RLIMIT_NOFILE */
+                    kr.rlim_cur = MAX_FDS;
+                    kr.rlim_max = MAX_FDS;
+                } else {
+                    kr.rlim_cur = ~0ULL;
+                    kr.rlim_max = ~0ULL;
+                }
+                copy_to_user(old_rlim, &kr, sizeof(kr));
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_getrusage: {
+            void* usage = (void*) regs->ecx;
+            int err = validate_user_buffer(usage, 144, 1);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            uint8_t kusage[144];
+            memset(kusage, 0, sizeof(kusage));
+            copy_to_user(usage, kusage, sizeof(kusage));
+            regs->eax = 0;
+            break;
+        }
+
+        case SYS_GETRANDOM: {
+            void* ubuf = (void*) regs->ebx;
+            uint64_t buflen = regs->ecx;
+            if (buflen == 0) { regs->eax = 0; break; }
+            if (buflen > 0x7FFFF000ULL) buflen = 0x7FFFF000ULL;
+            int err = validate_user_buffer(ubuf, buflen, 1);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            uint8_t tmp[256];
+            uint64_t done = 0;
+            while (done < buflen) {
+                uint32_t chunk = (uint32_t)((buflen - done > sizeof(tmp)) ? sizeof(tmp) : (buflen - done));
+                random_get_bytes(tmp, chunk);
+                copy_to_user((uint8_t*)ubuf + done, tmp, chunk);
+                done += chunk;
+            }
+            regs->eax = buflen;
+            break;
+        }
+
+        case __NR_statfs:
+        case __NR_fstatfs: {
+            void* ubuf = (void*) regs->ecx;
+            if (regs->eax == __NR_statfs) {
+                const char* upath = (const char*) regs->ebx;
+                int err = validate_user_string(upath);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+            } else {
+                int fd = (int) regs->ebx;
+                process_t* me = scheduler_current();
+                if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
+                    regs->eax = (uint64_t) -EBADF;
+                    break;
+                }
+            }
+            int err = validate_user_buffer(ubuf, 120, 1);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            uint64_t kstatfs[15];
+            memset(kstatfs, 0, sizeof(kstatfs));
+            kstatfs[0] = 0x4d44; /* MSDOS_SUPER_MAGIC / TMPFS_MAGIC */
+            kstatfs[1] = 4096;   /* f_bsize */
+            kstatfs[2] = 16384;  /* f_blocks */
+            kstatfs[3] = 8192;   /* f_bfree */
+            kstatfs[4] = 8192;   /* f_bavail */
+            kstatfs[5] = 4096;   /* f_files */
+            kstatfs[6] = 2048;   /* f_ffree */
+            kstatfs[8] = 255;    /* f_namelen */
+            kstatfs[9] = 4096;   /* f_frsize */
+            copy_to_user(ubuf, kstatfs, sizeof(kstatfs));
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_clock_getres: {
+            struct timespec* res = (struct timespec*) regs->ecx;
+            if (res) {
+                int err = validate_user_buffer(res, sizeof(struct timespec), 1);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                struct timespec kres = { 0, 10000000L }; /* 10ms */
+                copy_to_user(res, &kres, sizeof(kres));
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_clock_nanosleep: {
+            int flags = (int) regs->ecx;
+            const struct timespec* req = (const struct timespec*) regs->edx;
+            struct timespec* rem = (struct timespec*) regs->esi;
+            int err = validate_user_buffer(req, sizeof(struct timespec), 0);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            struct timespec kreq;
+            copy_from_user(&kreq, req, sizeof(struct timespec));
+            if (kreq.tv_nsec < 0 || kreq.tv_nsec >= 1000000000L) {
+                regs->eax = (uint64_t) -EINVAL;
+                break;
+            }
+            uint32_t ticks = 0;
+            if (flags & 1) { /* TIMER_ABSTIME */
+                uint32_t now_ticks = timer_get_ticks();
+                int64_t target_ticks = kreq.tv_sec * 100LL + (kreq.tv_nsec + 9999999LL) / 10000000LL;
+                if (target_ticks > (int64_t)now_ticks) {
+                    ticks = (uint32_t)(target_ticks - now_ticks);
+                }
+            } else {
+                ticks = (uint32_t)(kreq.tv_sec * 100ULL + (kreq.tv_nsec + 9999999ULL) / 10000000ULL);
+            }
+            if (ticks == 0) { regs->eax = 0; break; }
+            process_t* me = scheduler_current();
+            uint32_t start = timer_get_ticks();
+            uint32_t deadline = start + ticks;
+            timer_sleep_enqueue(me, deadline);
+            scheduler_wait_channel(&me->sleep_deadline);
+            timer_sleep_dequeue(me);
+            uint32_t now = timer_get_ticks();
+            if (now < deadline) {
+                if (rem && !(flags & 1)) {
+                    if (validate_user_buffer(rem, sizeof(struct timespec), 1) == 0) {
+                        uint32_t rem_ticks = deadline - now;
+                        struct timespec krem = { rem_ticks / 100u, (rem_ticks % 100u) * 10000000L };
+                        copy_to_user(rem, &krem, sizeof(krem));
+                    }
+                }
+                regs->eax = (uint64_t) -EINTR;
+            } else {
+                regs->eax = 0;
+            }
+            break;
+        }
+
+        case __NR_rt_sigpending: {
+            sigset_t* uset = (sigset_t*) regs->ebx;
+            int err = validate_user_buffer(uset, sizeof(sigset_t), 1);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            process_t* me = scheduler_current();
+            sigset_t pend = me ? (me->sig_pending & me->sig_blocked) : 0;
+            copy_to_user(uset, &pend, sizeof(sigset_t));
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_rt_sigsuspend: {
+            const sigset_t* umask = (const sigset_t*) regs->ebx;
+            int err = validate_user_buffer(umask, sizeof(sigset_t), 0);
+            if (err != 0) { regs->eax = (uint64_t) err; break; }
+            process_t* me = scheduler_current();
+            sigset_t old_mask = me->sig_blocked;
+            sigset_t new_mask = 0;
+            copy_from_user(&new_mask, umask, sizeof(sigset_t));
+            new_mask &= ~(sigmask(SIGKILL) | sigmask(SIGSTOP));
+            me->sig_blocked = new_mask;
+            int r = sys_pause();
+            me->sig_blocked = old_mask;
+            regs->eax = (uint64_t) r;
+            break;
+        }
+
+        case __NR_sigaltstack: {
+            const void* uss = (const void*) regs->ebx;
+            void* uoss = (void*) regs->ecx;
+            if (uss) {
+                int err = validate_user_buffer(uss, 24, 0);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+            }
+            if (uoss) {
+                int err = validate_user_buffer(uoss, 24, 1);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                uint64_t koss[3] = { 0, 2 /* SS_DISABLE */, 0 };
+                copy_to_user(uoss, koss, sizeof(koss));
+            }
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_ppoll: {
+            const struct timespec* uts = (const struct timespec*) regs->edx;
+            int timeout = -1;
+            if (uts) {
+                int err = validate_user_buffer(uts, sizeof(struct timespec), 0);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                struct timespec kts;
+                copy_from_user(&kts, uts, sizeof(kts));
+                if (kts.tv_sec < 0 || kts.tv_nsec < 0 || kts.tv_nsec >= 1000000000L) {
+                    regs->eax = (uint64_t) -EINVAL;
+                    break;
+                }
+                timeout = (int)(kts.tv_sec * 1000LL + (kts.tv_nsec + 999999LL) / 1000000LL);
+            }
+            /* Delegate to poll by rewriting args */
+            regs->edx = (uint64_t)(int64_t)timeout;
+            goto do_poll_common;
+        }
+
+        case __NR_select:
+        case __NR_pselect6: {
+            int nfds = (int) regs->ebx;
+            uint64_t* readfds = (uint64_t*) regs->ecx;
+            uint64_t* writefds = (uint64_t*) regs->edx;
+            uint64_t* exceptfds = (uint64_t*) regs->esi;
+            void* utimeout = (void*) regs->edi;
+            if (nfds < 0 || nfds > 1024) { regs->eax = (uint64_t) -EINVAL; break; }
+            if (nfds > MAX_FDS) nfds = MAX_FDS;
+            int timeout_ms = -1;
+            if (utimeout) {
+                if (regs->eax == __NR_select) {
+                    struct timeval ktv;
+                    if (validate_user_buffer(utimeout, sizeof(ktv), 0) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+                    copy_from_user(&ktv, utimeout, sizeof(ktv));
+                    timeout_ms = (int)(ktv.tv_sec * 1000LL + (ktv.tv_usec + 999LL) / 1000LL);
+                } else {
+                    struct timespec kts;
+                    if (validate_user_buffer(utimeout, sizeof(kts), 0) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+                    copy_from_user(&kts, utimeout, sizeof(kts));
+                    timeout_ms = (int)(kts.tv_sec * 1000LL + (kts.tv_nsec + 999999LL) / 1000000LL);
+                }
+                if (timeout_ms < 0) timeout_ms = 0;
+            }
+            uint64_t rmask = 0, wmask = 0, emask = 0;
+            if (readfds) {
+                if (validate_user_buffer(readfds, sizeof(uint64_t), 1) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+                copy_from_user(&rmask, readfds, sizeof(uint64_t));
+            }
+            if (writefds) {
+                if (validate_user_buffer(writefds, sizeof(uint64_t), 1) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+                copy_from_user(&wmask, writefds, sizeof(uint64_t));
+            }
+            if (exceptfds) {
+                if (validate_user_buffer(exceptfds, sizeof(uint64_t), 1) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+                copy_from_user(&emask, exceptfds, sizeof(uint64_t));
+            }
+            process_t* me = scheduler_current();
+            uint32_t start_ticks = timer_get_ticks();
+            uint32_t deadline = (timeout_ms > 0) ? (start_ticks + (uint32_t)((timeout_ms + 9) / 10)) : 0;
+            uint64_t out_r = 0, out_w = 0, out_e = 0;
+            int total_ready = 0;
+            for (;;) {
+                if (signal_has_deliverable(me)) {
+                    total_ready = -EINTR;
+                    break;
+                }
+                me->num_poll_channels = 0;
+                out_r = 0; out_w = 0; out_e = 0;
+                total_ready = 0;
+                for (int fd = 0; fd < nfds; fd++) {
+                    short ev = 0;
+                    if (rmask & (1ULL << fd)) ev |= POLLIN;
+                    if (wmask & (1ULL << fd)) ev |= POLLOUT;
+                    if (emask & (1ULL << fd)) ev |= POLLERR;
+                    if (!ev) continue;
+                    if (!me->fds[fd]) {
+                        total_ready = -EBADF;
+                        break;
+                    }
+                    void* chan = NULL;
+                    short rev = vfs_poll(me->fds[fd], ev, &chan);
+                    if ((rmask & (1ULL << fd)) && (rev & (POLLIN | POLLHUP | POLLERR))) {
+                        out_r |= (1ULL << fd);
+                        total_ready++;
+                    }
+                    if ((wmask & (1ULL << fd)) && (rev & (POLLOUT | POLLERR))) {
+                        out_w |= (1ULL << fd);
+                        total_ready++;
+                    }
+                    if ((emask & (1ULL << fd)) && (rev & POLLERR)) {
+                        out_e |= (1ULL << fd);
+                        total_ready++;
+                    }
+                    if (rev == 0 && chan && me->num_poll_channels < MAX_POLL_CHANNELS) {
+                        me->poll_channels[me->num_poll_channels++] = chan;
+                    }
+                }
+                if (total_ready != 0 || timeout_ms == 0) break;
+                if (timeout_ms > 0 && timer_get_ticks() >= deadline) break;
+                if (timeout_ms > 0) {
+                    timer_sleep_enqueue(me, deadline);
+                    if (me->num_poll_channels < MAX_POLL_CHANNELS)
+                        me->poll_channels[me->num_poll_channels++] = &me->sleep_deadline;
+                }
+                scheduler_wait_poll();
+                if (timeout_ms > 0) timer_sleep_dequeue(me);
+            }
+            me->num_poll_channels = 0;
+            if (total_ready >= 0) {
+                if (readfds) copy_to_user(readfds, &out_r, sizeof(uint64_t));
+                if (writefds) copy_to_user(writefds, &out_w, sizeof(uint64_t));
+                if (exceptfds) copy_to_user(exceptfds, &out_e, sizeof(uint64_t));
+            }
+            regs->eax = (uint64_t) total_ready;
             break;
         }
 
@@ -1909,7 +3250,8 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_POLL: {
+        case SYS_POLL:
+        do_poll_common: {
             struct pollfd* user_fds = (struct pollfd*) regs->ebx;
             uint32_t nfds = (uint32_t) regs->ecx;
             int timeout = (int) regs->edx;
@@ -2179,11 +3521,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_ACCEPT: {
+        case SYS_ACCEPT:
+        case __NR_accept4: {
             int fd = (int) regs->ebx;
             struct sockaddr* uaddr = (struct sockaddr*) regs->ecx;
             uint32_t* uaddrlen = (uint32_t*) regs->edx;
-            int flags = (int) regs->esi;
+            int flags = (regs->eax == __NR_accept4) ? (int) regs->esi : 0;
 
             if (uaddrlen) {
                 int err = validate_user_buffer(uaddrlen, sizeof(uint32_t), 1);
@@ -2848,10 +4191,47 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        default:
-            terminal_writestring("[warn] unknown syscall\n");
-            regs->eax = (uint32_t) -ENOSYS;
+        default: {
+            process_t* me = scheduler_current();
+            uint64_t nr = regs->eax;
+            int should_log = 1;
+            if (me) {
+                uint64_t bit = nr & 511ULL;
+                uint64_t word = bit >> 6;
+                uint64_t mask = 1ULL << (bit & 63ULL);
+                if (me->logged_unimpl_syscalls[word] & mask) {
+                    should_log = 0;
+                } else {
+                    me->logged_unimpl_syscalls[word] |= mask;
+                }
+                if (me->agent_id > 0) {
+                    char detail[48];
+                    const char* pfx = "unhandled_syscall_";
+                    int di = 0;
+                    while (pfx[di]) { detail[di] = pfx[di]; di++; }
+                    uint64_t tmp_nr = nr;
+                    char rev[24];
+                    int ri = 0;
+                    if (tmp_nr == 0) rev[ri++] = '0';
+                    while (tmp_nr > 0 && ri < 20) {
+                        rev[ri++] = (char)('0' + (tmp_nr % 10));
+                        tmp_nr /= 10;
+                    }
+                    while (ri > 0 && di < 46) {
+                        detail[di++] = rev[--ri];
+                    }
+                    detail[di] = '\0';
+                    agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, detail);
+                }
+            }
+            if (should_log) {
+                serial_printf("[unimpl-syscall] pid=%d (%s) nr=%lu args=(0x%lx, 0x%lx, 0x%lx) returning -ENOSYS\n",
+                              me ? me->pid : 0, me ? me->name : "kernel",
+                              nr, regs->ebx, regs->ecx, regs->edx);
+            }
+            regs->eax = (uint64_t) -ENOSYS;
             break;
+        }
     }
 
     agent_killswitch_check_deferred();
@@ -2935,12 +4315,13 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
 extern void syscall_entry(void);
 
 void syscall_install(void) {
-    /* 1. Register vector 128 (int $0x80) in 64-bit IDT:
-          DPL=3 (0xEE) so ring 3 code can `int $0x80` */
+#ifdef MYOS_LEGACY_INT80
+    /* 1. Optional legacy vector 128 (int $0x80) in 64-bit IDT */
     idt_set_gate(128, (uint64_t) isr128, 0x08, 0xEE);
     register_interrupt_handler(128, &syscall_dispatch);
+#endif
 
-    /* 2. Configure MSRs for the fast 64-bit `syscall` / `sysret` instruction:
+    /* Configure MSRs for the fast 64-bit `syscall` / `sysret` instruction:
        Enable SCE (System Call Extensions) in EFER */
     uint64_t efer = rdmsr(MSR_EFER);
     wrmsr(MSR_EFER, efer | 1ULL);

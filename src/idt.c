@@ -135,7 +135,9 @@ static const char* exception_messages[32] = {
 void isr_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no] != 0) {
         interrupt_handlers[regs->int_no](regs);
-        signal_handle_pending(regs);
+        if ((regs->cs & 0x3) == 3) {
+            signal_handle_pending(regs);
+        }
         return;
     }
 
@@ -178,5 +180,7 @@ void irq_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no] != 0)
         interrupt_handlers[regs->int_no](regs);
 
-    signal_handle_pending(regs);
+    if ((regs->cs & 0x3) == 3) {
+        signal_handle_pending(regs);
+    }
 }

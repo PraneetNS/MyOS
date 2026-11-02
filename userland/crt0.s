@@ -26,9 +26,8 @@ _start:
     call main
 
     movl %eax, %edi
-    movq $0, %rax         /* SYS_EXIT */
+    movq $60, %rax        /* Linux x86-64 __NR_exit */
     syscall
-    int $0x80
 
 1:  hlt
     jmp 1b
@@ -40,7 +39,6 @@ _start:
 __sigreturn_restorer:
     movq $15, %rax        /* Linux x86-64 __NR_rt_sigreturn */
     syscall
-    int $0x80
 .size __sigreturn_restorer, . - __sigreturn_restorer
 
 .section .note.GNU-stack,"",@progbits

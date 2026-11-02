@@ -1,61 +1,82 @@
 #ifndef ERRNO_H
 #define ERRNO_H
 
-#define EPERM        1   /* Operation not permitted */
-#define ENOENT       2   /* No such file or directory */
-#define ESRCH        3   /* No such process */
-#define EINTR        4   /* Interrupted system call */
-#define EIO          5   /* I/O error */
-#define ENXIO        6   /* No such device or address */
-#define E2BIG        7   /* Argument list too long */
-#define ENOEXEC      8   /* Exec format error */
-#define EBADF        9   /* Bad file number */
-#define ECHILD      10   /* No child processes */
-#define EAGAIN      11   /* Try again */
-#define ENOMEM      12   /* Out of memory */
-#define EACCES      13   /* Permission denied */
-#define EFAULT      14   /* Bad address */
-#define EEXIST      17   /* File exists */
-#define ENODEV      19   /* No such device */
-#define ENOTDIR     20   /* Not a directory */
-#define EISDIR      21   /* Is a directory */
-#define EINVAL      22   /* Invalid argument */
-#define ENFILE      23   /* File table overflow */
-#define EMFILE      24   /* Too many open files */
-#define ENOTTY      25   /* Not a typewriter */
-#define EFBIG        27   /* File too large */
-#define ENOSPC      28   /* No space left on device */
-#define ESPIPE      29   /* Illegal seek */
-#define EROFS       30   /* Read-only file system */
-#define EPIPE       32   /* Broken pipe */
-#define ERANGE      34   /* Math result not representable */
-#define ENAMETOOLONG 36  /* File name too long */
-#define ENOSYS      38   /* Function not implemented */
-#define ENOTEMPTY   39   /* Directory not empty */
-#define ENOTSOCK     108  /* Socket operation on non-socket */
-#define EDESTADDRREQ 121  /* Destination address required */
-#define EMSGSIZE     122  /* Message too long */
-#define EPROTOTYPE   107  /* Protocol wrong type for socket */
-#define ENOPROTOOPT  109  /* Protocol not available */
-#define EPROTONOSUPPORT 123 /* Protocol not supported */
-#define ESOCKTNOSUPPORT 124 /* Socket type not supported */
-#define EOPNOTSUPP   95   /* Operation not supported on transport endpoint */
-#define EPFNOSUPPORT 96   /* Protocol family not supported */
-#define EAFNOSUPPORT 106  /* Address family not supported by protocol */
-#define EADDRINUSE   112  /* Address already in use */
-#define EADDRNOTAVAIL 125 /* Cannot assign requested address */
-#define ENETDOWN     115  /* Network is down */
-#define ENETUNREACH  114  /* Network is unreachable */
-#define ENETRESET    126  /* Network dropped connection because of reset */
-#define ECONNABORTED 113  /* Software caused connection abort */
-#define ECONNRESET   104  /* Connection reset by peer */
-#define ENOBUFS      105  /* No buffer space available */
-#define EISCONN      127  /* Transport endpoint is already connected */
-#define ENOTCONN     128  /* Transport endpoint is not connected */
-#define ESHUTDOWN    110  /* Cannot send after transport endpoint shutdown */
-#define ETOOMANYREFS 129  /* Too many references: cannot splice */
-#define ETIMEDOUT    116  /* Connection timed out */
-#define ECONNREFUSED 111  /* Connection refused */
-#define EDQUOT       132  /* Quota exceeded */
+/* Standard Linux x86-64 errno values */
+#define EPERM            1
+#define ENOENT           2
+#define ESRCH            3
+#define EINTR            4
+#define EIO              5
+#define ENXIO            6
+#define E2BIG            7
+#define ENOEXEC          8
+#define EBADF            9
+#define ECHILD          10
+#define EAGAIN          11
+#define ENOMEM          12
+#define EACCES          13
+#define EFAULT          14
+#define ENOTBLK         15
+#define EBUSY           16
+#define EEXIST          17
+#define EXDEV           18
+#define ENODEV          19
+#define ENOTDIR         20
+#define EISDIR          21
+#define EINVAL          22
+#define ENFILE          23
+#define EMFILE          24
+#define ENOTTY          25
+#define ETXTBSY         26
+#define EFBIG           27
+#define ENOSPC          28
+#define ESPIPE          29
+#define EROFS           30
+#define EMLINK          31
+#define EPIPE           32
+#define EDOM            33
+#define ERANGE          34
+#define EDEADLK         35
+#define ENAMETOOLONG    36
+#define ENOLCK          37
+#define ENOSYS          38
+#define ENOTEMPTY       39
+#define ELOOP           40
+#define EWOULDBLOCK     EAGAIN
+#define ENOMSG          42
+#define EOVERFLOW       75
+#define EILSEQ          84
+#define ENOTSOCK        88
+#define EDESTADDRREQ    89
+#define EMSGSIZE        90
+#define EPROTOTYPE      91
+#define ENOPROTOOPT     92
+#define EPROTONOSUPPORT 93
+#define ESOCKTNOSUPPORT 94
+#define EOPNOTSUPP      95
+#define ENOTSUP         EOPNOTSUPP
+#define EPFNOSUPPORT    96
+#define EAFNOSUPPORT    97
+#define EADDRINUSE      98
+#define EADDRNOTAVAIL   99
+#define ENETDOWN        100
+#define ENETUNREACH     101
+#define ENETRESET       102
+#define ECONNABORTED    103
+#define ECONNRESET      104
+#define ENOBUFS         105
+#define EISCONN         106
+#define ENOTCONN        107
+#define ESHUTDOWN       108
+#define ETOOMANYREFS    109
+#define ETIMEDOUT       110
+#define ECONNREFUSED    111
+#define EHOSTDOWN       112
+#define EHOSTUNREACH    113
+#define EALREADY        114
+#define EINPROGRESS     115
+#define ESTALE          116
+#define EDQUOT          122
+#define ECANCELED       125
 
 #endif

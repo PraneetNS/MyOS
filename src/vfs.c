@@ -10,7 +10,7 @@
 
 #define MAX_MOUNTS 16
 #define VNODE_POOL_SIZE 256
-#define OPEN_FILE_POOL_SIZE 128
+#define OPEN_FILE_POOL_SIZE 256
 
 static int active_open_files = 0;
 
@@ -211,6 +211,7 @@ open_file_t* open_file_alloc(open_file_type_t type, vnode_t* vn, int flags) {
             of_pool[i].flags = flags;
             of_pool[i].offset = 0;
             of_pool[i].refcount = 1;
+            of_pool[i].path[0] = '\0';
             if (vn) vnode_ref(vn);
             active_open_files++;
             vfs_unlock(f);
@@ -316,12 +317,65 @@ static int streq(const char* a, const char* b) {
     return *a == *b;
 }
 
-int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
+int vfs_is_symlink(vnode_t* vn, char* target_out, int max_len) {
+    if (!vn || vn->type != VNODE_FILE || !vn->ops || !vn->ops->read) return 0;
+
+    int is_proc_lnk = 0;
+    if (vn->size == 0) {
+        if (!vn->ops->stat) return 0;
+        struct stat st;
+        if (vn->ops->stat(vn, &st) != 0 || !S_ISLNK(st.st_mode)) return 0;
+        is_proc_lnk = 1;
+    } else if (vn->size < 9 || vn->size > 1040) {
+        if (!vn->ops->stat) return 0;
+        struct stat st;
+        if (vn->ops->stat(vn, &st) != 0 || !S_ISLNK(st.st_mode)) return 0;
+        is_proc_lnk = 1;
+    }
+
+    uint8_t buf[520];
+    int n = vn->ops->read(vn, 0, buf, 512);
+    if (n <= 0) return 0;
+
+    int start_off = 0;
+    if (n >= 9 &&
+        buf[0] == 'M' && buf[1] == 'Y' && buf[2] == 'O' && buf[3] == 'S' &&
+        buf[4] == 'L' && buf[5] == 'N' && buf[6] == 'K' && buf[7] == '\n') {
+        start_off = 8;
+    } else if (!is_proc_lnk) {
+        return 0;
+    }
+
+    int len = 0;
+    while (start_off + len < n && buf[start_off + len] != '\0' &&
+           buf[start_off + len] != '\n' && buf[start_off + len] != '\r') {
+        if (target_out && len < max_len - 1) {
+            target_out[len] = (char)buf[start_off + len];
+        }
+        len++;
+    }
+    if (target_out && max_len > 0) {
+        int term = (len < max_len - 1) ? len : (max_len - 1);
+        target_out[term] = '\0';
+    }
+    return len;
+}
+
+int vfs_resolve_path_ex(const char* path, const char* cwd, vnode_t** out, int follow_last, char* canon_out, int canon_max) {
     if (!path || !*path || !out) return -EINVAL;
     if (kstrlen(path) >= PATH_MAX) return -ENAMETOOLONG;
 
     char canon[PATH_MAX];
     vfs_path_canonical(path, cwd, canon, sizeof(canon));
+
+    int symlink_depth = 0;
+
+restart_walk:
+    if (canon_out && canon_max > 0) {
+        int ci = 0;
+        while (canon[ci] && ci < canon_max - 1) { canon_out[ci] = canon[ci]; ci++; }
+        canon_out[ci] = '\0';
+    }
 
     int best_mount = -1;
     int best_len = -1;
@@ -370,12 +424,20 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
         while (*p == '/') p++;
         if (!*p) break;
 
+        const char* token_start_in_canon = p;
         int idx = 0;
         while (*p && *p != '/') {
-            if (idx >= NAME_MAX) return -ENAMETOOLONG;
+            if (idx >= NAME_MAX) {
+                if (curr != mount_table[best_mount].root) vnode_unref(curr);
+                return -ENAMETOOLONG;
+            }
             token[idx++] = *p++;
         }
         token[idx] = '\0';
+
+        const char* after_token = p;
+        while (*after_token == '/') after_token++;
+        int is_last = (*after_token == '\0');
 
         if (streq(token, ".")) {
             continue;
@@ -388,9 +450,11 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
         }
 
         if (curr->type != VNODE_DIR) {
+            if (curr != mount_table[best_mount].root) vnode_unref(curr);
             return -ENOTDIR;
         }
         if (!curr->ops || !curr->ops->lookup) {
+            if (curr != mount_table[best_mount].root) vnode_unref(curr);
             return -ENOSYS;
         }
 
@@ -410,6 +474,56 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
         if (curr != mount_table[best_mount].root) {
             vnode_unref(curr);
         }
+
+        /* Check if `next` is a symlink that should be followed */
+        if (!is_last || follow_last) {
+            char link_target[512];
+            if (next->type == VNODE_FILE && vfs_is_symlink(next, link_target, sizeof(link_target)) > 0) {
+                if (next != mount_table[best_mount].root) {
+                    vnode_unref(next);
+                }
+                symlink_depth++;
+                if (symlink_depth > 8) {
+                    return -ELOOP;
+                }
+
+                /* Build new path: if link_target is relative, base is canon[0 .. token_start_in_canon - 1] */
+                char dir_base[PATH_MAX];
+                if (link_target[0] == '/') {
+                    dir_base[0] = '/';
+                    dir_base[1] = '\0';
+                } else {
+                    int dlen = (int)(token_start_in_canon - canon);
+                    while (dlen > 1 && canon[dlen - 1] == '/') dlen--;
+                    if (dlen <= 0) {
+                        dir_base[0] = '/';
+                        dir_base[1] = '\0';
+                    } else {
+                        for (int k = 0; k < dlen && k < PATH_MAX - 1; k++) dir_base[k] = canon[k];
+                        dir_base[dlen < PATH_MAX - 1 ? dlen : PATH_MAX - 1] = '\0';
+                    }
+                }
+
+                char combined_target[PATH_MAX];
+                int cp = 0;
+                for (int k = 0; link_target[k] && cp < PATH_MAX - 1; k++) {
+                    combined_target[cp++] = link_target[k];
+                }
+                if (*after_token) {
+                    if (cp > 0 && combined_target[cp - 1] != '/' && cp < PATH_MAX - 1) {
+                        combined_target[cp++] = '/';
+                    }
+                    for (int k = 0; after_token[k] && cp < PATH_MAX - 1; k++) {
+                        combined_target[cp++] = after_token[k];
+                    }
+                }
+                combined_target[cp] = '\0';
+
+                vfs_path_canonical(combined_target, dir_base, canon, sizeof(canon));
+                goto restart_walk;
+            }
+        }
+
         curr = next;
     }
 
@@ -417,7 +531,11 @@ int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
     return 0;
 }
 
-int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, char* name_out, int name_max) {
+int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out) {
+    return vfs_resolve_path_ex(path, cwd, out, 1, 0, 0);
+}
+
+int vfs_resolve_parent_ex(const char* path, const char* cwd, vnode_t** dir_out, char* name_out, int name_max, char* parent_canon_out, int parent_canon_max) {
     if (!path || !*path || !dir_out || !name_out) return -EINVAL;
 
     /* Find the last slash */
@@ -441,10 +559,10 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
     if (last_slash < 0) {
         /* No slash: parent is cwd */
         if (len > NAME_MAX) return -ENAMETOOLONG;
-        int ret = vfs_resolve_path(cwd ? cwd : "/", "/", dir_out);
+        int ret = vfs_resolve_path_ex(cwd ? cwd : "/", "/", dir_out, 1, parent_canon_out, parent_canon_max);
         if (ret != 0) return ret;
         int j = 0;
-        while (path[j] && j < name_max - 1) {
+        while (j < len && j < name_max - 1) {
             name_out[j] = path[j];
             j++;
         }
@@ -466,7 +584,7 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
         parent_path[i] = '\0';
     }
 
-    int ret = vfs_resolve_path(parent_path, cwd, dir_out);
+    int ret = vfs_resolve_path_ex(parent_path, cwd, dir_out, 1, parent_canon_out, parent_canon_max);
     if (ret != 0) return ret;
 
     const char* child_start = path + last_slash + 1;
@@ -484,6 +602,10 @@ int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, cha
     }
     name_out[k] = '\0';
     return 0;
+}
+
+int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, char* name_out, int name_max) {
+    return vfs_resolve_parent_ex(path, cwd, dir_out, name_out, name_max, 0, 0);
 }
 
 int vfs_read(open_file_t* of, void* buf, uint32_t count) {
@@ -592,16 +714,26 @@ int vfs_readdir(open_file_t* of, struct dirent* entry) {
 
 int vfs_stat(vnode_t* vn, struct stat* st) {
     if (!vn || !st) return -EINVAL;
+    int r = 0;
     if (vn->ops && vn->ops->stat) {
-        return vn->ops->stat(vn, st);
+        r = vn->ops->stat(vn, st);
+        if (r != 0) return r;
+    } else {
+        st->st_dev = 0;
+        st->st_ino = 1;
+        st->st_mode = (vn->type == VNODE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+        st->st_nlink = 1;
+        st->st_size = vn->size;
+        st->st_blksize = 512;
+        st->st_blocks = (vn->size + 511) / 512;
     }
-    st->st_dev = 0;
-    st->st_ino = 1;
-    st->st_mode = (vn->type == VNODE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
-    st->st_nlink = 1;
-    st->st_size = vn->size;
-    st->st_blksize = 512;
-    st->st_blocks = (vn->size + 511) / 512;
+    if (vn->type == VNODE_FILE) {
+        int slen = vfs_is_symlink(vn, 0, 0);
+        if (slen > 0) {
+            st->st_mode = S_IFLNK | 0777;
+            st->st_size = (uint32_t)slen;
+        }
+    }
     return 0;
 }
 

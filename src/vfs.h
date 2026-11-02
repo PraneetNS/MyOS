@@ -30,6 +30,8 @@ typedef enum {
 #define O_APPEND    0x0400
 #define O_NONBLOCK  0x4000
 #define O_NONBLOCK_LINUX 0x0800
+#define O_DIRECTORY 0x10000
+#define O_NOFOLLOW  0x20000
 #define O_CLOEXEC   0x80000
 
 #define FD_CLOEXEC  1
@@ -39,6 +41,13 @@ typedef enum {
 #define F_SETFD     2
 #define F_GETFL     3
 #define F_SETFL     4
+#define F_DUPFD_CLOEXEC 1030
+
+#define AT_FDCWD            (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR        0x200
+#define AT_SYMLINK_FOLLOW   0x400
+#define AT_EMPTY_PATH       0x1000
 
 /* Seek constants */
 #define SEEK_SET    0
@@ -163,6 +172,7 @@ typedef struct open_file {
     uint32_t offset;
     int flags;
     int refcount;
+    char path[256];           /* Canonical path for dirfd / procfs */
 } open_file_t;
 
 int vfs_get_active_open_files(void);
@@ -186,7 +196,10 @@ void open_file_ref(open_file_t* of);
 void open_file_unref(open_file_t* of);
 
 /* Path resolution */
+int vfs_is_symlink(vnode_t* vn, char* target_out, int max_len);
+int vfs_resolve_path_ex(const char* path, const char* cwd, vnode_t** out, int follow_last, char* canon_out, int canon_max);
 int vfs_resolve_path(const char* path, const char* cwd, vnode_t** out);
+int vfs_resolve_parent_ex(const char* path, const char* cwd, vnode_t** dir_out, char* name_out, int name_max, char* parent_canon_out, int parent_canon_max);
 int vfs_resolve_parent(const char* path, const char* cwd, vnode_t** dir_out, char* name_out, int name_max);
 
 /* Console open files for fds 0, 1, 2 */

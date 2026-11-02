@@ -28,7 +28,7 @@
 #define SIGTTIN    21
 #define SIGTTOU    22
 #define SIGWINCH   28
-#define NSIG       32
+#define NSIG       65
 
 typedef uint64_t sigset_t;
 

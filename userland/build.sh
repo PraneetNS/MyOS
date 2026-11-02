@@ -28,7 +28,16 @@ fi
 
 for src in *.c; do
     name="${src%.c}"
-    if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ] || [ "../libmyos/libmyos.a" -nt "$name.elf" ] || [ "../libmyos/crt0.o" -nt "$name.elf" ]; then
+    if [ "$name" = "musltest" ]; then
+        if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ]; then
+            if command -v musl-gcc >/dev/null 2>&1; then
+                musl-gcc -static -O2 "$src" -o "$name.elf"
+                echo "Built userland/$name.elf (musl-gcc -static)"
+            fi
+        fi
+        continue
+    fi
+    if [ ! -f "$name.elf" ] || [ "$src" -nt "$name.elf" ] || [ "../libmyos/libmyos.a" -nt "$name.elf" ] || [ "../libmyos/crt0.o" -nt "$name.elf" ] || [ "libintent/libintent.a" -nt "$name.elf" ] || [ "libtls/libtls.a" -nt "$name.elf" ] || [ "llm/libllm.a" -nt "$name.elf" ] || [ "libui/libui.a" -nt "$name.elf" ]; then
         if [ -x "$PREFIX/bin/x86_64-elf-gcc" ]; then
             "$MYOS_GCC" -O2 "$src" -o "$name.elf"
             echo "Built userland/$name.elf"

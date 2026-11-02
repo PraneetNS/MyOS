@@ -7,12 +7,10 @@
    rdi = pointer to struct registers
 */
 resume_saved_state:
-    /* Load data segment registers */
+    /* Load data segment registers (leave %fs and %gs intact to preserve MSR_FS_BASE / TLS) */
     mov 0(%rdi), %rax
     mov %ax, %ds
     mov %ax, %es
-    mov %ax, %fs
-    mov %ax, %gs
 
     /* Push iretq frame:
        SS     = r->ss     (offset 176)

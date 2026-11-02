@@ -8,7 +8,7 @@
 
 #define MAX_PROCESSES 64
 #define PROC_KERNEL_STACK_SIZE 16384
-#define MAX_FDS 16               /* 16 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
+#define MAX_FDS 32               /* 32 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 
 /* Canonical 64-bit Address Layout:
    ELF text starts at 0x0000000000400000 (4MB)
@@ -105,6 +105,9 @@ typedef struct process {
     int   current_op_flags;     /* Per-process active VFS operation flags */
     void* ctty;                 /* Controlling terminal (tty_t*) */
     int   agent_id;             /* Bound agent ID (0 if unconfined) */
+    char  exe_path[256];        /* Executable path for /proc/self/exe */
+    uint32_t umask_val;         /* File mode creation mask */
+    uint64_t logged_unimpl_syscalls[8]; /* Bitmap of logged unhandled syscall numbers (0..511) */
 } process_t;
 
 void process_init_table(int use_kshell);

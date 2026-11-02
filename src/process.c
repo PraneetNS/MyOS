@@ -133,6 +133,9 @@ void process_init_table(int use_kshell) {
     shell->nice = 0;
     shell->current_op_flags = 0;
     shell->agent_id = 0;
+    shell->exe_path[0] = '/'; shell->exe_path[1] = '\0';
+    shell->umask_val = 0022;
+    for (int u = 0; u < 8; u++) shell->logged_unimpl_syscalls[u] = 0;
     init_fds(shell);
     signal_init_proc(shell);
 
@@ -149,7 +152,11 @@ void process_init_table(int use_kshell) {
 
 process_t* process_spawn_by_name(const char* name, int parent_pid) {
     vnode_t* vn = 0;
-    if (vfs_resolve_path(name, "/", &vn) != 0 || !vn) {
+    char resolved_path[256];
+    resolved_path[0] = '\0';
+    if (vfs_resolve_path(name, "/", &vn) == 0 && vn) {
+        vfs_path_canonical(name, "/", resolved_path, sizeof(resolved_path));
+    } else {
         char bin_path[64];
         bin_path[0] = '/';
         int l = 0;
@@ -158,7 +165,9 @@ process_t* process_spawn_by_name(const char* name, int parent_pid) {
             l++;
         }
         bin_path[l + 1] = '\0';
-        if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
+        if (vfs_resolve_path(bin_path, "/", &vn) == 0 && vn) {
+            vfs_path_canonical(bin_path, "/", resolved_path, sizeof(resolved_path));
+        } else {
             bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
             l = 0;
             while (name[l] && l < 50) {
@@ -166,7 +175,9 @@ process_t* process_spawn_by_name(const char* name, int parent_pid) {
                 l++;
             }
             bin_path[5 + l] = '\0';
-            if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
+            if (vfs_resolve_path(bin_path, "/", &vn) == 0 && vn) {
+                vfs_path_canonical(bin_path, "/", resolved_path, sizeof(resolved_path));
+            } else {
                 bin_path[0] = '/'; bin_path[1] = 's'; bin_path[2] = 'b'; bin_path[3] = 'i'; bin_path[4] = 'n'; bin_path[5] = '/';
                 l = 0;
                 while (name[l] && l < 50) {
@@ -174,7 +185,9 @@ process_t* process_spawn_by_name(const char* name, int parent_pid) {
                     l++;
                 }
                 bin_path[6 + l] = '\0';
-                if (vfs_resolve_path(bin_path, "/", &vn) != 0 || !vn) {
+                if (vfs_resolve_path(bin_path, "/", &vn) == 0 && vn) {
+                    vfs_path_canonical(bin_path, "/", resolved_path, sizeof(resolved_path));
+                } else {
                     return 0;
                 }
             }
@@ -192,6 +205,11 @@ process_t* process_spawn_by_name(const char* name, int parent_pid) {
     if (n <= 0) { vnode_unref(vn); kfree(buf); return 0; }
 
     process_t* child = process_spawn_from_elf(name, buf, (uint32_t) n, parent_pid, vn);
+    if (child && resolved_path[0]) {
+        int k = 0;
+        while (resolved_path[k] && k < 255) { child->exe_path[k] = resolved_path[k]; k++; }
+        child->exe_path[k] = '\0';
+    }
     vnode_unref(vn);
     kfree(buf);
     return child;
@@ -289,6 +307,9 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint64
     fpu_init_proc(p);
 
     int i = 0; for (; name[i] && i < 31; i++) p->name[i] = name[i]; p->name[i] = '\0';
+    vfs_path_canonical(name, "/", p->exe_path, sizeof(p->exe_path));
+    p->umask_val = 0022;
+    for (int u = 0; u < 8; u++) p->logged_unimpl_syscalls[u] = 0;
 
     fabricate_initial_frame(p, process_trampoline);
     p->state = PROC_READY;
@@ -410,11 +431,20 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     }
 
     int c = 0;
-    while (parent->cwd[c] && c < 63) {
+    while (parent->cwd[c] && c < 1023) {
         p->cwd[c] = parent->cwd[c];
         c++;
     }
     p->cwd[c] = '\0';
+
+    int ex = 0;
+    while (parent->exe_path[ex] && ex < 255) {
+        p->exe_path[ex] = parent->exe_path[ex];
+        ex++;
+    }
+    p->exe_path[ex] = '\0';
+    p->umask_val = parent->umask_val;
+    for (int u = 0; u < 8; u++) p->logged_unimpl_syscalls[u] = 0;
 
     int i = 0; for (; parent->name[i] && i < 26; i++) p->name[i] = parent->name[i];
     p->name[i] = 0;

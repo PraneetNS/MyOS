@@ -15,6 +15,7 @@
    rdx = len
 */
 copy_to_user:
+    pushfq
     test %rdx, %rdx
     jz 1f
 
@@ -37,10 +38,8 @@ copy_to_user:
 copy_user_start:
     rep movsb
 copy_user_end:
-    cmpb $0, smap_enabled(%rip)
-    je 1f
-    clac
 1:
+    popfq
     xor %eax, %eax
     ret
 
@@ -50,6 +49,7 @@ copy_user_end:
    rdx = len
 */
 copy_from_user:
+    pushfq
     test %rdx, %rdx
     jz 2f
 
@@ -72,18 +72,13 @@ copy_from_user:
 copy_user_start2:
     rep movsb
 copy_user_end2:
-    cmpb $0, smap_enabled(%rip)
-    je 2f
-    clac
 2:
+    popfq
     xor %eax, %eax
     ret
 
 copy_user_fault:
-    cmpb $0, smap_enabled(%rip)
-    je 9f
-    clac
-9:
+    popfq
     mov $-14, %eax      /* -EFAULT (-14) */
     ret
 

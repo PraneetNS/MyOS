@@ -113,10 +113,16 @@ static void page_fault_handler(struct registers* regs) {
                 if ((vma->flags & VMA_FLAG_FILE) && vma->file && tmpfs_is_tmpfs_vnode(vma->file)) {
                     tmpfs_node_t* tnode = (tmpfs_node_t*) vma->file->fs_data;
                     uint32_t cur_size = tnode ? tnode->size : vma->file->size;
-                    if (file_offset >= cur_size) {
-                        sig_send(proc, SIGBUS);
-                        signal_handle_pending(regs);
-                        return;
+                    if ((off_in_vma < vma->file_size || (vma->flags & VMA_FLAG_SHARED)) && file_offset >= cur_size) {
+                        if (from_usermode) {
+                            sig_send(proc, SIGBUS);
+                            signal_handle_pending(regs);
+                            return;
+                        }
+                        if (in_uaccess) {
+                            regs->rip = (uint64_t) copy_user_fault;
+                            return;
+                        }
                     }
 
                     if (vma->flags & VMA_FLAG_SHARED) {
@@ -124,9 +130,15 @@ static void page_fault_handler(struct registers* regs) {
                         int alloc_err = 0;
                         uint64_t frame_phys = tmpfs_get_or_alloc_frame(tnode, page_idx, 1, &alloc_err);
                         if (!frame_phys || alloc_err != 0) {
-                            sig_send(proc, SIGBUS);
-                            signal_handle_pending(regs);
-                            return;
+                            if (from_usermode) {
+                                sig_send(proc, SIGBUS);
+                                signal_handle_pending(regs);
+                                return;
+                            }
+                            if (in_uaccess) {
+                                regs->rip = (uint64_t) copy_user_fault;
+                                return;
+                            }
                         }
 
                         pmm_ref(frame_phys);

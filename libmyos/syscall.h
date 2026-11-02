@@ -113,9 +113,53 @@ static inline long syscall(long num, ...) {
     return __syscall6(num, a1, a2, a3, a4, a5, a6);
 }
 
+static inline int __translate_linux_errno(int kerr) {
+    switch (kerr) {
+        case 35:  return EDEADLK;
+        case 36:  return ENAMETOOLONG;
+        case 37:  return ENOLCK;
+        case 38:  return ENOSYS;
+        case 39:  return ENOTEMPTY;
+        case 40:  return ELOOP;
+        case 42:  return ENOMSG;
+        case 75:  return EOVERFLOW;
+        case 84:  return EILSEQ;
+        case 88:  return ENOTSOCK;
+        case 89:  return EDESTADDRREQ;
+        case 90:  return EMSGSIZE;
+        case 91:  return EPROTOTYPE;
+        case 92:  return ENOPROTOOPT;
+        case 93:  return EPROTONOSUPPORT;
+        case 95:  return EOPNOTSUPP;
+        case 96:  return EPFNOSUPPORT;
+        case 97:  return EAFNOSUPPORT;
+        case 98:  return EADDRINUSE;
+        case 99:  return EADDRNOTAVAIL;
+        case 100: return ENETDOWN;
+        case 101: return ENETUNREACH;
+        case 102: return ENETRESET;
+        case 103: return ECONNABORTED;
+        case 104: return ECONNRESET;
+        case 105: return ENOBUFS;
+        case 106: return EISCONN;
+        case 107: return ENOTCONN;
+        case 109: return ETOOMANYREFS;
+        case 110: return ETIMEDOUT;
+        case 111: return ECONNREFUSED;
+        case 112: return EHOSTDOWN;
+        case 113: return EHOSTUNREACH;
+        case 114: return EALREADY;
+        case 115: return EINPROGRESS;
+        case 116: return ESTALE;
+        case 122: return EDQUOT;
+        case 125: return ECANCELED;
+        default:  return kerr;
+    }
+}
+
 static inline int __check_syscall_err(long ret) {
     if (ret < 0) {
-        errno = (int)(-ret);
+        errno = __translate_linux_errno((int)(-ret));
         return -1;
     }
     return (int)ret;

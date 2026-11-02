@@ -10,10 +10,11 @@
 enter_usermode:
     cli
 
-    /* User data segment: 0x20 | RPL 3 = 0x23 */
+    /* User data segment: 0x20 | RPL 3 = 0x23 (leave %fs/%gs = 0 for 64-bit MSR_FS_BASE) */
     mov $0x23, %ax
     mov %ax, %ds
     mov %ax, %es
+    xor %ax, %ax
     mov %ax, %fs
     mov %ax, %gs
 
