@@ -17,5 +17,6 @@ typedef void (*isr_handler_t)(struct registers*);
 void idt_install(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void register_interrupt_handler(uint8_t n, isr_handler_t handler);
+int in_interrupt(void);
 
 #endif
