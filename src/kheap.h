@@ -2,6 +2,7 @@
 #define KHEAP_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifndef KHEAP_DEBUG
 #define KHEAP_DEBUG 1
@@ -10,6 +11,9 @@
 void kheap_init(void);
 void* kmalloc(size_t size);
 void kfree(void* ptr);
+
+uint64_t kheap_get_max_kmalloc_cycles(void);
+uint64_t kheap_get_max_kfree_cycles(void);
 
 void* memset(void* dest, int c, size_t n);
 void* memcpy(void* dest, const void* src, size_t n);
