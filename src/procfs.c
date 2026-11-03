@@ -17,6 +17,8 @@
 #include "udp.h"
 #include "console.h"
 #include "serial.h"
+#include "kstack.h"
+#include "kheap.h"
 
 static vnode_t proc_root_vnode;
 static vnode_t proc_meminfo_vnode;
@@ -299,6 +301,8 @@ static int proc_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t
     append_uint(text, &pos, sizeof(text), vm_pages);
     append_str(text, &pos, sizeof(text), "\nFDSize:\t");
     append_int(text, &pos, sizeof(text), fds_count);
+    append_str(text, &pos, sizeof(text), "\nkstack_hwm:\t");
+    append_uint(text, &pos, sizeof(text), (uint32_t)kstack_get_hwm(p));
     append_str(text, &pos, sizeof(text), "\n");
 
     return procfs_read_helper(text, pos, offset, buf, count);
@@ -381,7 +385,8 @@ static const struct fs_ops version_ops = {
 
 static int proc_mounts_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[1024];
+    char* text = (char*) kmalloc(1024);
+    if (!text) return -ENOMEM;
     int pos = 0;
 
     for (int i = 0; i < 16; i++) {
@@ -389,16 +394,18 @@ static int proc_mounts_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t
         char path[64];
         char fstype[16];
         if (vfs_get_mount_info(i, dev, path, fstype)) {
-            append_str(text, &pos, sizeof(text), dev);
-            append_char(text, &pos, sizeof(text), ' ');
-            append_str(text, &pos, sizeof(text), path);
-            append_char(text, &pos, sizeof(text), ' ');
-            append_str(text, &pos, sizeof(text), fstype);
-            append_str(text, &pos, sizeof(text), " rw,relatime 0 0\n");
+            append_str(text, &pos, 1024, dev);
+            append_char(text, &pos, 1024, ' ');
+            append_str(text, &pos, 1024, path);
+            append_char(text, &pos, 1024, ' ');
+            append_str(text, &pos, 1024, fstype);
+            append_str(text, &pos, 1024, " rw,relatime 0 0\n");
         }
     }
 
-    return procfs_read_helper(text, pos, offset, buf, count);
+    int res = procfs_read_helper(text, pos, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops cpuinfo_ops = {
@@ -480,34 +487,37 @@ static int proc_maps_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t c
     process_t* p = (slot < 0) ? scheduler_current() : process_table_entry(slot);
     if (!p || p->state == PROC_UNUSED) return -ENOENT;
 
-    char text[2048];
+    char* text = (char*) kmalloc(2048);
+    if (!text) return -ENOMEM;
     int pos = 0;
     vma_t* v = p->vma_list;
-    while (v && pos < (int)sizeof(text) - 128) {
-        append_hex64(text, &pos, sizeof(text), v->start, 12);
-        append_char(text, &pos, sizeof(text), '-');
-        append_hex64(text, &pos, sizeof(text), v->end, 12);
-        append_char(text, &pos, sizeof(text), ' ');
-        append_char(text, &pos, sizeof(text), (v->prot & VMA_PROT_READ) ? 'r' : '-');
-        append_char(text, &pos, sizeof(text), (v->prot & VMA_PROT_WRITE) ? 'w' : '-');
-        append_char(text, &pos, sizeof(text), (v->prot & VMA_PROT_EXEC) ? 'x' : '-');
-        append_char(text, &pos, sizeof(text), (v->flags & VMA_FLAG_SHARED) ? 's' : 'p');
-        append_char(text, &pos, sizeof(text), ' ');
-        append_hex64(text, &pos, sizeof(text), v->offset, 8);
-        append_str(text, &pos, sizeof(text), " 00:00 0 ");
+    while (v && pos < 2048 - 128) {
+        append_hex64(text, &pos, 2048, v->start, 12);
+        append_char(text, &pos, 2048, '-');
+        append_hex64(text, &pos, 2048, v->end, 12);
+        append_char(text, &pos, 2048, ' ');
+        append_char(text, &pos, 2048, (v->prot & VMA_PROT_READ) ? 'r' : '-');
+        append_char(text, &pos, 2048, (v->prot & VMA_PROT_WRITE) ? 'w' : '-');
+        append_char(text, &pos, 2048, (v->prot & VMA_PROT_EXEC) ? 'x' : '-');
+        append_char(text, &pos, 2048, (v->flags & VMA_FLAG_SHARED) ? 's' : 'p');
+        append_char(text, &pos, 2048, ' ');
+        append_hex64(text, &pos, 2048, v->offset, 8);
+        append_str(text, &pos, 2048, " 00:00 0 ");
         if (v->flags & VMA_FLAG_HEAP) {
-            append_str(text, &pos, sizeof(text), "                 [heap]");
+            append_str(text, &pos, 2048, "                 [heap]");
         } else if (v->flags & VMA_FLAG_STACK) {
-            append_str(text, &pos, sizeof(text), "                 [stack]");
+            append_str(text, &pos, 2048, "                 [stack]");
         } else if (v->flags & VMA_FLAG_FILE) {
-            append_str(text, &pos, sizeof(text), "                 ");
-            append_str(text, &pos, sizeof(text), p->exe_path[0] ? p->exe_path : p->name);
+            append_str(text, &pos, 2048, "                 ");
+            append_str(text, &pos, 2048, p->exe_path[0] ? p->exe_path : p->name);
         }
-        append_char(text, &pos, sizeof(text), '\n');
+        append_char(text, &pos, 2048, '\n');
         v = v->next;
     }
 
-    return procfs_read_helper(text, pos, offset, buf, count);
+    int res = procfs_read_helper(text, pos, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops maps_ops = {
@@ -518,36 +528,39 @@ static const struct fs_ops maps_ops = {
 /* /proc/net and /proc/net/unix operations */
 static int net_unix_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[2048];
+    char* text = (char*) kmalloc(2048);
+    if (!text) return -ENOMEM;
     int pos = 0;
 
-    append_str(text, &pos, sizeof(text), "Num       RefCount Protocol Flags    Type St Inode Path\n");
+    append_str(text, &pos, 2048, "Num       RefCount Protocol Flags    Type St Inode Path\n");
     socket_t* s = socket_get_list_head();
-    while (s && pos < (int)sizeof(text) - 128) {
-        append_hex(text, &pos, sizeof(text), (uint32_t)(uintptr_t)s, 8);
-        append_str(text, &pos, sizeof(text), ": ");
-        append_hex(text, &pos, sizeof(text), (uint32_t)s->refcount, 8);
-        append_char(text, &pos, sizeof(text), ' ');
-        append_hex(text, &pos, sizeof(text), (uint32_t)s->protocol, 8);
-        append_char(text, &pos, sizeof(text), ' ');
-        append_hex(text, &pos, sizeof(text), (uint32_t)s->flags, 8);
-        append_char(text, &pos, sizeof(text), ' ');
-        append_hex(text, &pos, sizeof(text), (uint32_t)s->type, 4);
-        append_char(text, &pos, sizeof(text), ' ');
-        append_hex(text, &pos, sizeof(text), (uint32_t)s->state, 2);
-        append_char(text, &pos, sizeof(text), ' ');
-        append_uint(text, &pos, sizeof(text), s->inode);
-        append_char(text, &pos, sizeof(text), ' ');
+    while (s && pos < 2048 - 128) {
+        append_hex(text, &pos, 2048, (uint32_t)(uintptr_t)s, 8);
+        append_str(text, &pos, 2048, ": ");
+        append_hex(text, &pos, 2048, (uint32_t)s->refcount, 8);
+        append_char(text, &pos, 2048, ' ');
+        append_hex(text, &pos, 2048, (uint32_t)s->protocol, 8);
+        append_char(text, &pos, 2048, ' ');
+        append_hex(text, &pos, 2048, (uint32_t)s->flags, 8);
+        append_char(text, &pos, 2048, ' ');
+        append_hex(text, &pos, 2048, (uint32_t)s->type, 4);
+        append_char(text, &pos, 2048, ' ');
+        append_hex(text, &pos, 2048, (uint32_t)s->state, 2);
+        append_char(text, &pos, 2048, ' ');
+        append_uint(text, &pos, 2048, s->inode);
+        append_char(text, &pos, 2048, ' ');
         if (s->sun_path[0]) {
-            append_str(text, &pos, sizeof(text), s->sun_path);
+            append_str(text, &pos, 2048, s->sun_path);
         } else if (s->peer_path[0]) {
-            append_str(text, &pos, sizeof(text), s->peer_path);
+            append_str(text, &pos, 2048, s->peer_path);
         }
-        append_char(text, &pos, sizeof(text), '\n');
+        append_char(text, &pos, 2048, '\n');
         s = s->next_all;
     }
 
-    return procfs_read_helper(text, pos, offset, buf, count);
+    int res = procfs_read_helper(text, pos, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops net_unix_ops = {
@@ -557,20 +570,23 @@ static const struct fs_ops net_unix_ops = {
 
 static int net_dev_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[2048];
+    char* text = (char*) kmalloc(2048);
+    if (!text) return -ENOMEM;
     int pos = 0;
-    append_str(text, &pos, sizeof(text),
+    append_str(text, &pos, 2048,
         "Inter-|   Receive                                                |  Transmit\n"
         " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n");
-    for (netdev_t* d = netdev_get_list(); d && pos < (int)sizeof(text) - 160; d = d->next) {
+    for (netdev_t* d = netdev_get_list(); d && pos < 2048 - 160; d = d->next) {
         char line[160];
         ksnprintf(line, sizeof(line),
             "%6s: %8u %8u %4u %4u    0     0          0         0 %8u %8u %4u %4u    0     0       0          0\n",
             d->name, d->rx_bytes, d->rx_packets, d->rx_errors, d->rx_dropped,
             d->tx_bytes, d->tx_packets, d->tx_errors, d->tx_dropped);
-        append_str(text, &pos, sizeof(text), line);
+        append_str(text, &pos, 2048, line);
     }
-    return procfs_read_helper(text, pos, offset, buf, count);
+    int res = procfs_read_helper(text, pos, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops net_dev_ops = {
@@ -580,9 +596,12 @@ static const struct fs_ops net_dev_ops = {
 
 static int net_tcp_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[4096];
-    int len = tcp_get_table_text(text, sizeof(text));
-    return procfs_read_helper(text, len, offset, buf, count);
+    char* text = (char*) kmalloc(4096);
+    if (!text) return -ENOMEM;
+    int len = tcp_get_table_text(text, 4096);
+    int res = procfs_read_helper(text, len, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops net_tcp_ops = {
@@ -592,9 +611,12 @@ static const struct fs_ops net_tcp_ops = {
 
 static int net_udp_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[4096];
-    int len = udp_get_table_text(text, sizeof(text));
-    return procfs_read_helper(text, len, offset, buf, count);
+    char* text = (char*) kmalloc(4096);
+    if (!text) return -ENOMEM;
+    int len = udp_get_table_text(text, 4096);
+    int res = procfs_read_helper(text, len, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops net_udp_ops = {
@@ -604,9 +626,12 @@ static const struct fs_ops net_udp_ops = {
 
 static int net_arp_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[2048];
-    int len = arp_get_table_text(text, sizeof(text));
-    return procfs_read_helper(text, len, offset, buf, count);
+    char* text = (char*) kmalloc(2048);
+    if (!text) return -ENOMEM;
+    int len = arp_get_table_text(text, 2048);
+    int res = procfs_read_helper(text, len, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops net_arp_ops = {
@@ -616,9 +641,12 @@ static const struct fs_ops net_arp_ops = {
 
 static int net_route_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[2048];
-    int len = route_get_table_text(text, sizeof(text));
-    return procfs_read_helper(text, len, offset, buf, count);
+    char* text = (char*) kmalloc(2048);
+    if (!text) return -ENOMEM;
+    int len = route_get_table_text(text, 2048);
+    int res = procfs_read_helper(text, len, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops net_route_ops = {
@@ -628,10 +656,11 @@ static const struct fs_ops net_route_ops = {
 
 static int proc_pci_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t count) {
     (void) vn;
-    char text[2048];
+    char* text = (char*) kmalloc(2048);
+    if (!text) return -ENOMEM;
     int pos = 0;
     int cnt = pci_device_count();
-    for (int i = 0; i < cnt && pos < (int)sizeof(text) - 128; i++) {
+    for (int i = 0; i < cnt && pos < 2048 - 128; i++) {
         const pci_device_t* dev = pci_get_device(i);
         if (!dev) continue;
         char line[128];
@@ -639,9 +668,11 @@ static int proc_pci_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t co
             "PCI: %02x:%02x.%x %04x:%04x class=%02x%02x irq=%u bar0=0x%x\n",
             dev->bus, dev->dev, dev->func, dev->vendor_id, dev->device_id,
             dev->class_code, dev->subclass, dev->irq_line, dev->bars[0]);
-        append_str(text, &pos, sizeof(text), line);
+        append_str(text, &pos, 2048, line);
     }
-    return procfs_read_helper(text, pos, offset, buf, count);
+    int res = procfs_read_helper(text, pos, offset, buf, count);
+    kfree(text);
+    return res;
 }
 
 static const struct fs_ops proc_pci_ops = {
@@ -1019,6 +1050,12 @@ static const struct fs_ops proc_fd_dir_ops = {
 /* /proc/<pid> operations */
 static int proc_pid_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     int slot = (int)(uintptr_t)dir->fs_data;
+    if (slot >= 0) {
+        process_t* me = scheduler_current();
+        process_t* p = process_table_entry(slot);
+        if (!p || p->state == PROC_UNUSED || p->state == PROC_EXITED) return -ENOENT;
+        if (me && me->agent_id > 0 && p->agent_id != me->agent_id) return -ENOENT;
+    }
     if (streq(name, ".")) {
         *out = dir;
         vnode_ref(dir);
@@ -1028,6 +1065,9 @@ static int proc_pid_dir_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         *out = &proc_root_vnode;
         vnode_ref(&proc_root_vnode);
         return 0;
+    }
+    if (streq(name, "mem")) {
+        return -ENOENT; /* Security: no /proc/<pid>/mem at all */
     }
     if (streq(name, "status")) {
         vnode_t* target = (slot < 0) ? &proc_self_status_vnode : &proc_status_vnodes[slot];
@@ -1472,6 +1512,8 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
         return 0;
     }
     if (streq(name, "agents")) {
+        process_t* me = scheduler_current();
+        if (me && me->agent_id > 0) return -ENOENT;
         *out = &proc_agents_dir_vnode;
         vnode_ref(&proc_agents_dir_vnode);
         return 0;
@@ -1488,9 +1530,13 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
     }
     if (is_all_digits(name)) {
         int pid = parse_int(name);
+        process_t* me = scheduler_current();
         for (int i = 0; i < MAX_PROCESSES; i++) {
             process_t* p = process_table_entry(i);
             if (p && p->state != PROC_UNUSED && p->state != PROC_EXITED && p->pid == pid) {
+                if (me && me->agent_id > 0 && p->agent_id != me->agent_id) {
+                    return -ENOENT; /* Sandboxed agent sees only its own processes */
+                }
                 *out = &proc_dir_vnodes[i];
                 vnode_ref(&proc_dir_vnodes[i]);
                 return 0;
@@ -1502,6 +1548,7 @@ static int proc_root_lookup(vnode_t* dir, const char* name, vnode_t** out) {
 
 static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
     (void) dir;
+    process_t* me = scheduler_current();
     if (index == 0) {
         entry->d_ino = 1; entry->d_type = 2; entry->d_size = 0;
         entry->d_name[0] = '.'; entry->d_name[1] = '\0';
@@ -1553,6 +1600,10 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
         return 1;
     }
     if (index == 10) {
+        if (me && me->agent_id > 0) {
+            /* Sandboxed agent cannot see /proc/agents */
+            return proc_root_readdir(dir, 11, entry);
+        }
         entry->d_ino = 18; entry->d_type = 2; entry->d_size = 0;
         int p = 0; append_str(entry->d_name, &p, sizeof(entry->d_name), "agents");
         return 1;
@@ -1574,6 +1625,9 @@ static int proc_root_readdir(vnode_t* dir, uint32_t index, struct dirent* entry)
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
         if (p && p->pid > 0 && p->state != PROC_UNUSED && p->state != PROC_EXITED) {
+            if (me && me->agent_id > 0 && p->agent_id != me->agent_id) {
+                continue; /* Sandboxed agent only lists its own processes */
+            }
             if (active_count == target_idx) {
                 entry->d_ino = 100 + p->pid;
                 entry->d_type = 2; /* directory */
