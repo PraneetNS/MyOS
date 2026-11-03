@@ -25,5 +25,6 @@ int kmutex_owner(const kmutex_t* m);
 
 /* Debug / sanity assertions: panic if current process holds any mutex */
 void kmutex_assert_none_held(void);
+int  kmutex_any_held_by_current(void);
 
 #endif
