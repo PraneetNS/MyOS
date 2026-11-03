@@ -24,7 +24,13 @@ Welcome to the MyOS project roadmap! This document outlines upcoming milestones 
 
 ## 🔮 Future Milestones (Phase 9: Hardware Realism & SMP)
 
-- **Symmetric Multiprocessing (SMP)**: Multi-core scheduling with APIC and spinlock-protected scheduler queues.
+- **Symmetric Multiprocessing (SMP)**:
+  - **SMP Spinlock Architecture**:
+    - Multi-core CPU synchronization replacing uni-processor `irq_save()`/`irq_restore()` critical sections with fine-grained spinlocks.
+    - Ticket spinlocks (`ticket_lock_t` with `owner` and `next` counters) or MCS list-based locks to guarantee FIFO fairness and avoid cache-line bouncing.
+    - IRQ-safe spinlock primitives: `spin_lock_irqsave(&lock, &flags)` and `spin_unlock_irqrestore(&lock, flags)` ensuring ISRs cannot preempt and deadlock while holding spinlocks.
+    - Deadlock mitigation: bounded spin timeout with lockdep / NMI backtrace reporting if lock acquisition exceeds cycle thresholds.
+    - Per-CPU runqueues and load balancing: scheduler queues protected by individual per-CPU runqueue locks, eliminating global scheduler lock contention.
 - **NVMe / AHCI Storage**: Native PCIe NVMe block storage driver replacing legacy ATA PIO.
 - **Hardware Virtualization Hypervisor Support**: Hardware-assisted ring virtualization (VT-x / AMD-V) for strict agent isolation.
 
