@@ -186,3 +186,16 @@ void kmutex_assert_none_held(void) {
         }
     }
 }
+
+int kmutex_any_held_by_current(void) {
+    process_t* me = scheduler_current();
+    if (!me) return 0;
+    int my_pid = me->pid;
+    for (int i = 0; i < registered_count; i++) {
+        kmutex_t* m = registered_mutexes[i];
+        if (m && m->locked && m->owner_pid == my_pid) {
+            return 1;
+        }
+    }
+    return 0;
+}
