@@ -23,18 +23,16 @@ static void kmutex_register(kmutex_t* m) {
 }
 
 static void kmutex_panic(const char* msg, kmutex_t* m) {
+    serial_printf("\n*** KERNEL PANIC [kmutex]: %s (m=%p, locked=%d, owner=%d, name_ptr=%p) ***\n",
+                  msg, m, m ? m->locked : -1, m ? m->owner_pid : -1, m ? (void*)m->name : 0);
     terminal_writestring("\n*** KERNEL PANIC [kmutex]: ");
     terminal_writestring(msg);
-    if (m && m->name) {
+    if (m && m->name && (uint64_t)m->name >= 0xffffffff80000000ULL) {
         terminal_writestring(" (mutex: ");
         terminal_writestring(m->name);
         terminal_writestring(")");
     }
     terminal_writestring(" ***\nSystem halted.\n");
-
-    serial_printf("\n*** KERNEL PANIC [kmutex]: %s (mutex: %s, locked=%d, owner=%d) ***\nSystem halted.\n",
-                  msg, (m && m->name) ? m->name : "none",
-                  m ? m->locked : -1, m ? m->owner_pid : -1);
 
     asm volatile ("cli");
     for (;;) asm volatile ("hlt");

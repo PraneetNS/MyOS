@@ -132,6 +132,52 @@ if [ -f "userland/init.elf" ]; then
     mcopy -o -i "$IMAGE" userland/init.elf "::/bin/init"
 fi
 
+if [ -f "userland/busybox.elf" ]; then
+    mcopy -o -i "$IMAGE" userland/busybox.elf "::/bin/ash"
+fi
+
+if [ -f "tools/hello.c" ]; then
+    mcopy -o -i "$IMAGE" tools/hello.c "::/hello.c"
+    mcopy -o -i "$IMAGE" tools/hello.c "::/home/hello.c"
+fi
+
+echo "Installing TCC toolchain and musl headers/libs on disk..."
+mmd -i "$IMAGE" "::/usr/lib" || true
+mmd -i "$IMAGE" "::/usr/lib/tcc" || true
+mmd -i "$IMAGE" "::/usr/lib/tcc/include" || true
+mmd -i "$IMAGE" "::/usr/include" || true
+mmd -i "$IMAGE" "::/usr/include/bits" || true
+mmd -i "$IMAGE" "::/usr/include/sys" || true
+
+if [ -f "/root/tinycc/libtcc1.a" ]; then
+    mcopy -o -i "$IMAGE" /root/tinycc/libtcc1.a "::/usr/lib/tcc/libtcc1.a"
+    mcopy -o -i "$IMAGE" /root/tinycc/libtcc1.a "::/usr/lib/libtcc1.a"
+    mmd -i "$IMAGE" "::/lib" || true
+    mcopy -o -i "$IMAGE" /root/tinycc/libtcc1.a "::/lib/libtcc1.a"
+fi
+if [ -d "/root/tinycc/include" ]; then
+    for f in /root/tinycc/include/*.h; do
+        [ -f "$f" ] && mcopy -o -i "$IMAGE" "$f" "::/usr/lib/tcc/include/$(basename "$f")"
+    done
+fi
+if [ -f "/usr/lib/x86_64-linux-musl/libc.a" ]; then
+    mcopy -o -i "$IMAGE" /usr/lib/x86_64-linux-musl/libc.a "::/usr/lib/libc.a"
+    mcopy -o -i "$IMAGE" /usr/lib/x86_64-linux-musl/crt1.o "::/usr/lib/crt1.o"
+    mcopy -o -i "$IMAGE" /usr/lib/x86_64-linux-musl/crti.o "::/usr/lib/crti.o"
+    mcopy -o -i "$IMAGE" /usr/lib/x86_64-linux-musl/crtn.o "::/usr/lib/crtn.o"
+fi
+if [ -d "/usr/include/x86_64-linux-musl" ]; then
+    for f in /usr/include/x86_64-linux-musl/*.h; do
+        [ -f "$f" ] && mcopy -o -i "$IMAGE" "$f" "::/usr/include/$(basename "$f")"
+    done
+    for f in /usr/include/x86_64-linux-musl/bits/*.h; do
+        [ -f "$f" ] && mcopy -o -i "$IMAGE" "$f" "::/usr/include/bits/$(basename "$f")"
+    done
+    for f in /usr/include/x86_64-linux-musl/sys/*.h; do
+        [ -f "$f" ] && mcopy -o -i "$IMAGE" "$f" "::/usr/include/sys/$(basename "$f")"
+    done
+fi
+
 echo "Copying data files..."
 if [ ! -f "tools/stories.bin" ] || [ ! -f "tools/tokenizer.bin" ]; then
     python3 tools/create_tiny_checkpoint.py tools/stories.bin tools/tokenizer.bin

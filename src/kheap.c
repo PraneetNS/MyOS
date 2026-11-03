@@ -3,6 +3,7 @@
 #include "paging.h"
 #include "vga.h"
 #include "serial.h"
+#include "io.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -37,9 +38,36 @@ static void kheap_verify_block(block_header_t* block) {
     if (block->magic != KHEAP_MAGIC_HEAD) {
         kheap_panic("corrupted block header magic", block, block->magic, KHEAP_MAGIC_HEAD);
     }
+    if (block->next && (uintptr_t)block->next < PHYSMAP_BASE) {
+        serial_printf("\n[kheap] CORRUPTED NEXT: block=%p next=%p size=%lu req=%lu free=%u\n",
+                      block, block->next, (unsigned long)block->size, (unsigned long)block->req_size, block->free);
+        uint8_t* p = (uint8_t*)block;
+        for (int r = 0; r < 96; r += 16) {
+            serial_printf("  +%02x: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                          r, p[r], p[r+1], p[r+2], p[r+3], p[r+4], p[r+5], p[r+6], p[r+7],
+                          p[r+8], p[r+9], p[r+10], p[r+11], p[r+12], p[r+13], p[r+14], p[r+15]);
+        }
+        kheap_panic("corrupted block->next pointer", block, (uint64_t)block->next, PHYSMAP_BASE);
+    }
+    if (block->prev && (uintptr_t)block->prev < PHYSMAP_BASE) {
+        serial_printf("\n[kheap] CORRUPTED PREV: block=%p prev=%p size=%lu req=%lu free=%u\n",
+                      block, block->prev, (unsigned long)block->size, (unsigned long)block->req_size, block->free);
+        kheap_panic("corrupted block->prev pointer", block, (uint64_t)block->prev, PHYSMAP_BASE);
+    }
     if (!block->free) {
         uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
         if (*tail != KHEAP_MAGIC_TAIL) {
+            serial_printf("\n[kheap] CORRUPTED TAIL: block=%p req_size=%lu size=%lu tail_ptr=%p *tail=0x%x\n",
+                          block, (unsigned long)block->req_size, (unsigned long)block->size, tail, *tail);
+            uint8_t* p = (uint8_t*)block;
+            int total = (int)(sizeof(block_header_t) + block->size + 32);
+            if (total > 256) total = 256;
+            for (int r = 0; r < total; r += 16) {
+                serial_printf("  +%04x (%p): %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                              r, p + r,
+                              p[r+0], p[r+1], p[r+2], p[r+3], p[r+4], p[r+5], p[r+6], p[r+7],
+                              p[r+8], p[r+9], p[r+10], p[r+11], p[r+12], p[r+13], p[r+14], p[r+15]);
+            }
             kheap_panic("heap buffer overflow (tail canary corrupted)", block, *tail, KHEAP_MAGIC_TAIL);
         }
     }
@@ -98,6 +126,8 @@ void* kmalloc(size_t size) {
 
     size = (size + 15) & ~((size_t)15);
 
+    uint64_t flags = irq_save();
+
     block_header_t* block = heap_head;
     block_header_t* last = 0;
 
@@ -125,6 +155,7 @@ void* kmalloc(size_t size) {
             block->req_size = size;
             uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
             *tail = KHEAP_MAGIC_TAIL;
+            irq_restore(flags);
             return (void*)((uint8_t*)block + sizeof(block_header_t));
         }
         last = block;
@@ -132,7 +163,10 @@ void* kmalloc(size_t size) {
     }
 
     block = kheap_expand(size, last);
-    if (!block) return 0;
+    if (!block) {
+        irq_restore(flags);
+        return 0;
+    }
 
     size_t min_split = sizeof(block_header_t) + 16 + KHEAP_FOOTER_SIZE;
     if (block->size >= size + min_split) {
@@ -155,6 +189,7 @@ void* kmalloc(size_t size) {
     block->req_size = size;
     uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
     *tail = KHEAP_MAGIC_TAIL;
+    irq_restore(flags);
     return (void*)((uint8_t*)block + sizeof(block_header_t));
 }
 
@@ -166,18 +201,23 @@ void kfree(void* ptr) {
         kheap_panic("invalid pointer passed to kfree", ptr, v, 0);
     }
 
+    uint64_t flags = irq_save();
+
     block_header_t* block = (block_header_t*)((uint8_t*)ptr - sizeof(block_header_t));
 
     if (block->magic != KHEAP_MAGIC_HEAD) {
+        irq_restore(flags);
         kheap_panic("corrupted block header magic (underflow or invalid ptr)", ptr, block->magic, KHEAP_MAGIC_HEAD);
     }
 
     if (block->free) {
+        irq_restore(flags);
         kheap_panic("double free detected", ptr, block->free, 0);
     }
 
     uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
     if (*tail != KHEAP_MAGIC_TAIL) {
+        irq_restore(flags);
         kheap_panic("buffer overflow detected on free", ptr, *tail, KHEAP_MAGIC_TAIL);
     }
 
@@ -208,6 +248,8 @@ void kfree(void* ptr) {
             }
         }
     }
+
+    irq_restore(flags);
 }
 
 #if KHEAP_DEBUG

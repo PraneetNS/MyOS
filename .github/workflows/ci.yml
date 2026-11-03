@@ -105,7 +105,7 @@ jobs:
             disk.img
 
   nightly-tests:
-    name: Nightly Full Regression (Sessions 1-21)
+    name: Nightly Full Regression (Sessions 1-23)
     runs-on: ubuntu-22.04
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
@@ -115,7 +115,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib g++-multilib mtools dosfstools grub-pc-bin grub-common xorriso qemu-system-x86 python3 python3-pip
+          sudo apt-get install -y gcc-multilib g++-multilib mtools dosfstools grub-pc-bin grub-common xorriso qemu-system-x86 python3 python3-pip musl-tools tcc ovmf
 
       - name: Build Everything
         run: |

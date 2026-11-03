@@ -1378,6 +1378,10 @@ echo "[TEST] Session 22: x86-64 Long Mode, UEFI Boot, >4GB RAM, and CPU Hardenin
 bash tools/test_session22.sh || { echo "FAIL: Session 22 failed"; exit 1; }
 echo "[PASS] Session 22: x86-64 Long Mode, UEFI Boot, >4GB RAM, and CPU Hardening Suite verified!"
 
+echo "[TEST] Session 23: Linux ABI Compatibility, Musl Libc, BusyBox, Lua, Python, TCC Self-Hosting..."
+bash tools/test_session23.sh || { echo "FAIL: Session 23 failed"; exit 1; }
+echo "[PASS] Session 23: Linux ABI Compatibility & Real Software verified!"
+
 echo "==============================="
 echo "ALL TESTS PASSED!"
 echo "==============================="

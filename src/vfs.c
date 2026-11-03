@@ -172,7 +172,6 @@ void vnode_unref(vnode_t* vn) {
         if (vn->refcount == 0) {
             const struct fs_ops* ops = vn->ops;
             void* fs_data = vn->fs_data;
-            vnode_t* p = vn->parent;
             vn->parent = 0;
             vn->fs_data = 0;
             vfs_unlock(f);
@@ -182,7 +181,6 @@ void vnode_unref(vnode_t* vn) {
                 tmp.fs_data = fs_data;
                 ops->cleanup(&tmp);
             }
-            if (p) vnode_unref(p);
             return;
         }
     }
@@ -469,7 +467,6 @@ restart_walk:
 
         if (!next->parent) {
             next->parent = curr;
-            vnode_ref(curr);
         }
         if (curr != mount_table[best_mount].root) {
             vnode_unref(curr);

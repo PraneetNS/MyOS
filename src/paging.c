@@ -227,6 +227,10 @@ static void page_fault_handler(struct registers* regs) {
             (regs->err_code & 0x2) ? "write" : "read",
             (unsigned long)regs->rip);
 
+    serial_printf("[pf-regs] rax=%016lx rbx=%016lx rcx=%016lx rdx=%016lx rsi=%016lx rdi=%016lx rbp=%016lx rsp=%016lx r8=%016lx r9=%016lx r10=%016lx r11=%016lx rip=%016lx cs=%016lx cr2=%016lx\n",
+                  regs->rax, regs->rbx, regs->rcx, regs->rdx, regs->rsi, regs->rdi, regs->rbp, regs->rsp,
+                  regs->r8, regs->r9, regs->r10, regs->r11, regs->rip, regs->cs, faulting_addr);
+
     if (proc && !proc->is_kernel_task) {
         vma_t* vma = vma_find(proc, faulting_addr);
         if (!vma) {
@@ -249,8 +253,16 @@ static void page_fault_handler(struct registers* regs) {
 
     kprintf("\n*** KERNEL PAGE FAULT at 0x%lx (err=0x%lx, rip=0x%lx) ***\n",
             (unsigned long)faulting_addr, (unsigned long)regs->err_code, (unsigned long)regs->rip);
-    serial_printf("*** KERNEL PAGE FAULT at 0x%lx (err=0x%lx, rip=0x%lx) ***\n",
-                  (unsigned long)faulting_addr, (unsigned long)regs->err_code, (unsigned long)regs->rip);
+    serial_printf("*** KERNEL PAGE FAULT at 0x%lx (err=0x%lx, rip=0x%lx, cs=0x%lx, rsp=0x%lx, rbp=0x%lx) ***\n",
+                  (unsigned long)faulting_addr, (unsigned long)regs->err_code, (unsigned long)regs->rip,
+                  (unsigned long)regs->cs, (unsigned long)regs->rsp, (unsigned long)regs->rbp);
+    if (regs->rsp >= 0xffff800000000000ULL) {
+        uint64_t* stk = (uint64_t*) regs->rsp;
+        serial_printf("Stack dump at %p:\n", stk);
+        for (int i = 0; i < 20; i++) {
+            serial_printf("  [+%02x] %016lx\n", i * 8, stk[i]);
+        }
+    }
     asm volatile ("cli");
     for (;;) asm volatile ("hlt");
 }

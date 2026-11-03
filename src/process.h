@@ -7,7 +7,7 @@
 #include "idt.h" /* struct registers -- forked children resume from a saved snapshot of it */
 
 #define MAX_PROCESSES 64
-#define PROC_KERNEL_STACK_SIZE 16384
+#define PROC_KERNEL_STACK_SIZE 65536
 #define MAX_FDS 32               /* 32 fds per process; 0=stdin, 1=stdout, 2=stderr reserved */
 
 /* Canonical 64-bit Address Layout:
