@@ -610,8 +610,9 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
     uint32_t idx = 0;
     fat_dirent_t e;
     uint32_t sec, off;
-    fat_lfn_accum_t acc;
-    lfn_accum_reset(&acc);
+    fat_lfn_accum_t* acc = (fat_lfn_accum_t*) kmalloc(sizeof(fat_lfn_accum_t));
+    if (!acc) return 0;
+    lfn_accum_reset(acc);
 
     int can_be_83 = is_valid_83_name(name);
     char name_83[11];
@@ -619,16 +620,16 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
 
     while (read_dir_entry(dir, idx++, &e, &sec, &off)) {
         if ((uint8_t)e.name[0] == 0x00) break;
-        if ((uint8_t)e.name[0] == 0xE5) { lfn_accum_reset(&acc); continue; }
+        if ((uint8_t)e.name[0] == 0xE5) { lfn_accum_reset(acc); continue; }
         if ((e.attr & FAT_ATTR_LFN) == FAT_ATTR_LFN) {
-            lfn_accum_feed(&acc, &e, sec, off);
+            lfn_accum_feed(acc, &e, sec, off);
             continue;
         }
-        if (e.attr & FAT_ATTR_VOLUME_ID) { lfn_accum_reset(&acc); continue; }
+        if (e.attr & FAT_ATTR_VOLUME_ID) { lfn_accum_reset(acc); continue; }
 
         char lfn_name[NAME_MAX + 1];
-        int has_lfn = lfn_accum_get_name(&acc, &e, lfn_name, sizeof(lfn_name));
-        uint32_t lfn_slots = acc.slots;
+        int has_lfn = lfn_accum_get_name(acc, &e, lfn_name, sizeof(lfn_name));
+        uint32_t lfn_slots = acc->slots;
 
         int match = 0;
         if (has_lfn && strcasecmp_ascii(name, lfn_name) == 0) {
@@ -643,10 +644,12 @@ static int find_entry_in_dir_lfn(fat_node_t* dir, const char* name, fat_dirent_t
             if (out_off) *out_off = off;
             if (out_short_idx) *out_short_idx = idx - 1;
             if (out_lfn_slots) *out_lfn_slots = has_lfn ? lfn_slots : 0;
+            kfree(acc);
             return 1;
         }
-        lfn_accum_reset(&acc);
+        lfn_accum_reset(acc);
     }
+    kfree(acc);
     return 0;
 }
 
@@ -759,10 +762,12 @@ static int write_lfn_set(fat_node_t* dir, const char* name, const char short_83[
                           const fat_dirent_t* short_e, uint32_t* out_sec, uint32_t* out_off) {
     int needs_lfn = fat16_needs_lfn(name);
     int num_lfn = 0;
-    uint16_t u16_name[260];
+    uint16_t* u16_name = 0;
     int u16_len = 0;
 
     if (needs_lfn) {
+        u16_name = (uint16_t*) kmalloc(260 * sizeof(uint16_t));
+        if (!u16_name) return -ENOMEM;
         u16_len = fat_lfn_utf8_to_ucs2(name, u16_name, 256);
         num_lfn = (u16_len + FAT_LFN_CHARS_PER_ENT - 1) / FAT_LFN_CHARS_PER_ENT;
     }
@@ -770,7 +775,10 @@ static int write_lfn_set(fat_node_t* dir, const char* name, const char short_83[
 
     uint32_t start_idx = 0;
     int err = alloc_contiguous_entries_in_dir(dir, total_slots, &start_idx);
-    if (err != 0) return err;
+    if (err != 0) {
+        if (u16_name) kfree(u16_name);
+        return err;
+    }
 
     uint8_t chk = fat_lfn_checksum(short_83);
 
@@ -810,6 +818,7 @@ static int write_lfn_set(fat_node_t* dir, const char* name, const char short_83[
 
     if (out_sec) *out_sec = sec;
     if (out_off) *out_off = off;
+    if (u16_name) kfree(u16_name);
     return 0;
 }
 
@@ -1315,21 +1324,22 @@ static int fat16_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
     uint32_t idx = 0;
     fat_dirent_t e;
     uint32_t sec, off;
-    fat_lfn_accum_t acc;
-    lfn_accum_reset(&acc);
+    fat_lfn_accum_t* acc = (fat_lfn_accum_t*) kmalloc(sizeof(fat_lfn_accum_t));
+    if (!acc) return 0;
+    lfn_accum_reset(acc);
 
     while (read_dir_entry(dnode, idx++, &e, &sec, &off)) {
         if ((uint8_t)e.name[0] == 0x00) break;
-        if ((uint8_t)e.name[0] == 0xE5) { lfn_accum_reset(&acc); continue; }
+        if ((uint8_t)e.name[0] == 0xE5) { lfn_accum_reset(acc); continue; }
         if ((e.attr & FAT_ATTR_LFN) == FAT_ATTR_LFN) {
-            lfn_accum_feed(&acc, &e, sec, off);
+            lfn_accum_feed(acc, &e, sec, off);
             continue;
         }
-        if (e.attr & FAT_ATTR_VOLUME_ID) { lfn_accum_reset(&acc); continue; }
+        if (e.attr & FAT_ATTR_VOLUME_ID) { lfn_accum_reset(acc); continue; }
 
         if (cur_valid == index) {
             char name_buf[NAME_MAX + 1];
-            if (!lfn_accum_get_name(&acc, &e, name_buf, sizeof(name_buf))) {
+            if (!lfn_accum_get_name(acc, &e, name_buf, sizeof(name_buf))) {
                 from_dos_name(e.name, name_buf);
             }
             int l = 0;
@@ -1341,11 +1351,13 @@ static int fat16_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
             entry->d_type = (e.attr & FAT_ATTR_DIRECTORY) ? 2 : 1;
             entry->d_size = e.file_size;
             entry->d_ino = e.fst_clus_lo ? e.fst_clus_lo : 1;
+            kfree(acc);
             return 1;
         }
         cur_valid++;
-        lfn_accum_reset(&acc);
+        lfn_accum_reset(acc);
     }
+    kfree(acc);
     return 0;
 }
 
