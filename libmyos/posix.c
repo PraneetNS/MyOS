@@ -947,12 +947,12 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
 }
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
-    int ret = __syscall4(SYS_SEND, sockfd, (long)buf, (long)len, flags);
+    int ret = __syscall6(SYS_SENDTO, sockfd, (long)buf, (long)len, flags, 0, 0);
     return (ssize_t) __check_syscall_err(ret);
 }
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    int ret = __syscall4(SYS_RECV, sockfd, (long)buf, (long)len, flags);
+    int ret = __syscall6(SYS_RECVFROM, sockfd, (long)buf, (long)len, flags, 0, 0);
     return (ssize_t) __check_syscall_err(ret);
 }
 
