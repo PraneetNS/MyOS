@@ -49,6 +49,8 @@ typedef struct process {
     uint64_t rsp;               /* saved kernel-mode rsp -- the switch_task continuation point */
     uint64_t kernel_stack_top;  /* becomes TSS.rsp0 whenever this process is current */
     uint8_t* kernel_stack_base; /* for freeing on exit */
+    int      kstack_slot;       /* slot in dedicated kstack virtual region */
+    uint64_t current_syscall;   /* active syscall number for fault reporting */
     uint64_t entry_point;       /* read by process_trampoline on this process's first run */
     uint64_t user_stack_top;
     proc_state_t state;
@@ -105,6 +107,7 @@ typedef struct process {
     int   current_op_flags;     /* Per-process active VFS operation flags */
     void* ctty;                 /* Controlling terminal (tty_t*) */
     int   agent_id;             /* Bound agent ID (0 if unconfined) */
+    int   in_interrupt;         /* ISR nesting counter (0 if normal process context) */
     char  exe_path[256];        /* Executable path for /proc/self/exe */
     uint32_t umask_val;         /* File mode creation mask */
     uint64_t logged_unimpl_syscalls[8]; /* Bitmap of logged unhandled syscall numbers (0..511) */
