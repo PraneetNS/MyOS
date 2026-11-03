@@ -112,6 +112,20 @@ flowchart TD
 
 ---
 
+## 🐧 Linux x86-64 ABI Compatibility & Real Software
+
+MyOS implements the **Linux x86-64 native syscall ABI** as its primary userland interface alongside MyOS-specific capability extensions (1000+):
+- **Native Monolithic Kernel**: Syscalls execute directly via the `syscall` / `sysretq` instruction pair in Ring 0 with unmapped kernel stack guard pages and thread-local storage (`arch_prctl`).
+- **Standard Toolchain & Binary Compatibility**: Directly executes standard static x86-64 ELF binaries built with musl libc:
+  - **Musl Libc**: Full support for static musl binaries (stdio, malloc/mmap, stat, symlinks, fork, pipes, signals).
+  - **BusyBox 1.36.1**: Full multi-call Unix userland (`ash`, `sed`, `awk`, `sort`, `uniq`, `tr`, `cut`, `xargs`, `tar`, `gzip`, `find`, `diff`, `cp -r`, `ln -s`, `chmod`, `date`).
+  - **Lua 5.4.6**: Full scripting engine.
+  - **MicroPython 3.4.0**: Python 3 language runtime (minimal unix build).
+  - **Tiny C Compiler (TCC) 0.9.28rc**: **Self-hosting** C compiler running directly inside MyOS, compiling C programs into native static ELF64 binaries on disk.
+- **Precise Syscall Coverage**: 148 Linux syscalls implemented or cleanly stubbed (covering 100% of the surface required for the software above). All unimplemented Linux syscalls safely return `-ENOSYS` with rate-limited serial logging. See [docs/linux_compat.md](docs/linux_compat.md) for the full matrix.
+
+---
+
 ## 🛡️ Rigorous Comparison vs. Related Projects
 
 | Concrete Verifiable Axis | **MyOS** | **AIOS** (Rutgers) | **CosmOS** (LLM OS) | **Warmwind** | **VAST AI OS** | **Windows Copilot+ / Workspaces** |
