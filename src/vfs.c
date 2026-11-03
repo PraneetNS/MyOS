@@ -331,9 +331,13 @@ int vfs_is_symlink(vnode_t* vn, char* target_out, int max_len) {
         is_proc_lnk = 1;
     }
 
-    uint8_t buf[520];
+    uint8_t* buf = (uint8_t*) kmalloc(520);
+    if (!buf) return 0;
     int n = vn->ops->read(vn, 0, buf, 512);
-    if (n <= 0) return 0;
+    if (n <= 0) {
+        kfree(buf);
+        return 0;
+    }
 
     int start_off = 0;
     if (n >= 9 &&
@@ -341,6 +345,7 @@ int vfs_is_symlink(vnode_t* vn, char* target_out, int max_len) {
         buf[4] == 'L' && buf[5] == 'N' && buf[6] == 'K' && buf[7] == '\n') {
         start_off = 8;
     } else if (!is_proc_lnk) {
+        kfree(buf);
         return 0;
     }
 
@@ -356,6 +361,7 @@ int vfs_is_symlink(vnode_t* vn, char* target_out, int max_len) {
         int term = (len < max_len - 1) ? len : (max_len - 1);
         target_out[term] = '\0';
     }
+    kfree(buf);
     return len;
 }
 
