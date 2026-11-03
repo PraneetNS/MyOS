@@ -16,6 +16,7 @@
 #include "tty.h"
 #include "agent.h"
 #include "random.h"
+#include "kstack.h"
 
 int respawn_shell_needed = 0;
 
@@ -112,8 +113,11 @@ void process_init_table(int use_kshell) {
     shell->as.pml4      = paging_get_kernel_pml4_virt();
     shell->as.pml4_phys = paging_get_kernel_pml4_phys();
 
-    shell->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
-    shell->kernel_stack_top  = (uint64_t)(shell->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
+    kstack_init();
+    shell->kstack_slot = 0;
+    if (kstack_alloc(0, &shell->kernel_stack_base, &shell->kernel_stack_top) != 0) {
+        serial_printf("[process] Failed to allocate kstack for shell\n");
+    }
     shell->is_kernel_task = 1;
     shell->state = PROC_READY;
     shell->pid = 0;
@@ -265,8 +269,11 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint64
     p->user_stack_top = stack_top;
     p->vma_list = vmas;
 
-    p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
-    p->kernel_stack_top  = (uint64_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
+    p->kstack_slot = slot;
+    if (kstack_alloc(slot, &p->kernel_stack_base, &p->kernel_stack_top) != 0) {
+        vmm_destroy_address_space(&p->as);
+        return 0;
+    }
     p->is_kernel_task = 0;
     p->pid = next_pid++;
     p->ppid = parent_pid;
@@ -340,7 +347,11 @@ void process_destroy(process_t* p) {
     }
     if (!p->is_kernel_task)
         vmm_destroy_address_space(&p->as);
-    if (p->kernel_stack_base) { kfree(p->kernel_stack_base); p->kernel_stack_base = 0; }
+    if (p->kernel_stack_base) {
+        kstack_free(p->kstack_slot);
+        p->kernel_stack_base = 0;
+        p->kernel_stack_top = 0;
+    }
     p->waiting_for_pid = -999;
     p->wait_channel = 0;
     p->exit_code = 0;
@@ -387,8 +398,11 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     p->gs_base           = parent->gs_base;
     p->clear_child_tid   = parent->clear_child_tid;
 
-    p->kernel_stack_base = (uint8_t*) kmalloc(PROC_KERNEL_STACK_SIZE);
-    p->kernel_stack_top  = (uint64_t)(p->kernel_stack_base + PROC_KERNEL_STACK_SIZE);
+    p->kstack_slot = slot;
+    if (kstack_alloc(slot, &p->kernel_stack_base, &p->kernel_stack_top) != 0) {
+        vmm_destroy_address_space(&p->as);
+        return 0;
+    }
     p->is_kernel_task = 0;
     p->pid = next_pid++;
     p->ppid = parent->pid;
