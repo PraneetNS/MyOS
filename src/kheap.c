@@ -4,6 +4,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "io.h"
+#include "idt.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -11,6 +12,18 @@
 #define KHEAP_MAGIC_TAIL  0xCAFEBABEu
 #define KHEAP_FOOTER_SIZE 16
 #define KHEAP_CHUNK_MIN   (256 * 1024)  /* 256KB minimum chunk size */
+
+static inline uint64_t rdtsc_cycles(void) {
+    uint32_t lo, hi;
+    asm volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static uint64_t g_kheap_max_kmalloc_cycles = 0;
+static uint64_t g_kheap_max_kfree_cycles = 0;
+
+uint64_t kheap_get_max_kmalloc_cycles(void) { return g_kheap_max_kmalloc_cycles; }
+uint64_t kheap_get_max_kfree_cycles(void) { return g_kheap_max_kfree_cycles; }
 
 typedef struct block_header {
     uint32_t magic;             /* 0xDEADBEEF */
@@ -124,14 +137,24 @@ void kheap_init(void) {
 void* kmalloc(size_t size) {
     if (size == 0) return 0;
 
+    if (in_interrupt()) {
+        kheap_panic("ILLEGAL: kmalloc called from interrupt context / ISR", 0, (uint64_t)size, 0);
+    }
+
     size = (size + 15) & ~((size_t)15);
 
+    uint64_t t0 = rdtsc_cycles();
     uint64_t flags = irq_save();
 
     block_header_t* block = heap_head;
     block_header_t* last = 0;
+    int walk_count = 0;
 
     while (block) {
+        if (++walk_count > 1024) {
+            /* Bound the free-list walk to avoid long interrupt blackout */
+            break;
+        }
         kheap_verify_block(block);
         if (block->free && block->size >= size) {
             size_t min_split = sizeof(block_header_t) + 16 + KHEAP_FOOTER_SIZE;
@@ -155,6 +178,10 @@ void* kmalloc(size_t size) {
             block->req_size = size;
             uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
             *tail = KHEAP_MAGIC_TAIL;
+            uint64_t dt = rdtsc_cycles() - t0;
+            if (dt > g_kheap_max_kmalloc_cycles) {
+                g_kheap_max_kmalloc_cycles = dt;
+            }
             irq_restore(flags);
             return (void*)((uint8_t*)block + sizeof(block_header_t));
         }
@@ -164,6 +191,10 @@ void* kmalloc(size_t size) {
 
     block = kheap_expand(size, last);
     if (!block) {
+        uint64_t dt = rdtsc_cycles() - t0;
+        if (dt > g_kheap_max_kmalloc_cycles) {
+            g_kheap_max_kmalloc_cycles = dt;
+        }
         irq_restore(flags);
         return 0;
     }
@@ -189,6 +220,10 @@ void* kmalloc(size_t size) {
     block->req_size = size;
     uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
     *tail = KHEAP_MAGIC_TAIL;
+    uint64_t dt = rdtsc_cycles() - t0;
+    if (dt > g_kheap_max_kmalloc_cycles) {
+        g_kheap_max_kmalloc_cycles = dt;
+    }
     irq_restore(flags);
     return (void*)((uint8_t*)block + sizeof(block_header_t));
 }
@@ -196,11 +231,16 @@ void* kmalloc(size_t size) {
 void kfree(void* ptr) {
     if (!ptr) return;
 
+    if (in_interrupt()) {
+        kheap_panic("ILLEGAL: kfree called from interrupt context / ISR", ptr, 0, 0);
+    }
+
     uintptr_t v = (uintptr_t) ptr;
     if ((v & 15) != 0 || v < PHYSMAP_BASE) {
         kheap_panic("invalid pointer passed to kfree", ptr, v, 0);
     }
 
+    uint64_t t0 = rdtsc_cycles();
     uint64_t flags = irq_save();
 
     block_header_t* block = (block_header_t*)((uint8_t*)ptr - sizeof(block_header_t));
@@ -249,6 +289,10 @@ void kfree(void* ptr) {
         }
     }
 
+    uint64_t dt = rdtsc_cycles() - t0;
+    if (dt > g_kheap_max_kfree_cycles) {
+        g_kheap_max_kfree_cycles = dt;
+    }
     irq_restore(flags);
 }
 
