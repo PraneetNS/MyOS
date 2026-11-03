@@ -23,6 +23,7 @@
 #include "devfs.h"
 #include "signal.h"
 #include "rtc.h"
+#include "kstack.h"
 #include "fpu.h"
 #include "kmutex.h"
 #include "tmpfs.h"
@@ -261,6 +262,21 @@ static size_t kstrlen(const char* s) {
     size_t len = 0;
     while (s && s[len]) len++;
     return len;
+}
+
+static const char* kstrstr(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return 0;
+    if (!*needle) return haystack;
+    for (; *haystack; haystack++) {
+        const char* h = haystack;
+        const char* n = needle;
+        while (*h && *n && (*h == *n)) {
+            h++;
+            n++;
+        }
+        if (!*n) return haystack;
+    }
+    return 0;
 }
 
 static void kernel_stat_to_linux_stat64(const struct stat* ks, struct linux_stat64* ls) {
@@ -583,17 +599,23 @@ static int do_sys_symlinkat(const char* target, int newdirfd, const char* linkpa
     vnode_unref(parent);
     if (ret != 0 || !vn) return (ret ? ret : -EIO);
 
-    char sym_buf[520];
+    char* sym_buf = (char*) kmalloc(520);
+    if (!sym_buf) {
+        vnode_unref(vn);
+        return -ENOMEM;
+    }
     const char* hdr = "MYOSLNK\n";
     int pos = 0;
     for (int i = 0; i < 8; i++) sym_buf[pos++] = hdr[i];
     for (int i = 0; target[i] && pos < 511; i++) sym_buf[pos++] = target[i];
 
     if (!vn->ops || !vn->ops->write) {
+        kfree(sym_buf);
         vnode_unref(vn);
         return -EIO;
     }
     int wn = vn->ops->write(vn, 0, (const uint8_t*)sym_buf, (uint32_t)pos);
+    kfree(sym_buf);
     vnode_unref(vn);
     return (wn == pos) ? 0 : -EIO;
 }
@@ -643,6 +665,8 @@ static int do_sys_readlinkat(int dirfd, const char* path, char* buf, size_t bufs
 
 static void syscall_handler_internal(struct syscall_args* regs) {
     agent_killswitch_check_deferred();
+    process_t* me_syscall_proc = scheduler_current();
+    if (me_syscall_proc) me_syscall_proc->current_syscall = regs->eax;
     switch (regs->eax) {
         case SYS_WRITE: {
             int fd = (int) regs->ebx;
@@ -1140,6 +1164,20 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             while (ex_src[exi] && exi < 255) { me->exe_path[exi] = ex_src[exi]; exi++; }
             me->exe_path[exi] = '\0';
 
+            int is_musl = 0;
+            for (int k = 0; ep->kname[k]; k++) {
+                if (ep->kname[k] == 'm' && ep->kname[k+1] == 'u' && ep->kname[k+2] == 's' && ep->kname[k+3] == 'l') {
+                    is_musl = 1;
+                    break;
+                }
+            }
+            if (is_musl) {
+                uint64_t target = 0xffff800000395af0ULL;
+                asm volatile ("mov %0, %%dr0" : : "r"(target));
+                asm volatile ("mov %0, %%dr7" : : "r"(0x000D0001ULL));
+                serial_printf("[watchpoint] armed DR0 on %p for musltest\n", (void*)target);
+            }
+
             const char* base = ep->kname;
             for (int k = 0; ep->kname[k]; k++) {
                 if (ep->kname[k] == '/') base = &ep->kname[k + 1];
@@ -1517,11 +1555,29 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            char full_path[PATH_MAX];
+            vfs_path_canonical(path, me->cwd, full_path, sizeof(full_path));
+            if (me->agent_id > 0) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, full_path, "truncate");
+                if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+            }
+
             vnode_t* vn = 0;
-            int ret = vfs_resolve_path(path, me->cwd, &vn);
+            char resolved_canon[PATH_MAX];
+            resolved_canon[0] = '\0';
+            int ret = vfs_resolve_path_ex(path, me->cwd, &vn, 1, resolved_canon, sizeof(resolved_canon));
             if (ret != 0 || !vn) {
                 regs->eax = (uint32_t) (ret ? ret : -ENOENT);
                 break;
+            }
+
+            if (me->agent_id > 0 && resolved_canon[0]) {
+                int aerr = agent_check_access(me, CAP_FS_WRITE, resolved_canon, "truncate");
+                if (aerr < 0) {
+                    vnode_unref(vn);
+                    regs->eax = (uint32_t) aerr;
+                    break;
+                }
             }
 
             ret = vfs_truncate(vn, (uint32_t) length);
@@ -1596,6 +1652,15 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                     }
                     regs->eax = bytes_written;
                     break;
+                }
+
+                if (me->agent_id > 0) {
+                    char child_canon[PATH_MAX];
+                    const char* base_p = me->fds[fd]->path[0] ? me->fds[fd]->path : me->cwd;
+                    vfs_path_canonical(k_ent.d_name, base_p, child_canon, sizeof(child_canon));
+                    if (agent_check_access(me, CAP_FS_READ, child_canon, "getdents") != 0) {
+                        continue; /* Skip entry outside caps: listing must not leak names outside caps */
+                    }
                 }
 
                 size_t name_len = kstrlen(k_ent.d_name);
@@ -3486,6 +3551,28 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             if (err != 0) { regs->eax = (uint32_t) err; break; }
 
             process_t* me = scheduler_current();
+            if (me->agent_id > 0 && uaddr) {
+                const struct sockaddr_un* un = (const struct sockaddr_un*) uaddr;
+                if (un->sun_family == 1) { /* AF_UNIX */
+                    if (kstrstr(un->sun_path, "approval.sock") ||
+                        kstrstr(un->sun_path, "intent.sock") ||
+                        kstrstr(un->sun_path, "display.sock")) {
+                        agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "bind to system socket denied");
+                        regs->eax = (uint32_t) -EACCES;
+                        break;
+                    }
+                    int aerr = agent_check_access(me, CAP_FS_WRITE, un->sun_path, "bind");
+                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                } else if (un->sun_family == 2) { /* AF_INET */
+                    agent_t* ag = agent_get_by_id(me->agent_id);
+                    if (!ag || (!(ag->caps.mask & CAP_NET_RAW_INET))) {
+                        agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "AF_INET bind denied: missing CAP_NET_RAW_INET");
+                        regs->eax = (uint32_t) -EACCES;
+                        break;
+                    }
+                }
+            }
+
             if (fd < 0 || fd >= MAX_FDS || !me->fds[fd]) {
                 regs->eax = (uint32_t) -EBADF;
                 break;
@@ -3600,8 +3687,36 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             if (me->agent_id > 0 && uaddr) {
                 const struct sockaddr_un* un = (const struct sockaddr_un*) uaddr;
                 if (un->sun_family == 1) { /* AF_UNIX */
+                    if (kstrstr(un->sun_path, "approval.sock")) {
+                        agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "connect to approval.sock denied");
+                        regs->eax = (uint32_t) -EACCES;
+                        break;
+                    }
+                    if (kstrstr(un->sun_path, "intent.sock")) {
+                        agent_t* ag = agent_get_by_id(me->agent_id);
+                        if (!ag || (!(ag->caps.mask & (CAP_BUS_CALL | CAP_BUS_PROVIDE)))) {
+                            agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "connect to intent.sock denied: missing CAP_BUS_*");
+                            regs->eax = (uint32_t) -EACCES;
+                            break;
+                        }
+                    }
+                    if (kstrstr(un->sun_path, "display.sock")) {
+                        agent_t* ag = agent_get_by_id(me->agent_id);
+                        if (!ag || (!(ag->caps.mask & (CAP_WINDOW | CAP_WINDOW_OBSERVE | CAP_WINDOW_ACT)))) {
+                            agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "connect to display.sock denied: missing CAP_WINDOW_*");
+                            regs->eax = (uint32_t) -EACCES;
+                            break;
+                        }
+                    }
                     int aerr = agent_check_access(me, CAP_SOCKET_CONNECT, un->sun_path, "connect");
                     if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                } else if (un->sun_family == 2) { /* AF_INET */
+                    agent_t* ag = agent_get_by_id(me->agent_id);
+                    if (!ag || (!(ag->caps.mask & (CAP_NET_RAW_INET | CAP_NET_HTTP)))) {
+                        agent_audit_log(me->agent_id, AUDIT_EVENT_DENIED, "AF_INET connect denied: missing CAP_NET_*");
+                        regs->eax = (uint32_t) -EACCES;
+                        break;
+                    }
                 }
             }
 
@@ -3893,6 +4008,20 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
             int ret = socket_getsockopt((socket_t*) of->sock, level, optname, optval, u_optlen);
             regs->eax = (uint32_t) ret;
+            break;
+        }
+
+        case 46: /* SYS_SENDMSG */
+        case 47: /* SYS_RECVMSG */ {
+            /* SCM_RIGHTS / ancillary data passing is unsupported; return -EOPNOTSUPP */
+            regs->eax = (uint32_t) -EOPNOTSUPP;
+            break;
+        }
+
+        case 86:  /* SYS_LINK */
+        case 265: /* SYS_LINKAT */ {
+            /* Hard links are not supported on FAT16 */
+            regs->eax = (uint32_t) -EPERM;
             break;
         }
 
@@ -4191,6 +4320,15 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
+        case 1099: {
+            /* Debug syscall: test kernel stack overflow & guard page fault */
+            serial_printf("[kstack-test] Invoking stack overflow recursion on PID %d...\n",
+                          me_syscall_proc ? me_syscall_proc->pid : -1);
+            trigger_stack_overflow(1);
+            regs->eax = 0;
+            break;
+        }
+
         default: {
             process_t* me = scheduler_current();
             uint64_t nr = regs->eax;
@@ -4233,6 +4371,8 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
     }
+
+    if (me_syscall_proc) me_syscall_proc->current_syscall = 0;
 
     agent_killswitch_check_deferred();
 
