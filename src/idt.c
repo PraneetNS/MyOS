@@ -4,6 +4,8 @@
 #include "serial.h"
 #include "scheduler.h"
 #include "signal.h"
+#include "kstack.h"
+#include "kmutex.h"
 
 /* 16-byte IDT Gate Descriptor on x86-64 */
 struct idt_entry64 {
@@ -133,12 +135,53 @@ static const char* exception_messages[32] = {
 };
 
 void isr_handler(struct registers* regs) {
+    if (regs->int_no == 1) {
+        process_t* cur_p = scheduler_current();
+        serial_printf("\n*** HARDWARE WATCHPOINT HIT at rip=%016lx rsp=%016lx rbp=%016lx rax=%016lx rbx=%016lx rdx=%016lx rsi=%016lx rdi=%016lx (pid=%d %s) ***\n",
+                      regs->rip, regs->rsp, regs->rbp, regs->rax, regs->rbx, regs->rdx, regs->rsi, regs->rdi,
+                      cur_p ? cur_p->pid : -1, cur_p ? cur_p->name : "none");
+        if (regs->rsp >= 0xffff800000000000ULL) {
+            uint64_t* stk = (uint64_t*) regs->rsp;
+            serial_printf("Stack dump at %p:\n", stk);
+            for (int i = 0; i < 16; i++) {
+                serial_printf("  [+%02x] %016lx\n", i * 8, stk[i]);
+            }
+        }
+        /* Disable watchpoint so we can continue */
+        asm volatile ("mov %0, %%dr7" : : "r"(0ULL));
+        asm volatile ("mov %0, %%dr6" : : "r"(0ULL));
+        return;
+    }
+
     if (interrupt_handlers[regs->int_no] != 0) {
         interrupt_handlers[regs->int_no](regs);
         if ((regs->cs & 0x3) == 3) {
             signal_handle_pending(regs);
         }
         return;
+    }
+
+    if (regs->int_no == 8) {
+        process_t* cur_p = scheduler_current();
+        uint64_t cr2 = 0;
+        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+        if (cur_p && (is_kstack_guard_fault(cr2, cur_p) || is_kstack_guard_fault(regs->rsp, cur_p) ||
+            (regs->rsp >= (uint64_t)cur_p->kernel_stack_base - 8192 && regs->rsp <= (uint64_t)cur_p->kernel_stack_base + 512))) {
+            if (kmutex_any_held_by_current()) {
+                serial_printf("*** KERNEL PANIC: kernel stack overflow in pid %d (syscall %lu) with locks held! ***\n",
+                              cur_p->pid, (unsigned long)cur_p->current_syscall);
+                kprintf("\n*** KERNEL PANIC: kernel stack overflow in pid %d (syscall %lu) with locks held! ***\nSystem halted.\n",
+                        cur_p->pid, (unsigned long)cur_p->current_syscall);
+                asm volatile ("cli");
+                for (;;) asm volatile ("hlt");
+            }
+            serial_printf("kernel stack overflow in pid %d (syscall %lu)\n",
+                          cur_p->pid, (unsigned long)cur_p->current_syscall);
+            kprintf("kernel stack overflow in pid %d (syscall %lu)\n",
+                    cur_p->pid, (unsigned long)cur_p->current_syscall);
+            scheduler_exit_current(139);
+            return;
+        }
     }
 
     int from_usermode = (regs->cs & 0x3) == 3;
@@ -162,6 +205,21 @@ void isr_handler(struct registers* regs) {
         return;
     }
 
+    process_t* cur_p = scheduler_current();
+    serial_printf("*** KERNEL PANIC: %s (vec=%lu, err=0x%lx, rip=0x%lx, pid=%d (%s))\n",
+                  (regs->int_no < 32) ? exception_messages[regs->int_no] : "Unknown",
+                  (unsigned long)regs->int_no, (unsigned long)regs->err_code, (unsigned long)regs->rip,
+                  cur_p ? cur_p->pid : -1, cur_p ? cur_p->name : "none");
+    serial_printf("Registers: rax=%016lx rbx=%016lx rcx=%016lx rdx=%016lx rsi=%016lx rdi=%016lx rbp=%016lx rsp=%016lx r8=%016lx r9=%016lx r10=%016lx r11=%016lx r12=%016lx r13=%016lx r14=%016lx r15=%016lx\n",
+                  regs->rax, regs->rbx, regs->rcx, regs->rdx, regs->rsi, regs->rdi, regs->rbp, regs->rsp,
+                  regs->r8, regs->r9, regs->r10, regs->r11, regs->r12, regs->r13, regs->r14, regs->r15);
+    if (regs->rsp >= 0xffff800000000000ULL) {
+        uint64_t* stk = (uint64_t*) regs->rsp;
+        serial_printf("Stack dump at %p:\n", stk);
+        for (int i = 0; i < 16; i++) {
+            serial_printf("  [+%02x] %016lx\n", i * 8, stk[i]);
+        }
+    }
     kprintf("\n*** KERNEL PANIC: %s (vec=%lu, err=0x%lx, rip=0x%lx) ***\nSystem halted.\n",
             (regs->int_no < 32) ? exception_messages[regs->int_no] : "Unknown",
             (unsigned long)regs->int_no, (unsigned long)regs->err_code, (unsigned long)regs->rip);
@@ -172,7 +230,16 @@ void isr_handler(struct registers* regs) {
     for (;;) asm volatile ("hlt");
 }
 
+int in_interrupt(void) {
+    process_t* cur = scheduler_current();
+    if (!cur) return 0;
+    return cur->in_interrupt > 0;
+}
+
 void irq_handler(struct registers* regs) {
+    process_t* cur = scheduler_current();
+    if (cur) cur->in_interrupt++;
+
     if (regs->int_no >= 40)
         outb(0xA0, 0x20);
     outb(0x20, 0x20);
@@ -183,4 +250,5 @@ void irq_handler(struct registers* regs) {
     if ((regs->cs & 0x3) == 3) {
         signal_handle_pending(regs);
     }
+    if (cur) cur->in_interrupt--;
 }
