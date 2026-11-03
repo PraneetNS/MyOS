@@ -98,6 +98,9 @@ int sig_send_pid(int pid, int sig) {
     if (pid > 0) {
         process_t* p = process_find_by_pid(pid);
         if (!p) return -ESRCH;
+        if (me && me->agent_id > 0 && p->agent_id != me->agent_id) {
+            return -EPERM;
+        }
         if (sig == 0) return 0;
         return sig_send(p, sig);
     }
@@ -107,6 +110,7 @@ int sig_send_pid(int pid, int sig) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* p = process_table_entry(i);
         if (!p || p->state == PROC_UNUSED || p->state == PROC_ZOMBIE) continue;
+        if (me && me->agent_id > 0 && p->agent_id != me->agent_id) continue;
 
         if (pid == -1) {
             if (p->pid > 1) {
