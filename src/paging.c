@@ -11,6 +11,8 @@
 #include "vfs.h"
 #include "signal.h"
 #include "tmpfs.h"
+#include "kstack.h"
+#include "kmutex.h"
 
 extern void paging_flush(uint64_t pml4_phys);
 extern void invlpg_page(uint64_t vaddr);
@@ -33,6 +35,23 @@ static void page_fault_handler(struct registers* regs) {
     int from_usermode = (regs->cs & 0x3) == 3;
     uint64_t err = regs->err_code;
     process_t* proc = scheduler_current();
+
+    if (proc && is_kstack_guard_fault(faulting_addr, proc)) {
+        if (kmutex_any_held_by_current()) {
+            serial_printf("*** KERNEL PANIC: kernel stack overflow in pid %d (syscall %lu) with locks held! ***\n",
+                          proc->pid, (unsigned long)proc->current_syscall);
+            kprintf("\n*** KERNEL PANIC: kernel stack overflow in pid %d (syscall %lu) with locks held! ***\nSystem halted.\n",
+                    proc->pid, (unsigned long)proc->current_syscall);
+            asm volatile ("cli");
+            for (;;) asm volatile ("hlt");
+        }
+        serial_printf("kernel stack overflow in pid %d (syscall %lu)\n",
+                      proc->pid, (unsigned long)proc->current_syscall);
+        kprintf("kernel stack overflow in pid %d (syscall %lu)\n",
+                proc->pid, (unsigned long)proc->current_syscall);
+        scheduler_exit_current(139);
+        return;
+    }
 
     int in_uaccess = ((uint64_t)regs->rip >= (uint64_t)copy_user_start && (uint64_t)regs->rip < (uint64_t)copy_user_end) ||
                      ((uint64_t)regs->rip >= (uint64_t)copy_user_start2 && (uint64_t)regs->rip < (uint64_t)copy_user_end2);
