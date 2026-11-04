@@ -435,6 +435,7 @@ int agent_create_kernel(const char* name, const agent_caps_t* caps, const agent_
         }
     }
     ag->budget = *budget;
+    if (ag->budget.max_threads == 0) ag->budget.max_threads = 16;
     ag->usage.cpu_ticks = 0;
     ag->usage.mem_pages = 0;
     ag->usage.procs_count = 0;
@@ -473,7 +474,11 @@ int agent_attach_proc(int agent_id, process_t* p) {
     }
 
     p->agent_id = agent_id;
+    if (p->group) {
+        p->group->agent_id = agent_id;
+    }
     ag->usage.procs_count++;
+    ag->usage.threads_count++;
     kmutex_unlock(&s_agent_lock);
 
     agent_audit_log(agent_id, AUDIT_EVENT_SYSCALL_ALLOWED_SENSITIVE, "attach_proc");
@@ -627,12 +632,44 @@ int agent_can_fork(int agent_id) {
     return 1;
 }
 
+int agent_can_clone_thread(int agent_id) {
+    if (agent_id <= 0 || agent_id > MAX_AGENTS) return 1;
+    agent_t* ag = &s_agents[agent_id - 1];
+    if (!ag->in_use) return 1;
+
+    uint32_t limit = ag->budget.max_threads > 0 ? ag->budget.max_threads : 16;
+    if (ag->usage.threads_count >= limit) {
+        agent_audit_log(agent_id, AUDIT_EVENT_BUDGET_EXCEEDED, "clone denied: max_threads exceeded");
+        kprintf("[agent %d] BUDGET EXCEEDED: clone denied, threads %u >= limit %u\n",
+                agent_id, ag->usage.threads_count, limit);
+        return 0;
+    }
+    return 1;
+}
+
+void agent_thread_cloned(int agent_id) {
+    if (agent_id <= 0 || agent_id > MAX_AGENTS) return;
+    agent_t* ag = &s_agents[agent_id - 1];
+    if (!ag->in_use) return;
+    ag->usage.threads_count++;
+}
+
+void agent_thread_exited(int agent_id) {
+    if (agent_id <= 0 || agent_id > MAX_AGENTS) return;
+    agent_t* ag = &s_agents[agent_id - 1];
+    if (!ag->in_use) return;
+    if (ag->usage.threads_count > 0)
+        ag->usage.threads_count--;
+}
+
 void agent_proc_exited(int agent_id) {
     if (agent_id <= 0 || agent_id > MAX_AGENTS) return;
     agent_t* ag = &s_agents[agent_id - 1];
     if (!ag->in_use) return;
     if (ag->usage.procs_count > 0)
         ag->usage.procs_count--;
+    if (ag->usage.threads_count > 0)
+        ag->usage.threads_count--;
 }
 
 int agent_check_access(process_t* p, uint32_t cap_bit, const char* path, const char* op_name) {
