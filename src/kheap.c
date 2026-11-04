@@ -134,71 +134,7 @@ void kheap_init(void) {
 #endif
 }
 
-void* kmalloc(size_t size) {
-    if (size == 0) return 0;
-
-    if (in_interrupt()) {
-        kheap_panic("ILLEGAL: kmalloc called from interrupt context / ISR", 0, (uint64_t)size, 0);
-    }
-
-    size = (size + 15) & ~((size_t)15);
-
-    uint64_t t0 = rdtsc_cycles();
-    uint64_t flags = irq_save();
-
-    block_header_t* block = heap_head;
-    block_header_t* last = 0;
-    int walk_count = 0;
-
-    while (block) {
-        if (++walk_count > 1024) {
-            /* Bound the free-list walk to avoid long interrupt blackout */
-            break;
-        }
-        kheap_verify_block(block);
-        if (block->free && block->size >= size) {
-            size_t min_split = sizeof(block_header_t) + 16 + KHEAP_FOOTER_SIZE;
-            if (block->size >= size + min_split) {
-                block_header_t* remainder =
-                    (block_header_t*)((uint8_t*)block + sizeof(block_header_t) + size + KHEAP_FOOTER_SIZE);
-                remainder->magic = KHEAP_MAGIC_HEAD;
-                remainder->size = block->size - size - sizeof(block_header_t) - KHEAP_FOOTER_SIZE;
-                remainder->req_size = 0;
-                remainder->free = 1;
-                remainder->next = block->next;
-                remainder->prev = block;
-                if (remainder->next) {
-                    remainder->next->prev = remainder;
-                }
-                block->next = remainder;
-                block->size = size;
-            }
-
-            block->free = 0;
-            block->req_size = size;
-            uint32_t* tail = (uint32_t*)((uint8_t*)block + sizeof(block_header_t) + block->size);
-            *tail = KHEAP_MAGIC_TAIL;
-            uint64_t dt = rdtsc_cycles() - t0;
-            if (dt > g_kheap_max_kmalloc_cycles) {
-                g_kheap_max_kmalloc_cycles = dt;
-            }
-            irq_restore(flags);
-            return (void*)((uint8_t*)block + sizeof(block_header_t));
-        }
-        last = block;
-        block = block->next;
-    }
-
-    block = kheap_expand(size, last);
-    if (!block) {
-        uint64_t dt = rdtsc_cycles() - t0;
-        if (dt > g_kheap_max_kmalloc_cycles) {
-            g_kheap_max_kmalloc_cycles = dt;
-        }
-        irq_restore(flags);
-        return 0;
-    }
-
+static void* kheap_allocate_from_block(block_header_t* block, size_t size, uint64_t t0, uint64_t flags) {
     size_t min_split = sizeof(block_header_t) + 16 + KHEAP_FOOTER_SIZE;
     if (block->size >= size + min_split) {
         block_header_t* remainder =
@@ -226,6 +162,66 @@ void* kmalloc(size_t size) {
     }
     irq_restore(flags);
     return (void*)((uint8_t*)block + sizeof(block_header_t));
+}
+
+void* kmalloc(size_t size) {
+    if (size == 0) return 0;
+
+    if (in_interrupt()) {
+        kheap_panic("ILLEGAL: kmalloc called from interrupt context / ISR", 0, (uint64_t)size, 0);
+    }
+
+    size = (size + 15) & ~((size_t)15);
+
+    uint64_t t0 = rdtsc_cycles();
+    uint64_t flags = irq_save();
+
+    block_header_t* block = heap_head;
+    block_header_t* last = 0;
+    int walk_count = 0;
+
+    while (block) {
+        if (++walk_count > 1024) {
+            /* Bound the initial free-list walk to avoid long interrupt blackout */
+            break;
+        }
+        kheap_verify_block(block);
+        if (block->free && block->size >= size) {
+            return kheap_allocate_from_block(block, size, t0, flags);
+        }
+        last = block;
+        block = block->next;
+    }
+
+    /* Bound reached without finding a fit:
+     * 1. First try to grow the heap from the actual tail of the heap chain */
+    block_header_t* tail = last ? last : heap_head;
+    while (tail && tail->next) {
+        tail = tail->next;
+    }
+
+    block_header_t* expanded = kheap_expand(size, tail);
+    if (expanded) {
+        return kheap_allocate_from_block(expanded, size, t0, flags);
+    }
+
+    /* 2. Fall back to slower safe path: resume searching remainder of free list
+     * so we never fail an allocation that could succeed even under fragmentation. */
+    while (block) {
+        kheap_verify_block(block);
+        if (block->free && block->size >= size) {
+            return kheap_allocate_from_block(block, size, t0, flags);
+        }
+        block = block->next;
+    }
+
+    /* Truly out of memory */
+    uint64_t dt = rdtsc_cycles() - t0;
+    if (dt > g_kheap_max_kmalloc_cycles) {
+        g_kheap_max_kmalloc_cycles = dt;
+    }
+    irq_restore(flags);
+    return 0;
 }
 
 void kfree(void* ptr) {
@@ -343,6 +339,34 @@ void kheap_selftest(void) {
 
     for (int i = 0; i < TEST_BLOCKS; i++) {
         kfree(ptrs[i]);
+    }
+
+    /* Fragmentation and 1024-walk-bound fallback test */
+    #define FRAG_BLOCKS 1100
+    static void* frag_ptrs[FRAG_BLOCKS];
+    for (int i = 0; i < FRAG_BLOCKS; i++) {
+        frag_ptrs[i] = kmalloc(32);
+        if (!frag_ptrs[i]) {
+            kheap_panic("selftest: frag kmalloc failed", (void*)(uintptr_t)i, 32, 0);
+        }
+    }
+    /* Free block at index 1050 (beyond the 1024 fast-walk bound) */
+    kfree(frag_ptrs[1050]);
+    frag_ptrs[1050] = 0;
+
+    /* Allocate 32 bytes: fast path (1024 blocks) won't find a free block.
+     * kheap will either expand or fall back to safe walk without failing. */
+    void* probe = kmalloc(32);
+    if (!probe) {
+        kheap_panic("selftest: probe alloc beyond 1024 bound failed", 0, 32, 0);
+    }
+    kfree(probe);
+
+    for (int i = 0; i < FRAG_BLOCKS; i++) {
+        if (frag_ptrs[i]) {
+            kfree(frag_ptrs[i]);
+            frag_ptrs[i] = 0;
+        }
     }
 
     kprintf("[ok] Kernel heap self-test passed (canaries, coalescing, dynamic growth)\n");
