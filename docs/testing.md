@@ -29,6 +29,7 @@
 | **Session 21** | Real networking, VirtIO net, TLS, and Agent-Safe Network Gateway | **PASS** |
 | **Session 22** | x86-64 Long Mode, UEFI Boot, >4GB RAM, and CPU Hardening Suite | **PASS** |
 | **Session 23** | Linux ABI Compatibility, Musl Libc, BusyBox, Lua, Python, TCC Self-Hosting | **PASS** |
+| **Session 24** | POSIX Threads, Futex, Signal Routing, and Task Groups | **PASS** |
 
 ---
 
