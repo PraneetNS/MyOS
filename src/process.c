@@ -240,6 +240,7 @@ process_t* process_spawn_from_elf(const char* name, const uint8_t* image, uint64
     }
 
     process_t* p = &table[slot];
+    p->in_interrupt = 0;
     p->as = vmm_create_address_space();
     if (!p->as.pml4) return 0;
 
@@ -355,6 +356,7 @@ void process_destroy(process_t* p) {
     p->waiting_for_pid = -999;
     p->wait_channel = 0;
     p->exit_code = 0;
+    p->in_interrupt = 0;
     p->state = PROC_UNUSED;
 }
 
@@ -376,6 +378,7 @@ process_t* process_fork(process_t* parent, const struct registers* parent_regs) 
     }
 
     process_t* p = &table[slot];
+    p->in_interrupt = 0;
     p->as = vmm_create_address_space();
     if (!p->as.pml4) {
         if (parent->agent_id > 0) agent_proc_exited(parent->agent_id);
