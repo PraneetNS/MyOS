@@ -248,8 +248,25 @@ void rewinddir(DIR *dirp) {
 }
 
 int getdents(int fd, void *dirp, size_t count) {
-    int ret = __syscall3(SYS_GETDENTS, fd, (long)dirp, count);
-    return __check_syscall_err(ret);
+    if (!dirp || count < sizeof(struct dirent)) {
+        errno = EINVAL;
+        return -1;
+    }
+    uint8_t d_buf[512];
+    int nread = __syscall3(SYS_GETDENTS, fd, (long)d_buf, sizeof(d_buf));
+    if (nread < 0) {
+        return __check_syscall_err(nread);
+    }
+    if (nread == 0) {
+        return 0;
+    }
+    struct linux_dirent64* ld = (struct linux_dirent64*) d_buf;
+    struct dirent* out = (struct dirent*) dirp;
+    memset(out, 0, sizeof(*out));
+    out->d_ino = (uint32_t) ld->d_ino;
+    out->d_type = (ld->d_type == 4) ? 2 : 1;
+    strncpy(out->d_name, ld->d_name, sizeof(out->d_name) - 1);
+    return sizeof(struct dirent);
 }
 
 /* Signals */
