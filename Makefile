@@ -13,7 +13,7 @@ OBJS = boot/boot.o boot/gdt_flush.o boot/idt_flush.o boot/isr.o boot/paging_asm.
        boot/usermode_asm.o boot/task_switch.o boot/resume_state.o boot/uaccess.o \
        boot/syscall_entry.o \
        src/kernel.o src/console.o src/font.o src/gdt.o src/idt.o src/timer.o src/keyboard.o \
-       src/pmm.o src/paging.o src/kheap.o src/kstack.o src/tss.o src/syscall.o \
+       src/pmm.o src/paging.o src/kheap.o src/kstack.o src/tss.o src/syscall.o src/futex.o \
        src/ata.o src/fs.o src/elf.o src/shell.o src/vmm.o src/vma.o \
        src/process.o src/scheduler.o src/kmutex.o src/pipe.o src/serial.o src/bcache.o src/vfs.o src/fat16.o \
        src/tty.o src/devfs.o src/signal.o src/rtc.o src/procfs.o src/fpu.o \
