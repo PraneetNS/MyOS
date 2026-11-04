@@ -38,3 +38,4 @@ int futex_wake(uint32_t* uaddr, int count, uint32_t bitset);
 void futex_handle_thread_exit(struct process* p);
 
 #endif
+
