@@ -2,7 +2,9 @@
 #include "process.h"
 #include "scheduler.h"
 #include "timer.h"
+#include "rtc.h"
 #include "paging.h"
+#include "vmm.h"
 #include "serial.h"
 #include "uaccess.h"
 #include "signal.h"
@@ -15,6 +17,7 @@ typedef struct futex_waiter {
     struct process* task;
     uint32_t* uaddr;
     uint64_t as_pml4;
+    uint64_t phys_addr;
     uint32_t bitset;
     int active;
     int woken;
@@ -24,8 +27,9 @@ typedef struct futex_waiter {
 static futex_waiter_t waiter_pool[MAX_FUTEX_WAITERS];
 static futex_waiter_t* futex_buckets[FUTEX_HASH_SIZE];
 
-static inline uint32_t futex_hash(uint32_t* uaddr, uint64_t as_pml4) {
-    uint64_t v = ((uint64_t)uaddr) ^ (as_pml4 >> 12);
+static inline uint32_t futex_hash(uint32_t* uaddr, uint64_t as_pml4, uint64_t phys_addr) {
+    uint64_t key = (phys_addr != 0) ? phys_addr : (((uint64_t)uaddr) ^ (as_pml4 >> 12));
+    uint64_t v = key;
     v = (~v) + (v << 18);
     v = v ^ (v >> 31);
     v = v * 21;
@@ -70,14 +74,21 @@ int futex_wake(uint32_t* uaddr, int count, uint32_t bitset) {
     process_t* cur = scheduler_current();
     if (!cur) return 0;
     uint64_t as_pml4 = (uint64_t)(uintptr_t)cur->as.pml4;
+    uint64_t phys_addr = vmm_virt_to_phys(&cur->as, (uint64_t)uaddr);
 
-    uint32_t h = futex_hash(uaddr, as_pml4);
+    uint32_t h = futex_hash(uaddr, as_pml4, phys_addr);
     futex_waiter_t** curr = &futex_buckets[h];
     int woken_count = 0;
 
     while (*curr && woken_count < count) {
         futex_waiter_t* w = *curr;
-        if (w->uaddr == uaddr && w->as_pml4 == as_pml4 && (w->bitset & bitset)) {
+        int match = 0;
+        if (phys_addr != 0 && w->phys_addr != 0) {
+            match = (w->phys_addr == phys_addr);
+        } else {
+            match = (w->uaddr == uaddr && w->as_pml4 == as_pml4);
+        }
+        if (match && (w->bitset & bitset)) {
             *curr = w->next;
             w->woken = 1;
             if (w->task) {
@@ -122,13 +133,15 @@ int sys_futex(uint32_t* uaddr, int op, uint32_t val, const struct timespec* time
         futex_waiter_t* w = alloc_waiter();
         if (!w) return -ENOMEM;
 
+        uint64_t phys_addr = vmm_virt_to_phys(&cur->as, (uint64_t)uaddr);
         w->task = cur;
         w->uaddr = uaddr;
         w->as_pml4 = as_pml4;
+        w->phys_addr = phys_addr;
         w->bitset = bitset;
         w->woken = 0;
 
-        uint32_t h = futex_hash(uaddr, as_pml4);
+        uint32_t h = futex_hash(uaddr, as_pml4, phys_addr);
         w->next = futex_buckets[h];
         futex_buckets[h] = w;
 
@@ -152,14 +165,37 @@ int sys_futex(uint32_t* uaddr, int op, uint32_t val, const struct timespec* time
                     cur->wait_channel = 0;
                     return -EINVAL;
                 }
-                uint32_t delta_ticks = (uint32_t)((ts.tv_sec * 100) + (ts.tv_nsec / 10000000L));
                 if (op & FUTEX_CLOCK_REALTIME) {
-                    /* Absolute timeout */
-                    deadline = delta_ticks;
+                    /* Absolute timeout in CLOCK_REALTIME */
+                    uint64_t boot_epoch = rtc_get_boot_epoch();
+                    if ((uint64_t)ts.tv_sec < boot_epoch) {
+                        deadline = timer_get_ticks();
+                    } else {
+                        uint64_t diff_sec = (uint64_t)ts.tv_sec - boot_epoch;
+                        deadline = (uint32_t)(diff_sec * 100ULL + ((uint64_t)ts.tv_nsec + 9999999ULL) / 10000000ULL);
+                    }
+                } else if (cmd == FUTEX_WAIT_BITSET) {
+                    /* Absolute timeout in CLOCK_MONOTONIC */
+                    deadline = (uint32_t)((ts.tv_sec * 100ULL) + ((uint64_t)ts.tv_nsec + 9999999ULL) / 10000000ULL);
                 } else {
                     /* Relative timeout */
+                    uint32_t delta_ticks = (uint32_t)(ts.tv_sec * 100 + (ts.tv_nsec + 9999999L) / 10000000L);
                     deadline = timer_get_ticks() + delta_ticks;
                 }
+
+                if (deadline <= timer_get_ticks()) {
+                    /* Timeout already expired in the past */
+                    futex_waiter_t** pcur = &futex_buckets[h];
+                    while (*pcur) {
+                        if (*pcur == w) { *pcur = w->next; break; }
+                        pcur = &(*pcur)->next;
+                    }
+                    free_waiter(w);
+                    cur->state = PROC_READY;
+                    cur->wait_channel = 0;
+                    return -ETIMEDOUT;
+                }
+
                 has_timeout = 1;
                 timer_sleep_enqueue(cur, deadline);
             }
@@ -180,7 +216,8 @@ int sys_futex(uint32_t* uaddr, int op, uint32_t val, const struct timespec* time
         }
 
         /* Unlink if still present in bucket */
-        futex_waiter_t** pcur = &futex_buckets[h];
+        uint32_t cur_h = futex_hash(w->uaddr, w->as_pml4, w->phys_addr);
+        futex_waiter_t** pcur = &futex_buckets[cur_h];
         while (*pcur) {
             if (*pcur == w) {
                 *pcur = w->next;
@@ -232,15 +269,24 @@ int sys_futex(uint32_t* uaddr, int op, uint32_t val, const struct timespec* time
         uint32_t max_requeue = (uint32_t)(uintptr_t)timeout;
         uint32_t requeued = 0;
 
-        uint32_t h1 = futex_hash(uaddr, as_pml4);
-        uint32_t h2 = futex_hash(uaddr2, as_pml4);
+        uint64_t phys1 = vmm_virt_to_phys(&cur->as, (uint64_t)uaddr);
+        uint64_t phys2 = vmm_virt_to_phys(&cur->as, (uint64_t)uaddr2);
+        uint32_t h1 = futex_hash(uaddr, as_pml4, phys1);
+        uint32_t h2 = futex_hash(uaddr2, as_pml4, phys2);
 
         futex_waiter_t** curr = &futex_buckets[h1];
         while (*curr && requeued < max_requeue) {
             futex_waiter_t* w = *curr;
-            if (w->uaddr == uaddr && w->as_pml4 == as_pml4) {
+            int match = 0;
+            if (phys1 != 0 && w->phys_addr != 0) {
+                match = (w->phys_addr == phys1);
+            } else {
+                match = (w->uaddr == uaddr && w->as_pml4 == as_pml4);
+            }
+            if (match) {
                 *curr = w->next;
                 w->uaddr = uaddr2;
+                w->phys_addr = phys2;
                 if (w->task) w->task->wait_channel = uaddr2;
                 w->next = futex_buckets[h2];
                 futex_buckets[h2] = w;
