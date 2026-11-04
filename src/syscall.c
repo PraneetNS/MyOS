@@ -4100,14 +4100,23 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_ATTACH: {
-            int agent_id = (int) regs->ebx;
             process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
+            int agent_id = (int) regs->ebx;
             int ret = agent_attach_proc(agent_id, me);
             regs->eax = (uint32_t) ret;
             break;
         }
 
         case SYS_AGENT_KILL: {
+            process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int agent_id = (int) regs->ebx;
             int ret = agent_kill_kernel(agent_id);
             regs->eax = (uint32_t) ret;
@@ -4115,6 +4124,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_SUSPEND: {
+            process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int agent_id = (int) regs->ebx;
             int ret = agent_suspend_kernel(agent_id);
             regs->eax = (uint32_t) ret;
@@ -4122,6 +4136,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_RESUME: {
+            process_t* me = scheduler_current();
+            if (me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int agent_id = (int) regs->ebx;
             int ret = agent_resume_kernel(agent_id);
             regs->eax = (uint32_t) ret;
@@ -4129,7 +4148,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_INFO: {
+            process_t* me = scheduler_current();
             int agent_id = (int) regs->ebx;
+            if (me->agent_id > 0 && agent_id != me->agent_id) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             void* uinfo = (void*) regs->ecx;
 
             int version = 5;
@@ -4232,7 +4256,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AUDIT_APPEND: {
+            process_t* me = scheduler_current();
             int agent_id = (int) regs->ebx;
+            if (me->agent_id > 0 && agent_id != me->agent_id) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             uint32_t event_type = (uint32_t) regs->ecx;
             const char* udetail = (const char*) regs->edx;
 
@@ -4261,7 +4290,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_TOKENS_LEFT: {
+            process_t* me = scheduler_current();
             int agent_id = (int) regs->ebx;
+            if (me->agent_id > 0 && agent_id != me->agent_id) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int ret = agent_tokens_left(agent_id);
             regs->eax = (uint32_t) ret;
             break;
@@ -4275,6 +4309,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_KILLSWITCH_STATE: {
+            process_t* me = scheduler_current();
+            if (regs->ebx == 1 && me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int ret;
             if (regs->ebx == 1) {
                 ret = agent_killswitch_toggle();
@@ -4294,7 +4333,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_NET_LEFT: {
+            process_t* me = scheduler_current();
             int agent_id = (int) regs->ebx;
+            if (me->agent_id > 0 && agent_id != me->agent_id) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int ret = agent_net_left(agent_id);
             regs->eax = (uint32_t) ret;
             break;
@@ -4307,7 +4351,13 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
+#if defined(MYOS_TESTING) && MYOS_TESTING
         case SYS_TEST_HARDENING: {
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint64_t) -EPERM;
+                break;
+            }
             int type = (int) regs->ebx;
             void* ptr = (void*) regs->ecx;
             if (type == 1) {
@@ -4321,6 +4371,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case 1099: {
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint64_t) -EPERM;
+                break;
+            }
             /* Debug syscall: test kernel stack overflow & guard page fault */
             serial_printf("[kstack-test] Invoking stack overflow recursion on PID %d...\n",
                           me_syscall_proc ? me_syscall_proc->pid : -1);
@@ -4328,6 +4383,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             regs->eax = 0;
             break;
         }
+#endif
 
         default: {
             process_t* me = scheduler_current();
