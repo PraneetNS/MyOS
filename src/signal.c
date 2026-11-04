@@ -222,6 +222,13 @@ void signal_handle_pending(struct registers* regs) {
                   sig, me->pid, sa->sa_handler);
 
     uint64_t sp = regs->rsp;
+    if ((sa->sa_flags & SA_ONSTACK) && me->sigaltstack.ss_sp && !(me->sigaltstack.ss_flags & SS_DISABLE)) {
+        uint64_t ss_start = (uint64_t) me->sigaltstack.ss_sp;
+        uint64_t ss_end = ss_start + me->sigaltstack.ss_size;
+        if (regs->rsp < ss_start || regs->rsp >= ss_end) {
+            sp = ss_end;
+        }
+    }
     sp -= sizeof(struct sigframe);
     sp &= ~15ULL; /* 16-byte align */
 
