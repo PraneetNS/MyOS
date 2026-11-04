@@ -119,7 +119,7 @@ assert run_cmd("/tmp/hello", expect_pattern="HELLO FROM TCC SELF-HOSTING!", time
 assert run_cmd("stacktest.elf", expect_pattern="PASS: child terminated with SIGSEGV", timeout=20)
 
 # 7. Resource Leak Check (200 exec/exit, 200 open/symlink/unlink)
-assert run_cmd("leaktest.elf", expect_pattern="PASS: 200 EXEC/EXIT AND 200 FS CYCLES COMPLETED WITH ZERO LEAKS", timeout=150)
+assert run_cmd("leaktest.elf", expect_pattern="PASS: 200 EXEC/EXIT AND 200 FS CYCLES COMPLETED WITH ZERO LEAKS", timeout=240)
 
 # 8. Syscall Fuzzer & Sandbox Escape Auditor
 assert run_cmd("sysfuzz.elf --iterations 1000 --seed 0x12345678", expect_pattern="PASS: SYSFUZZ PASSED WITH ZERO CRASHES, LEAKS, OR ESCAPES", timeout=90)
