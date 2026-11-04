@@ -99,6 +99,7 @@ typedef struct {
     uint32_t max_cpu_ticks;    /* 0 = unlimited */
     uint32_t max_mem_pages;    /* 0 = unlimited */
     uint32_t max_procs;        /* 0 = unlimited */
+    uint32_t max_threads;      /* 0 = default 16 */
     uint32_t max_tokens;       /* 0 = unlimited */
     uint32_t max_net_bytes;    /* 0 = unlimited */
 } agent_budget_t;
@@ -107,6 +108,7 @@ typedef struct {
     uint32_t cpu_ticks;        /* Total CPU ticks consumed */
     uint32_t mem_pages;        /* Allocated memory pages */
     uint32_t procs_count;      /* Active processes in this agent */
+    uint32_t threads_count;    /* Active threads in this agent */
     uint32_t tokens_used;      /* Counter charged by model daemon */
     uint32_t net_bytes_used;   /* Counter charged by net daemon */
 } agent_usage_t;
@@ -177,6 +179,9 @@ int agent_check_mem(int agent_id, uint32_t additional_pages);
 void agent_charge_mem(int agent_id, uint32_t pages);
 void agent_uncharge_mem(int agent_id, uint32_t pages);
 int agent_can_fork(int agent_id);
+int agent_can_clone_thread(int agent_id);
+void agent_thread_cloned(int agent_id);
+void agent_thread_exited(int agent_id);
 void agent_proc_exited(int agent_id);
 int agent_check_access(struct process* p, uint32_t cap_bit, const char* path, const char* op_name);
 int agent_is_runnable(int agent_id);
