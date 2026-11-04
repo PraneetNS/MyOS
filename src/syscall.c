@@ -716,6 +716,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                             agent_thread_exited(other->agent_id);
                             other->agent_id = 0;
                         }
+                        other->exit_code = status;
                         other->state = PROC_ZOMBIE;
                     }
                 }
@@ -2054,6 +2055,13 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 regs->eax = (uint32_t) -EBADF;
                 break;
             }
+            if (me->agent_id > 0) {
+                open_file_t* of = me->fds[fd];
+                if (of->type == OPEN_FILE_VNODE && of->path[0]) {
+                    int aerr = agent_check_access(me, CAP_FS_WRITE, of->path, "fchmod_fchown");
+                    if (aerr < 0) { regs->eax = (uint32_t) aerr; break; }
+                }
+            }
             regs->eax = 0;
             break;
         }
@@ -2432,9 +2440,9 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case __NR_rt_sigtimedwait: {
-            const sigset_t* uthese = (const sigset_t*) regs->ebx;
+            const void* uthese = (const void*) regs->ebx;
             size_t sigsetsize = (size_t) regs->esi;
-            if (sigsetsize != sizeof(sigset_t)) { regs->eax = (uint64_t) -EINVAL; break; }
+            if (sigsetsize < sizeof(sigset_t)) { regs->eax = (uint64_t) -EINVAL; break; }
             if (validate_user_buffer(uthese, sizeof(sigset_t), 0) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
             sigset_t these = 0;
             copy_from_user(&these, uthese, sizeof(sigset_t));
@@ -3251,6 +3259,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
 
+            if (me->agent_id > 0 && target->agent_id != me->agent_id) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
+
             if (target != me && target->ppid != me->pid) {
                 regs->eax = (uint32_t) -ESRCH;
                 break;
@@ -3261,6 +3274,14 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 break;
             }
             if (pgid == 0) pgid = target->pid;
+
+            if (me->agent_id > 0) {
+                process_t* pleader = process_find_by_pid(pgid);
+                if (!pleader || pleader->agent_id != me->agent_id) {
+                    regs->eax = (uint32_t) -EPERM;
+                    break;
+                }
+            }
 
             target->pgid = pgid;
             regs->eax = 0;
@@ -3404,9 +3425,19 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             if (clk_id == CLOCK_REALTIME) {
                 ktp.tv_sec = rtc_get_boot_epoch() + (ticks / 100u);
                 ktp.tv_nsec = (ticks % 100u) * 10000000u;
-            } else if (clk_id == CLOCK_MONOTONIC) {
+            } else if (clk_id == CLOCK_MONOTONIC || clk_id == 4 /* CLOCK_MONOTONIC_RAW */ || clk_id == 7 /* CLOCK_BOOTTIME */) {
                 ktp.tv_sec = ticks / 100u;
                 ktp.tv_nsec = (ticks % 100u) * 10000000u;
+            } else if (clk_id == 2 /* CLOCK_PROCESS_CPUTIME_ID */) {
+                process_t* cur = scheduler_current();
+                uint32_t pticks = (cur && cur->group) ? cur->group->cpu_ticks_total : (cur ? cur->cpu_ticks : 0);
+                ktp.tv_sec = pticks / 100u;
+                ktp.tv_nsec = (pticks % 100u) * 10000000u;
+            } else if (clk_id == 3 /* CLOCK_THREAD_CPUTIME_ID */) {
+                process_t* cur = scheduler_current();
+                uint32_t tticks = cur ? cur->cpu_ticks : 0;
+                ktp.tv_sec = tticks / 100u;
+                ktp.tv_nsec = (tticks % 100u) * 10000000u;
             } else {
                 regs->eax = (uint32_t) -EINVAL;
                 break;
@@ -4417,6 +4448,10 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
         case SYS_BUS_DAEMON_REGISTER: {
             process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int ret = agent_bus_daemon_register(me);
             regs->eax = (uint32_t) ret;
             break;
@@ -4449,6 +4484,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_CHARGE_TOKENS: {
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int agent_id = (int) regs->ebx;
             uint32_t tokens = (uint32_t) regs->ecx;
             int ret = agent_charge_tokens(agent_id, tokens);
@@ -4470,6 +4510,10 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
         case SYS_MODEL_DAEMON_REGISTER: {
             process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int ret = agent_model_daemon_register(me);
             regs->eax = (uint32_t) ret;
             break;
@@ -4492,6 +4536,11 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case SYS_AGENT_CHARGE_NET: {
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int agent_id = (int) regs->ebx;
             uint32_t bytes = (uint32_t) regs->ecx;
             int ret = agent_charge_net(agent_id, bytes);
@@ -4513,6 +4562,10 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
         case SYS_NET_DAEMON_REGISTER: {
             process_t* me = scheduler_current();
+            if (me && me->agent_id > 0) {
+                regs->eax = (uint32_t) -EPERM;
+                break;
+            }
             int ret = agent_net_daemon_register(me);
             regs->eax = (uint32_t) ret;
             break;
