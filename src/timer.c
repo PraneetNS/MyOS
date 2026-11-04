@@ -57,6 +57,9 @@ static void timer_callback(struct registers* regs) {
     process_t* cur = scheduler_current();
     if (cur && !cur->is_kernel_task) {
         cur->cpu_ticks++;
+        if (cur->group) {
+            cur->group->cpu_ticks_total++;
+        }
         if (cur->agent_id > 0) {
             agent_charge_cpu(cur->agent_id, 1);
         }
