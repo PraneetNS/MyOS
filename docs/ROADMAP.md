@@ -33,6 +33,10 @@ Welcome to the MyOS project roadmap! This document outlines upcoming milestones 
     - Per-CPU runqueues and load balancing: scheduler queues protected by individual per-CPU runqueue locks, eliminating global scheduler lock contention.
 - **NVMe / AHCI Storage**: Native PCIe NVMe block storage driver replacing legacy ATA PIO.
 - **Hardware Virtualization Hypervisor Support**: Hardware-assisted ring virtualization (VT-x / AMD-V) for strict agent isolation.
+- **Phase 10: Native Filesystem with Real Permissions and Snapshots**:
+  - **Undoable Agent Actions**: Transactional CoW (copy-on-write) filesystem enabling instant atomic rollback for every mutating agent action.
+  - **POSIX Inode Model & Permissions**: Real UID/GID ownership, permission bitmasks (`rwxrwxrwx`), file extended attributes.
+  - **Hard Link Cross-Boundary Re-testing**: **Re-test hard links when native FS lands**; verify that hard links across agent sandbox boundary cannot bypass path prefix capability rules or leak inode access (FAT16 currently rejects `sys_link`/`sys_linkat` with `-EPERM`).
 
 ---
 
