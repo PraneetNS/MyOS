@@ -225,6 +225,30 @@ int vmm_clone_user_pages(address_space_t* dst, address_space_t* src, vma_t* vma_
     return 0;
 }
 
+uint64_t vmm_virt_to_phys(address_space_t* as, uint64_t vaddr) {
+    if (!as || !as->pml4) return 0;
+
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FFULL;
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FFULL;
+    uint64_t pd_idx   = (vaddr >> 21) & 0x1FFULL;
+    uint64_t pt_idx   = (vaddr >> 12) & 0x1FFULL;
+
+    if (pml4_idx >= 256) return 0;
+
+    if (!(as->pml4[pml4_idx] & PAGE_PRESENT)) return 0;
+    uint64_t* pdpt = (uint64_t*) P2V(as->pml4[pml4_idx] & ~0xFFFULL);
+
+    if (!(pdpt[pdpt_idx] & PAGE_PRESENT)) return 0;
+    uint64_t* pd = (uint64_t*) P2V(pdpt[pdpt_idx] & ~0xFFFULL);
+
+    if (!(pd[pd_idx] & PAGE_PRESENT)) return 0;
+    uint64_t* pt = (uint64_t*) P2V(pd[pd_idx] & ~0xFFFULL);
+
+    if (!(pt[pt_idx] & PAGE_PRESENT)) return 0;
+    uint64_t frame_phys = pt[pt_idx] & ~0xFFFULL & ~(1ULL << 63);
+    return frame_phys | (vaddr & 0xFFFULL);
+}
+
 void vmm_switch(address_space_t* as) {
     asm volatile ("mov %0, %%cr3" : : "r"(as->pml4_phys) : "memory");
 }
