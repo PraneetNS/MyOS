@@ -46,3 +46,4 @@ EOF
 
 echo "Successfully generated docs/testing.md:"
 cat docs/testing.md
+
