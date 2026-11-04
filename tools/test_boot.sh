@@ -1398,6 +1398,10 @@ echo "[TEST] Session 23: Linux ABI Compatibility, Musl Libc, BusyBox, Lua, Pytho
 bash tools/test_session23.sh || { echo "FAIL: Session 23 failed"; exit 1; }
 pass_session "23" "Linux ABI Compatibility, Musl Libc, BusyBox, Lua, Python, TCC Self-Hosting"
 
+echo "[TEST] Session 24: POSIX Threads, Futex, Signal Routing, and Task Groups..."
+bash tools/test_session24.sh || { echo "FAIL: Session 24 failed"; exit 1; }
+pass_session "24" "POSIX Threads, Futex, Signal Routing, and Task Groups"
+
 echo ""
 echo "============================================================"
 echo "ONE-LINE-PER-SESSION SUMMARY"
