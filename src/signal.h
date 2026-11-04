@@ -42,9 +42,19 @@ typedef uint64_t sigset_t;
 #define SIG_SETMASK 2
 
 #define SA_NOCLDSTOP 0x00000001
+#define SA_ONSTACK   0x08000000
 #define SA_RESTORER  0x04000000
 #define SA_RESTART   0x10000000
 #define SA_NODEFER   0x40000000
+
+#define SS_ONSTACK   1
+#define SS_DISABLE   2
+
+typedef struct {
+    void*  ss_sp;
+    int    ss_flags;
+    size_t ss_size;
+} stack_t;
 
 struct sigaction {
     void (*sa_handler)(int);
