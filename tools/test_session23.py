@@ -122,7 +122,7 @@ assert run_cmd("stacktest.elf", expect_pattern="PASS: child terminated with SIGS
 assert run_cmd("leaktest.elf", expect_pattern="PASS: 200 EXEC/EXIT AND 200 FS CYCLES COMPLETED WITH ZERO LEAKS", timeout=150)
 
 # 8. Syscall Fuzzer & Sandbox Escape Auditor
-assert run_cmd("sysfuzz.elf 1000", expect_pattern="PASS: SYSFUZZ PASSED WITH ZERO CRASHES, LEAKS, OR ESCAPES", timeout=90)
+assert run_cmd("sysfuzz.elf --iterations 1000 --seed 0x12345678", expect_pattern="PASS: SYSFUZZ PASSED WITH ZERO CRASHES, LEAKS, OR ESCAPES", timeout=90)
 
 print("\n==========================================")
 print("SESSION 23: ALL TESTS PASSED SUCCESSFULLY!")
