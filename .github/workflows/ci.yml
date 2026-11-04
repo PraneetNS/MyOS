@@ -129,6 +129,11 @@ jobs:
         run: |
           ./tools/test_boot.sh
 
+      - name: Nightly High-Volume Syscall Fuzzing (300,000 calls)
+        timeout-minutes: 25
+        run: |
+          python3 tools/test_sysfuzz.py --iterations 300000 --seed 0x1337c0de --timeout 300
+
       - name: Upload Artifacts on Failure
         if: failure()
         uses: actions/upload-artifact@v4
