@@ -33,7 +33,7 @@ Coverage evaluated against the full **Linux 6.1 LTS (x86-64)** syscall table (sy
 | **Musl Libc** | Static binaries | **PASS** | Stdio, malloc/mmap, stat, symlinks, fork, pipes, waitpid, signals |
 | **BusyBox** | 1.36.1 (static musl) | **PASS** | Full suite: ash, sed, awk, sort, uniq, tr, cut, xargs, tar, gzip, find -exec, diff, cp -r, ln -s, chmod, date, etc. |
 | **Lua** | 5.4.6 (static musl) | **PASS** | Full language interpreter, expression evaluation (`6*7 = 42`) |
-| **MicroPython** | MicroPython 3.4.0 unix minimal | **PASS** | Full Python 3 syntax & grammar, AST execution, `sys.version`, standard objects, math |
+| **MicroPython** | MicroPython 3.4.0 unix minimal | **PASS** | Python 3.4-compatible subset, AST execution, `sys.version`, standard objects, math |
 | **TCC (Tiny C Compiler)** | 0.9.28rc (static musl) | **PASS** | **Self-hosting**: compiles `/hello.c` to static ELF64 on MyOS and executes natively |
 
 ### Static CPython Attempt & Analysis
@@ -42,7 +42,7 @@ Coverage evaluated against the full **Linux 6.1 LTS (x86-64)** syscall table (sy
   1. **Binary & Memory Footprint**: A static CPython build with standard builtins exceeds 25MB in binary size and demands 30MB+ of heap during interpreter initialization, plus a 40MB+ standard library folder on disk (`lib/python3.11/`).
   2. **Threading & Concurrency**: CPython initialization strongly expects POSIX thread runtime (`pthread_create`, `futex` robust lists, and `clone(CLONE_THREAD)`).
   3. **Dynamic Extensions**: CPython's module system depends heavily on `dlopen`/`dlsym` for shared libraries.
-- **Architectural Decision**: **MicroPython 3.4.0 unix minimal** was selected and integrated. MicroPython provides complete Python 3 syntax, lexical parsing, AST compilation, and standard language semantics in a lightweight 350KB static binary with zero external library dependencies, booting instantly and operating strictly within MyOS agent memory constraints.
+- **Architectural Decision**: **MicroPython 3.4.0 unix minimal** was selected and integrated. MicroPython provides a Python 3.4-compatible subset (lexical parsing, AST compilation, and core language semantics without full CPython standard library bloat) in a lightweight 350KB static binary with zero external library dependencies, booting instantly and operating strictly within MyOS agent memory constraints.
 
 ---
 
