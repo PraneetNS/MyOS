@@ -16,6 +16,14 @@ LOGFILE18_LOWMEM=$(mktemp)
 LOGFILE19=$(mktemp)
 trap 'kill -9 "$HB_PID" 2>/dev/null || true; rm -f "$LOGFILE1" "$LOGFILE2" "$LOGFILE3" "$LOGFILE6" "$LOGFILE7" "$LOGFILE8" "$LOGFILE15" "$LOGFILE16" "$LOGFILE17" "$LOGFILE18" "$LOGFILE18_LOWMEM" "$LOGFILE19"' EXIT
 
+SESSION_MATRIX=()
+pass_session() {
+    local num="$1"
+    local title="$2"
+    SESSION_MATRIX+=("Session $num | $title | PASS")
+    echo "[PASS] Session $num: $title"
+}
+
 echo "[TEST] Rebuilding disk image..."
 bash tools/build_disk.sh
 
@@ -249,6 +257,7 @@ echo "[PASS] Stage 15 memtest suite verified"
 # PID 1 respawn
 grep -q "respawning sh.elf" "$LOGFILE1" || { echo "FAIL: PID 1 respawn message not found"; exit 1; }
 echo "[PASS] PID 1 respawn on shell exit verified"
+pass_session "1" "Booting and testing commands, VFS, utilities, and regressions"
 
 echo "[TEST] Session 2: Persistence test across QEMU reboot with the SAME disk.img..."
 
@@ -265,7 +274,7 @@ cat "$LOGFILE2"
 
 grep -q "PERSISTENCE_TEST_OK" "$LOGFILE2" || { echo "FAIL: Persistence test failed - content not found after reboot"; exit 1; }
 grep -q "nested_ok" "$LOGFILE2" || { echo "FAIL: Nested dir content not found after reboot"; exit 1; }
-echo "[PASS] Persistence test verified across QEMU reboot"
+pass_session "2" "Persistence test across QEMU reboot with the SAME disk.img"
 
 echo "[TEST] Session 3: Stage 14 IPC, pipes, redirections, pipelines, filters, and stress test..."
 
@@ -348,7 +357,7 @@ echo "[PASS] Large pipeline transfer (70KB through 4KB ring buffer) verified"
 
 # Stress test (50 iterations of fork+pipe+exec+wait with zero leak check)
 grep -q "ALL 50 ITERATIONS PASSED - NO LEAKS!" "$LOGFILE3" || { echo "FAIL: 50-iteration stress test failed"; exit 1; }
-echo "[PASS] Stress test: 50 iterations fork+pipe+exec+wait leak-free verified"
+pass_session "3" "Stage 14 IPC, pipes, redirections, pipelines, filters, and stress test"
 
 echo "[TEST] Session 4: Host-side FAT filesystem integrity check..."
 
@@ -359,7 +368,7 @@ mdir -i disk.img ::
 mtype -i disk.img ::/persist.txt | grep -q "PERSISTENCE_TEST_OK"
 mtype -i disk.img ::/tmp/a | grep -q "hello"
 mtype -i disk.img ::/tmp/b | grep -q "hello"
-echo "[PASS] Host mtype cross-check for persistent and created files verified"
+pass_session "4" "Host-side FAT filesystem integrity check"
 
 echo "[TEST] Session 5: Low-memory boot test (-m 64)..."
 LOGFILE5=$(mktemp)
@@ -372,7 +381,7 @@ cat "$LOGFILE5"
 grep -q "BOOT OK" "$LOGFILE5" || { echo "FAIL: Low-memory boot failed (BOOT OK not found)"; rm -f "$LOGFILE5"; exit 1; }
 grep -q "Total RAM: 63 MB" "$LOGFILE5" || { echo "FAIL: -m 64 Total RAM (63 MB) not logged correctly"; rm -f "$LOGFILE5"; exit 1; }
 grep -q "Kernel heap self-test passed" "$LOGFILE5" || { echo "FAIL: -m 64 Kernel heap self-test failed"; rm -f "$LOGFILE5"; exit 1; }
-echo "[PASS] Low-memory boot (-m 64, 63 MB RAM, BOOT OK) verified"
+pass_session "5" "Low-memory boot test (-m 64)"
 rm -f "$LOGFILE5"
 killall -9 qemu-system-x86_64 2>/dev/null || true
 sleep 2
@@ -529,6 +538,7 @@ else
 fi
 grep -q "sh: pid=[0-9]*" "$LOGFILE6" || { echo "FAIL: Case 8: Shell info not verified"; exit 1; }
 echo "[PASS] Case 8: Shell is healthy, prompt works, zero leaks verified"
+pass_session "6" "Live job control and interactive TTY signals over COM1"
 
 echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, scheduler, and responsiveness..."
 
@@ -667,6 +677,7 @@ else
     echo "FAIL: Session 7: Could not parse free frames from shinfo"
     exit 1
 fi
+pass_session "7" "Stage 16 Time, RTC, sleeping wait queue, procfs, scheduler, and responsiveness"
 
 echo "[TEST] Session 8: Testing Newlib libc (libctest) and Lua 5.4 runtime..."
 
@@ -743,6 +754,7 @@ else
     echo "FAIL: Session 8: Could not parse free frames from shinfo"
     exit 1
 fi
+pass_session "8" "Testing Newlib libc (libctest) and Lua 5.4 runtime"
 
 echo "[TEST] Session 9: Stage 18A /dev/fb0 mmap, mouse driver, and keyboard input layer..."
 
@@ -801,7 +813,7 @@ echo "[PASS] kbdtest.elf all tests passed"
 grep -q "mice" "$LOGFILE9" || { echo "FAIL: 'mice' not shown in ls /dev/input"; rm -f "$LOGFILE9"; exit 1; }
 grep -q "mouse0" "$LOGFILE9" || { echo "FAIL: 'mouse0' not shown in ls /dev/input"; rm -f "$LOGFILE9"; exit 1; }
 grep -q "kbd0" "$LOGFILE9" || { echo "FAIL: 'kbd0' not shown in ls /dev/input"; rm -f "$LOGFILE9"; exit 1; }
-echo "[PASS] ls /dev/input shows mice, mouse0, and kbd0"
+pass_session "9" "Stage 18A /dev/fb0 mmap, mouse driver, and keyboard input layer"
 
 rm -f "$LOGFILE9"
 
@@ -850,6 +862,7 @@ if [ -n "$BASELINE_FRAMES_S10" ] && [ -n "$FINAL_FRAMES_S10" ]; then
     fi
     echo "[PASS] Session 10: Zero frame leak verified (baseline $BASELINE_FRAMES_S10, final $FINAL_FRAMES_S10, diff=$DIFF within tolerance)"
 fi
+pass_session "10" "Stage 18A poll(), select(), non-blocking I/O, and libc flag translation tests"
 
 rm -f "$LOGFILE10"
 
@@ -878,6 +891,7 @@ rm -f "$LOGFILE10B"
 echo "[TEST] Running Concurrency Responsiveness, Tick-Loss (20s) and Input Delivery Suite..."
 python3 tools/test_concur_suite.py || { echo "FAIL: test_concur_suite.py failed"; exit 1; }
 echo "[PASS] Concurrency & Responsiveness suite verified"
+pass_session "10B" "4 Concurrent Processes + Preemption Spinner Stress Test & fsck.fat"
 
 echo "[TEST] Session 11: Stage 18A Demo Apps (paint, screenshot, view, gfxdemo) and Crash Safety..."
 
@@ -930,12 +944,13 @@ echo "[PASS] Crash safety: graphics mode + K_OFF + segfault -> console & keyboar
 
 grep -q "canvas.bmp" "$LOGFILE11" || { echo "FAIL: canvas.bmp not found in /tmp"; rm -f "$LOGFILE11"; exit 1; }
 grep -q "shot.bmp" "$LOGFILE11" || { echo "FAIL: shot.bmp not found in /tmp"; rm -f "$LOGFILE11"; exit 1; }
-echo "[PASS] Generated BMP images present in /tmp verified"
+pass_session "11" "Stage 18A Demo Apps (paint, screenshot, view, gfxdemo) and Crash Safety"
 
 rm -f "$LOGFILE11"
 
 echo "[TEST] Session 12: Stage 18A Step 8 Monitor Screendump, Color Channels, Input Injection, and VGA Fallback..."
 python3 tools/test_step8.py || { echo "FAIL: Session 12 Step 8 automated tests failed"; exit 1; }
+pass_session "12" "Stage 18A Step 8 Monitor Screendump, Color Channels, Input Injection, and VGA Fallback"
 
 echo "[TEST] Session 13: Stage 18B Step 6 Poweroff & Reboot with dirty filesystem buffer..."
 
@@ -966,7 +981,7 @@ LOGFILE14=$(mktemp)
 
 cat "$LOGFILE14"
 grep -q "Rebooting system" "$LOGFILE14" || { echo "FAIL: 'Rebooting system' not found"; rm -f "$LOGFILE14"; exit 1; }
-echo "[PASS] reboot executed and QEMU terminated on reset"
+pass_session "13" "Stage 18B Step 6 Poweroff & Reboot with dirty filesystem buffer"
 
 rm -f "$LOGFILE14"
 
@@ -1037,6 +1052,7 @@ if [ "$MODEL_COUNT" -ne "$MDIR_BRIEF_COUNT" ]; then
     exit 1
 fi
 echo "[PASS] Host mdir -/ -i disk.img :: verified: exactly the model's $MODEL_COUNT long names present with zero extras"
+pass_session "15" "Model-Based LFN Stress Test (500 ops) & Host fsck.fat/mdir Verification"
 
 rm -f "$LOGFILE15"
 
@@ -1082,7 +1098,7 @@ grep -q "PASSED: Zero physical frame leaks after agent teardown" "$LOGFILE16" ||
 grep -q "Agent .* created: cliagent" "$LOGFILE16" || { echo "FAIL: agentctl create failed"; rm -f "$LOGFILE16"; exit 1; }
 grep -q "cliagent" "$LOGFILE16" || { echo "FAIL: agentctl list did not show cliagent"; rm -f "$LOGFILE16"; exit 1; }
 grep -q "Agent 1 killed" "$LOGFILE16" || { echo "FAIL: agentctl kill failed"; rm -f "$LOGFILE16"; exit 1; }
-echo "[PASS] Session 16: Kernel agents, capabilities, budgets, audit log, and agentctl verified!"
+pass_session "16" "Kernel Agents (Capabilities, Delegation, Budgets, Audit Hash Chain, agentctl, -m 64 boot)"
 
 rm -f "$LOGFILE16"
 
@@ -1130,7 +1146,7 @@ grep -q "PASSED: Verified .* audit log entries, SHA-256 hash chain 100% valid" "
 grep -q "PASSED: Zero frame leaks and zero leaked fds after 200 cycles" "$LOGFILE17" || { echo "FAIL: Zero frame leaks test failed"; rm -f "$LOGFILE17"; exit 1; }
 grep -q "fs.list" "$LOGFILE17" || { echo "FAIL: intentctl list did not show fs.list"; rm -f "$LOGFILE17"; exit 1; }
 grep -q "fs.delete" "$LOGFILE17" || { echo "FAIL: intentctl list did not show fs.delete"; rm -f "$LOGFILE17"; exit 1; }
-echo "[PASS] Session 17: Intent Bus, daemon, libjson, peer authentication, and demo skills verified!"
+pass_session "17" "Intent Bus (intentd, libjson, libintent, peer identity, demo skills, approvals, intentctl, -m 64 boot)"
 
 rm -f "$LOGFILE17"
 
@@ -1200,7 +1216,7 @@ mdir -i disk.img ::/home/out | grep -qi "agent-.*log" || { echo "FAIL: /home/out
 grep -q "MOCK_SECRET_KEY_NOT_IN_GUEST_998877" "$LOGFILE18" && { echo "FAIL: Host API secret key leaked into guest logs!"; rm -f "$LOGFILE18"; exit 1; }
 strings disk.img | grep -q "MOCK_SECRET_KEY_NOT_IN_GUEST_998877" && { echo "FAIL: Host API secret key leaked onto guest disk image!"; rm -f "$LOGFILE18"; exit 1; }
 
-echo "[PASS] Session 18: Model daemon, host bridge, token budgets, and agent loop verified!"
+pass_session "18" "Model Daemon, host bridge, token budgets, and agent loop"
 rm -f "$LOGFILE18"
 
 echo "[TEST] Session 19: The Agent Desktop, accessibility tree, window capabilities, trusted approval UI, and killswitch..."
@@ -1241,7 +1257,7 @@ mdir -i disk.img ::/etc/agents.d | grep -qi "terminal.*conf" || { echo "FAIL: te
 echo "[TEST] Running Phase 4 graphical integration test (test_step6.py)..."
 python3 tools/test_step6.py || { echo "FAIL: test_step6.py failed"; rm -f "$LOGFILE19"; exit 1; }
 
-echo "[PASS] Session 19: The Agent Desktop, accessibility tree, window capabilities, trusted approval UI, and killswitch verified!"
+pass_session "19" "The Agent Desktop, accessibility tree, window capabilities, trusted approval UI, and killswitch"
 rm -f "$LOGFILE19"
 
 echo "[TEST] Session 20: Persistent agent memory (principals, memd, memctl) and semantic file index (indexd)..."
@@ -1303,7 +1319,7 @@ strings disk.img | grep -q "LIVEMARKER_KEEP_7788" || { echo "FAIL: control recor
 mdir -i disk.img ::/etc | grep -qi "memory.*conf" || { echo "FAIL: /etc/memory.conf missing"; rm -f "$LOGFILE20"; exit 1; }
 mdir -i disk.img ::/etc | grep -qi "index.*conf" || { echo "FAIL: /etc/index.conf missing"; rm -f "$LOGFILE20"; exit 1; }
 
-echo "[PASS] Session 20: Persistent memory, principals, memd, memctl, and indexd verified!"
+pass_session "20" "Persistent agent memory (principals, memd, memctl) and semantic file index (indexd)"
 rm -f "$LOGFILE20"
 
 echo "[TEST] Session 21: Real networking, VirtIO net, TLS, and Agent-Safe Network Gateway..."
@@ -1371,18 +1387,25 @@ for t in "Network hardware and interfaces" "Direct agent socket isolation" "Stri
 done
 
 cleanup_testnet
-echo "[PASS] Session 21: Real networking, VirtIO net, TLS, and Agent-Safe Network Gateway verified!"
+pass_session "21" "Real networking, VirtIO net, TLS, and Agent-Safe Network Gateway"
 rm -f "$LOGFILE21"
 
 echo "[TEST] Session 22: x86-64 Long Mode, UEFI Boot, >4GB RAM, and CPU Hardening Suite..."
 bash tools/test_session22.sh || { echo "FAIL: Session 22 failed"; exit 1; }
-echo "[PASS] Session 22: x86-64 Long Mode, UEFI Boot, >4GB RAM, and CPU Hardening Suite verified!"
+pass_session "22" "x86-64 Long Mode, UEFI Boot, >4GB RAM, and CPU Hardening Suite"
 
 echo "[TEST] Session 23: Linux ABI Compatibility, Musl Libc, BusyBox, Lua, Python, TCC Self-Hosting..."
 bash tools/test_session23.sh || { echo "FAIL: Session 23 failed"; exit 1; }
-echo "[PASS] Session 23: Linux ABI Compatibility & Real Software verified!"
+pass_session "23" "Linux ABI Compatibility, Musl Libc, BusyBox, Lua, Python, TCC Self-Hosting"
 
-echo "==============================="
+echo ""
+echo "============================================================"
+echo "ONE-LINE-PER-SESSION SUMMARY"
+echo "============================================================"
+for line in "${SESSION_MATRIX[@]}"; do
+    echo "$line"
+done
+echo "============================================================"
 echo "ALL TESTS PASSED!"
-echo "==============================="
+echo "============================================================"
 exit 0
