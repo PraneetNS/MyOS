@@ -108,6 +108,7 @@
 #define __NR_getsid              124
 #define __NR_rt_sigpending       127
 #define __NR_rt_sigtimedwait     128
+#define __NR_rt_sigqueueinfo     129
 #define __NR_rt_sigsuspend       130
 #define __NR_sigaltstack         131
 #define __NR_statfs              137
@@ -121,6 +122,8 @@
 #define __NR_tkill               200
 #define __NR_time                201
 #define __NR_futex               202
+#define __NR_sched_setaffinity   203
+#define __NR_sched_getaffinity   204
 #define __NR_getdents64          217
 #define __NR_set_tid_address     218
 #define __NR_clock_gettime       228
@@ -141,14 +144,18 @@
 #define __NR_pselect6            270
 #define __NR_ppoll               271
 #define __NR_set_robust_list     273
+#define __NR_get_robust_list     274
 #define __NR_utimensat           280
 #define __NR_accept4             288
 #define __NR_dup3                292
 #define __NR_pipe2               293
 #define __NR_prlimit64           302
+#define __NR_getcpu              309
 #define __NR_renameat2           316
 #define __NR_getrandom           318
+#define __NR_membarrier          324
 #define __NR_statx               332
+#define __NR_rseq                334
 #define __NR_faccessat2          439
 
 /* arch_prctl subcommands */
