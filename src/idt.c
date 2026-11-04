@@ -250,5 +250,9 @@ void irq_handler(struct registers* regs) {
     if ((regs->cs & 0x3) == 3) {
         signal_handle_pending(regs);
     }
-    if (cur) cur->in_interrupt--;
+    cur = scheduler_current();
+    if (cur && cur->in_interrupt > 0) cur->in_interrupt--;
+    if ((regs->cs & 0x3) == 3 && cur) {
+        cur->in_interrupt = 0;
+    }
 }
