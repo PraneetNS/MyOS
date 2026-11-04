@@ -120,3 +120,38 @@ To maintain complete transparency, the following design constraints and known li
 5. **Local Model Incompetence**: 15M parameter local language models are toy demonstrators. They cannot be trusted to follow JSON output schemas or obey complex instructions. Production agent autonomy requires the Host Bridge or direct API backend.
 6. **FAT16 Filesystem Durability**: The underlying file storage uses FAT16 with a 64-entry LRU buffer cache. While consistent across clean shutdowns, sudden power loss during an active write may require `fsck.fat`.
 
+---
+
+## 7. MyOS Syscall Security Policy (1000-Range Audit)
+
+The MyOS kernel reserves the `1000+` syscall range for operating system extensions, agent containment, daemon registration, and hardware validation. Every custom syscall enforces strict boundary checks:
+
+| Number | Syscall Name | Description | Caller Permission | Enforcement & Error on Violation |
+|---|---|---|---|---|
+| **1000** | `SYS_TICKS` | Query system timer ticks | Anyone | None (unrestricted read-only) |
+| **1001** | `SYS_FREE_FRAMES` | Query free physical memory frames | Anyone | None (unrestricted read-only) |
+| **1002** | `SYS_AGENT_CREATE` | Create child agent container | Unconfined root, or Agent with `CAP_SPAWN` and monotonic narrowing | `-EACCES` if agent lacks `CAP_SPAWN` or attempts privilege widening |
+| **1003** | `SYS_AGENT_ATTACH` | Attach process to agent | Unconfined root only | `-EPERM` if called by sandboxed agent (`agent_id > 0`) |
+| **1004** | `SYS_AGENT_KILL` | Terminate agent and all associated processes | Unconfined root only | `-EPERM` if called by sandboxed agent (`agent_id > 0`) |
+| **1005** | `SYS_AGENT_SUSPEND` | Suspend running agent | Unconfined root only | `-EPERM` if called by sandboxed agent (`agent_id > 0`) |
+| **1006** | `SYS_AGENT_RESUME` | Resume suspended agent | Unconfined root only | `-EPERM` if called by sandboxed agent (`agent_id > 0`) |
+| **1007** | `SYS_AGENT_INFO` | Query agent metadata, limits, and usage | Unconfined root (any), Agent (self only) | `-EPERM` if sandboxed agent queries another agent |
+| **1008** | `SYS_SOCK_PEERINFO` | Get peer PID, agent ID, and principal of domain socket | Anyone (caller must own socket fd) | `-EBADF` / `-ENOTSOCK` |
+| **1009** | `SYS_BUS_DAEMON_REGISTER` | Register process as intent bus daemon | Unconfined root only (init process tree) | `-EPERM` if called by sandboxed agent or non-init process |
+| **1010** | `SYS_AUDIT_APPEND` | Append cryptographic audit log record | Unconfined root (any), Agent (self only) | `-EPERM` if agent appends for another agent |
+| **1011** | `SYS_AGENT_CHARGE_TOKENS` | Charge LLM token usage to agent | Intent bus daemon / Model daemon only | `-EPERM` if called by sandboxed agent or untrusted caller |
+| **1012** | `SYS_AGENT_TOKENS_LEFT` | Query remaining LLM tokens for agent | Unconfined root (any), Agent (self only) | `-EPERM` if agent queries another agent |
+| **1013** | `SYS_MODEL_DAEMON_REGISTER` | Register process as model daemon | Unconfined root only (init process tree) | `-EPERM` if called by sandboxed agent or non-init process |
+| **1014** | `SYS_AGENT_KILLSWITCH_STATE` | Query or toggle global killswitch | Query: Anyone; Toggle: Unconfined root only | `-EPERM` if agent attempts toggle (`ebx == 1`) |
+| **1015** | `SYS_AGENT_CHARGE_NET` | Charge network bandwidth usage to agent | Intent bus daemon / Net daemon only | `-EPERM` if called by sandboxed agent or untrusted caller |
+| **1016** | `SYS_AGENT_NET_LEFT` | Query remaining network bytes | Unconfined root (any), Agent (self only) | `-EPERM` if agent queries another agent |
+| **1017** | `SYS_NET_DAEMON_REGISTER` | Register process as network daemon | Unconfined root only (init process tree) | `-EPERM` if called by sandboxed agent or non-init process |
+| **1018** | `SYS_TEST_HARDENING` | Debug SMEP/SMAP validation hook | Compiled out unless `MYOS_TESTING=1`; unconfined root only | `-ENOSYS` if compiled out; `-EPERM` if called by agent |
+| **1020** | `SYS_TCGETATTR` | Get terminal attributes | Anyone (valid TTY fd required) | POSIX TTY permissions |
+| **1021** | `SYS_TCSETATTR` | Set terminal attributes | Anyone (valid TTY fd required) | POSIX TTY permissions |
+| **1099** | `SYS_TEST_KSTACK_OVERFLOW` | Debug kernel stack overflow recursion | Compiled out unless `MYOS_TESTING=1`; unconfined root only | `-ENOSYS` if compiled out; `-EPERM` if called by agent |
+
+### Procfs & Process Visibility Sandbox Policy
+- **Agent Self-Visibility Only**: Agents in `/proc/<pid>/` can inspect only their own PID or threads within their thread group. Any attempt to inspect `/proc/<other_pid>/` (including cmdline, environ, maps, status, fd) is denied with `-EACCES` or `-ENOENT`.
+- **Prohibited Interfaces**: `/proc/<pid>/mem` is completely forbidden and not implemented in the kernel (always returning `-EACCES` or `-ENOENT`). Sandboxed agents cannot inspect or tamper with arbitrary process memory.
+
