@@ -4,6 +4,8 @@
 #include "timer.h"
 #include "paging.h"
 #include "serial.h"
+#include "uaccess.h"
+#include "signal.h"
 #include <errno.h>
 
 #define FUTEX_HASH_SIZE 64
@@ -67,7 +69,7 @@ int futex_wake(uint32_t* uaddr, int count, uint32_t bitset) {
     if (!uaddr || count <= 0) return 0;
     process_t* cur = scheduler_current();
     if (!cur) return 0;
-    uint64_t as_pml4 = cur->as.pml4;
+    uint64_t as_pml4 = (uint64_t)(uintptr_t)cur->as.pml4;
 
     uint32_t h = futex_hash(uaddr, as_pml4);
     futex_waiter_t** curr = &futex_buckets[h];
@@ -100,7 +102,7 @@ int sys_futex(uint32_t* uaddr, int op, uint32_t val, const struct timespec* time
     process_t* cur = scheduler_current();
     if (!cur) return -ESRCH;
 
-    uint64_t as_pml4 = cur->as.pml4;
+    uint64_t as_pml4 = (uint64_t)(uintptr_t)cur->as.pml4;
 
     if (cmd == FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET) {
         uint32_t bitset = (cmd == FUTEX_WAIT_BITSET) ? val3 : FUTEX_BITSET_MATCH_ANY;
@@ -299,3 +301,4 @@ void futex_handle_thread_exit(process_t* p) {
         p->robust_list_head = 0;
     }
 }
+
