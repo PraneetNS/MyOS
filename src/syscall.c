@@ -31,6 +31,7 @@
 #include "pty.h"
 #include "random.h"
 #include "agent.h"
+#include "futex.h"
 
 #include "../libmyos/include/myos_syscalls.h"
 
@@ -63,7 +64,7 @@ struct syscall_args {
     struct registers* raw;
 };
 
-static int validate_user_buffer(const void* ptr, uint64_t len, int write) {
+int validate_user_buffer(const void* ptr, uint64_t len, int write) {
     if (len == 0) return 0;
     if (!ptr) return -EFAULT;
 
@@ -127,7 +128,7 @@ static int validate_user_buffer(const void* ptr, uint64_t len, int write) {
     return 0;
 }
 
-static int validate_user_string(const char* s) {
+int validate_user_string(const char* s) {
     if (!s) return -EFAULT;
 
     process_t* me = scheduler_current();
@@ -687,17 +688,50 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             break;
         }
 
-        case SYS_EXIT:
+        case SYS_EXIT: {
+            int status = (int) regs->ebx;
+            process_t* me = scheduler_current();
+            if (!me->group || me->group->num_threads <= 1 || me->tid == me->pid) {
+                kprintf("[ok] process exited (pid %d, status %d)\n", me->pid, status);
+            }
+            scheduler_exit_current(status); /* never returns */
+            break;
+        }
+
         case SYS_EXIT_GROUP: {
             int status = (int) regs->ebx;
-            kprintf("[ok] process exited (pid %d, status %d)\n", scheduler_current()->pid, status);
+            process_t* me = scheduler_current();
+            if (me->group) {
+                for (int i = 0; i < MAX_PROCESSES; i++) {
+                    process_t* other = process_table_entry(i);
+                    if (other && other != me && other->group == me->group && other->state != PROC_UNUSED && other->state != PROC_ZOMBIE) {
+                        futex_handle_thread_exit(other);
+                        if (other->clear_child_tid) {
+                            int zero = 0;
+                            copy_to_user(other->clear_child_tid, &zero, sizeof(int));
+                            futex_wake((uint32_t*)other->clear_child_tid, 1, 0xFFFFFFFF);
+                            other->clear_child_tid = 0;
+                        }
+                        if (other->agent_id > 0) {
+                            agent_thread_exited(other->agent_id);
+                            other->agent_id = 0;
+                        }
+                        other->state = PROC_ZOMBIE;
+                    }
+                }
+                me->group->num_threads = 1;
+            }
+            kprintf("[ok] process exited (pid %d, status %d)\n", me->pid, status);
             scheduler_exit_current(status); /* never returns */
             break;
         }
 
         case SYS_GETPID:
-        case __NR_gettid:
             regs->eax = (uint32_t) scheduler_current()->pid;
+            break;
+
+        case __NR_gettid:
+            regs->eax = (uint32_t) scheduler_current()->tid;
             break;
 
         case SYS_OPEN: {
@@ -775,33 +809,14 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             int* ctid = (int*) regs->esi;
             unsigned long newtls = (unsigned long) regs->edi;
 
-            /* CLONE_VM (0x100) without CLONE_VFORK (0x4000) is thread creation (Phase 9B) */
-            if ((clone_flags & 0x00000100UL) && !(clone_flags & 0x00004000UL)) {
-                regs->eax = (uint64_t) -ENOSYS;
-                break;
-            }
-
             process_t* me = scheduler_current();
-            process_t* child = process_fork(me, regs->raw);
-            if (!child) {
-                regs->eax = (uint64_t) -EAGAIN;
+            process_t* child = NULL;
+            int err = process_clone(me, clone_flags, child_stack, ptid, ctid, newtls, regs->raw, &child);
+            if (err != 0 || !child) {
+                regs->eax = (uint64_t) (err != 0 ? err : -EINVAL);
                 break;
             }
-            if (child_stack) {
-                child->saved_regs.rsp = (uint64_t) child_stack;
-            }
-            if (clone_flags & 0x00080000UL /* CLONE_SETTLS */) {
-                child->fs_base = newtls;
-            }
-            if ((clone_flags & 0x00200000UL /* CLONE_CHILD_CLEARTID */) && ctid) {
-                child->clear_child_tid = ctid;
-            }
-            if ((clone_flags & 0x00010000UL /* CLONE_PARENT_SETTID */) && ptid) {
-                if (validate_user_buffer(ptid, sizeof(int), 1) == 0) {
-                    *ptid = child->pid;
-                }
-            }
-            regs->eax = (uint64_t) child->pid;
+            regs->eax = (uint64_t) child->tid;
             break;
         }
 
@@ -1147,6 +1162,29 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 }
             }
 
+            if (me->group && me->group->num_threads > 1) {
+                for (int i = 0; i < MAX_PROCESSES; i++) {
+                    process_t* other = process_table_entry(i);
+                    if (other && other != me && other->group == me->group && other->state != PROC_UNUSED && other->state != PROC_ZOMBIE) {
+                        futex_handle_thread_exit(other);
+                        if (other->clear_child_tid) {
+                            int zero = 0;
+                            copy_to_user(other->clear_child_tid, &zero, sizeof(int));
+                            futex_wake((uint32_t*)other->clear_child_tid, 1, 0xFFFFFFFF);
+                        }
+                        if (other->agent_id > 0) agent_thread_exited(other->agent_id);
+                        if (other->kernel_stack_base) {
+                            kstack_free(other->kstack_slot);
+                            other->kernel_stack_base = 0;
+                        }
+                        other->state = PROC_UNUSED;
+                    }
+                }
+                me->group->num_threads = 1;
+                me->group->ref_count = 1;
+                me->tid = me->pid;
+            }
+
             if (me->vma_list) {
                 vma_free_list(me->vma_list);
             }
@@ -1158,6 +1196,12 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             me->user_stack_top = stack_top;
             me->heap_end = HEAP_BASE + me->aslr_brk_offset;
             me->heap_mapped_up_to = me->heap_end;
+            if (me->group) {
+                me->group->as = new_as;
+                me->group->vma_list = new_vmas;
+                me->group->heap_end = me->heap_end;
+                me->group->heap_mapped_up_to = me->heap_mapped_up_to;
+            }
 
             const char* ex_src = ep->resolved_canon[0] ? ep->resolved_canon : ep->kname;
             int exi = 0;
@@ -2278,6 +2322,8 @@ static void syscall_handler_internal(struct syscall_args* regs) {
                 } else {
                     regs->eax = (uint64_t) -EFAULT;
                 }
+            } else if (option == 38) { /* PR_SET_NO_NEW_PRIVS */
+                regs->eax = 0;
             } else {
                 regs->eax = 0;
             }
@@ -2289,7 +2335,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             process_t* me = scheduler_current();
             if (me) {
                 me->clear_child_tid = tidptr;
-                regs->eax = (uint64_t) me->pid;
+                regs->eax = (uint64_t) me->tid;
             } else {
                 regs->eax = 0;
             }
@@ -2297,30 +2343,116 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case __NR_set_robust_list: {
+            void* head = (void*) regs->ebx;
+            size_t len = (size_t) regs->ecx;
+            if (len != 24 /* sizeof(struct robust_list_head) */) {
+                regs->eax = (uint64_t) -EINVAL;
+                break;
+            }
+            process_t* me = scheduler_current();
+            if (me) {
+                me->robust_list_head = head;
+                regs->eax = 0;
+            } else {
+                regs->eax = (uint64_t) -ESRCH;
+            }
+            break;
+        }
+
+        case __NR_get_robust_list: {
+            int pid = (int) regs->ebx;
+            void** head_ptr = (void**) regs->ecx;
+            size_t* len_ptr = (size_t*) regs->edx;
+            process_t* target = (pid == 0) ? scheduler_current() : process_find_by_tid(pid);
+            if (!target) { regs->eax = (uint64_t) -ESRCH; break; }
+            if (validate_user_buffer(head_ptr, sizeof(void*), 1) != 0 ||
+                validate_user_buffer(len_ptr, sizeof(size_t), 1) != 0) {
+                regs->eax = (uint64_t) -EFAULT;
+                break;
+            }
+            size_t len = 24;
+            copy_to_user(head_ptr, &target->robust_list_head, sizeof(void*));
+            copy_to_user(len_ptr, &len, sizeof(size_t));
             regs->eax = 0;
             break;
         }
 
         case __NR_futex: {
-            int* uaddr = (int*) regs->ebx;
-            int futex_op = (int) regs->ecx;
-            int val = (int) regs->edx;
-            int cmd = futex_op & 0x7F;
-            if (cmd == 0 || cmd == 9) { /* FUTEX_WAIT / FUTEX_WAIT_BITSET */
-                int err = validate_user_buffer(uaddr, sizeof(int), 0);
-                if (err != 0) { regs->eax = (uint64_t) err; break; }
-                int cur_val = 0;
-                copy_from_user(&cur_val, uaddr, sizeof(int));
-                if (cur_val != val) {
-                    regs->eax = (uint64_t) -EAGAIN;
-                    break;
+            regs->eax = (uint64_t) sys_futex((uint32_t*) regs->ebx, (int) regs->ecx, (uint32_t) regs->edx,
+                                             (const struct timespec*) regs->esi, (uint32_t*) regs->edi, (uint32_t) regs->ebp);
+            break;
+        }
+
+        case __NR_sched_getaffinity: {
+            size_t cpusetsize = (size_t) regs->ecx;
+            unsigned long* mask = (unsigned long*) regs->edx;
+            if (cpusetsize < sizeof(unsigned long)) { regs->eax = (uint64_t) -EINVAL; break; }
+            if (validate_user_buffer(mask, sizeof(unsigned long), 1) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+            unsigned long cpu_mask = 1;
+            copy_to_user(mask, &cpu_mask, sizeof(unsigned long));
+            regs->eax = sizeof(unsigned long);
+            break;
+        }
+
+        case __NR_sched_setaffinity: {
+            size_t cpusetsize = (size_t) regs->ecx;
+            unsigned long* mask = (unsigned long*) regs->edx;
+            if (cpusetsize < sizeof(unsigned long)) { regs->eax = (uint64_t) -EINVAL; break; }
+            if (validate_user_buffer(mask, sizeof(unsigned long), 0) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+            unsigned long cpu_mask = 0;
+            copy_from_user(&cpu_mask, mask, sizeof(unsigned long));
+            if (!(cpu_mask & 1)) { regs->eax = (uint64_t) -EINVAL; break; }
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_getcpu: {
+            unsigned* cpu = (unsigned*) regs->ebx;
+            unsigned* node = (unsigned*) regs->ecx;
+            unsigned zero = 0;
+            if (cpu && validate_user_buffer(cpu, sizeof(unsigned), 1) == 0) copy_to_user(cpu, &zero, sizeof(unsigned));
+            if (node && validate_user_buffer(node, sizeof(unsigned), 1) == 0) copy_to_user(node, &zero, sizeof(unsigned));
+            regs->eax = 0;
+            break;
+        }
+
+        case __NR_rseq:
+        case __NR_membarrier: {
+            regs->eax = (uint64_t) -ENOSYS;
+            break;
+        }
+
+        case __NR_rt_sigqueueinfo: {
+            int pid = (int) regs->ebx;
+            int sig = (int) regs->ecx;
+            process_t* target = process_find_by_pid(pid);
+            if (!target) { regs->eax = (uint64_t) -ESRCH; break; }
+            regs->eax = (uint64_t) sig_send(target, sig);
+            break;
+        }
+
+        case __NR_rt_sigtimedwait: {
+            const sigset_t* uthese = (const sigset_t*) regs->ebx;
+            size_t sigsetsize = (size_t) regs->esi;
+            if (sigsetsize != sizeof(sigset_t)) { regs->eax = (uint64_t) -EINVAL; break; }
+            if (validate_user_buffer(uthese, sizeof(sigset_t), 0) != 0) { regs->eax = (uint64_t) -EFAULT; break; }
+            sigset_t these = 0;
+            copy_from_user(&these, uthese, sizeof(sigset_t));
+            process_t* me = scheduler_current();
+            if (!me) { regs->eax = (uint64_t) -ESRCH; break; }
+            sigset_t match = me->sig_pending & these;
+            if (me->group) match |= (me->group->sig_pending_group & these);
+            if (match) {
+                for (int s = 1; s < NSIG; s++) {
+                    if (match & sigmask(s)) {
+                        me->sig_pending &= ~sigmask(s);
+                        if (me->group) me->group->sig_pending_group &= ~sigmask(s);
+                        regs->eax = (uint64_t) s;
+                        break;
+                    }
                 }
-                scheduler_yield();
-                regs->eax = 0;
-            } else if (cmd == 1 || cmd == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */
-                regs->eax = 0;
             } else {
-                regs->eax = (uint64_t) -ENOSYS;
+                regs->eax = (uint64_t) -EAGAIN;
             }
             break;
         }
@@ -2395,7 +2527,19 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         case __NR_tkill: {
             int tid = (int) regs->ebx;
             int sig = (int) regs->ecx;
-            regs->eax = (uint64_t) sys_kill(tid, sig);
+            if (sig < 0 || sig >= NSIG) { regs->eax = (uint64_t) -EINVAL; break; }
+            process_t* p = process_find_by_tid(tid);
+            if (!p || p->state == PROC_UNUSED || p->state == PROC_ZOMBIE) {
+                regs->eax = (uint64_t) -ESRCH;
+                break;
+            }
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0 && p->agent_id != me->agent_id) {
+                regs->eax = (uint64_t) -EPERM;
+                break;
+            }
+            if (sig == 0) { regs->eax = 0; break; }
+            regs->eax = (uint64_t) sig_send(p, sig);
             break;
         }
 
@@ -2403,8 +2547,19 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             int tgid = (int) regs->ebx;
             int tid  = (int) regs->ecx;
             int sig  = (int) regs->edx;
-            (void)tgid;
-            regs->eax = (uint64_t) sys_kill(tid, sig);
+            if (sig < 0 || sig >= NSIG) { regs->eax = (uint64_t) -EINVAL; break; }
+            process_t* p = process_find_by_tid(tid);
+            if (!p || p->state == PROC_UNUSED || p->state == PROC_ZOMBIE || (tgid > 0 && p->pid != tgid)) {
+                regs->eax = (uint64_t) -ESRCH;
+                break;
+            }
+            process_t* me = scheduler_current();
+            if (me && me->agent_id > 0 && p->agent_id != me->agent_id) {
+                regs->eax = (uint64_t) -EPERM;
+                break;
+            }
+            if (sig == 0) { regs->eax = 0; break; }
+            regs->eax = (uint64_t) sig_send(p, sig);
             break;
         }
 
@@ -2670,17 +2825,29 @@ static void syscall_handler_internal(struct syscall_args* regs) {
         }
 
         case __NR_sigaltstack: {
-            const void* uss = (const void*) regs->ebx;
-            void* uoss = (void*) regs->ecx;
-            if (uss) {
-                int err = validate_user_buffer(uss, 24, 0);
-                if (err != 0) { regs->eax = (uint64_t) err; break; }
-            }
+            const stack_t* uss = (const stack_t*) regs->ebx;
+            stack_t* uoss = (stack_t*) regs->ecx;
+            process_t* me = scheduler_current();
+            if (!me) { regs->eax = (uint64_t) -ESRCH; break; }
             if (uoss) {
-                int err = validate_user_buffer(uoss, 24, 1);
+                int err = validate_user_buffer(uoss, sizeof(stack_t), 1);
                 if (err != 0) { regs->eax = (uint64_t) err; break; }
-                uint64_t koss[3] = { 0, 2 /* SS_DISABLE */, 0 };
-                copy_to_user(uoss, koss, sizeof(koss));
+                copy_to_user(uoss, &me->sigaltstack, sizeof(stack_t));
+            }
+            if (uss) {
+                int err = validate_user_buffer(uss, sizeof(stack_t), 0);
+                if (err != 0) { regs->eax = (uint64_t) err; break; }
+                stack_t new_ss;
+                copy_from_user(&new_ss, uss, sizeof(stack_t));
+                if (new_ss.ss_flags & ~(SS_ONSTACK | SS_DISABLE)) {
+                    regs->eax = (uint64_t) -EINVAL;
+                    break;
+                }
+                if (!(new_ss.ss_flags & SS_DISABLE) && new_ss.ss_size < 2048) {
+                    regs->eax = (uint64_t) -ENOMEM;
+                    break;
+                }
+                me->sigaltstack = new_ss;
             }
             regs->eax = 0;
             break;
