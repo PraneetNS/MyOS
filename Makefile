@@ -5,7 +5,7 @@ LD      = /root/opt/myos-cross/bin/x86_64-elf-ld
 CFLAGS  = -m64 -std=gnu11 -ffreestanding -mcmodel=kernel -mno-red-zone \
           -mno-sse -mno-mmx -fno-pie -fno-pic -fno-stack-protector \
           -fno-strict-aliasing -O2 -Wall -Wextra -nostdlib -MMD -MP \
-          -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -Iinclude -Isrc -Isrc/net
+          -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -DMYOS_TESTING=1 -Iinclude -Isrc -Isrc/net
 ASFLAGS = --64
 LDFLAGS = -m elf_x86_64 -T boot/linker.ld -nostdlib -z max-page-size=0x1000
 
