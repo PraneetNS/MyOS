@@ -253,16 +253,37 @@ static int run_fuzz_loop(int iterations, int is_sandboxed) {
                 escapes++;
             }
         }
+
+        /* If sandboxed, calling restricted 1000-range syscalls must never succeed */
+        if (is_sandboxed && (nr == 1003 || nr == 1004 || nr == 1005 || nr == 1006 ||
+                             nr == 1009 || nr == 1011 || nr == 1013 || nr == 1015 ||
+                             nr == 1017 || nr == 1018)) {
+            if (ret == 0) {
+                escapes++;
+            }
+        }
     }
     return escapes;
 }
 
 int main(int argc, char** argv) {
     int total_iterations = 20000;
-    if (argc > 1 && strcmp(argv[1], "--long") == 0) {
-        total_iterations = 100000;
-    } else if (argc > 1 && atoi(argv[1]) > 0) {
-        total_iterations = atoi(argv[1]);
+    uint64_t seed = 0x853c49e6748fea9bULL;
+
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "--iterations") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
+            total_iterations = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "--seed") == 0 || strcmp(argv[i], "-s") == 0) && i + 1 < argc) {
+            seed = strtoull(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--long") == 0) {
+            total_iterations = 100000;
+        } else if (argv[i][0] != '-' && atoi(argv[i]) > 0) {
+            total_iterations = atoi(argv[i]);
+        }
+    }
+
+    if (seed != 0) {
+        s_prng_state = seed;
     }
 
     printf("============================================================\n");
@@ -387,14 +408,14 @@ int main(int argc, char** argv) {
     printf("[sysfuzz] Final free physical frames: %d (delta: %d frames)\n",
            frames_after, frames_after - frames_before);
 
-    /* Allow slight variance for buffer cache, but assert within reasonable bound */
+    /* Allow up to one 256KB (64-frame) kheap chunk growth for audit logging and buffer cache */
     if (frames_before > 0 && frames_after > 0) {
         int delta = frames_before - frames_after;
-        if (delta > 32 || delta < -32) {
+        if (delta > 64 || delta < -64) {
             printf("FAIL: potential frame leak detected (delta=%d)\n", delta);
             leaks++;
         } else {
-            printf("[sysfuzz] Memory frame counts returned to baseline\n");
+            printf("[sysfuzz] Memory frame counts returned to baseline (delta=%d frames)\n", delta);
         }
     }
 
