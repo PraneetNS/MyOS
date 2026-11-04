@@ -103,6 +103,7 @@ typedef struct {
     uint32_t max_cpu_ticks;    /* 0 = unlimited */
     uint32_t max_mem_pages;    /* 0 = unlimited */
     uint32_t max_procs;        /* 0 = unlimited */
+    uint32_t max_threads;      /* 0 = default 16 */
     uint32_t max_tokens;       /* 0 = unlimited */
     uint32_t max_net_bytes;    /* 0 = unlimited */
 } agent_budget_t;
@@ -111,6 +112,7 @@ typedef struct {
     uint32_t cpu_ticks;        /* Total CPU ticks consumed */
     uint32_t mem_pages;        /* Allocated memory pages */
     uint32_t procs_count;      /* Active processes in this agent */
+    uint32_t threads_count;    /* Active threads in this agent */
     uint32_t tokens_used;      /* Counter charged by model daemon */
     uint32_t net_bytes_used;   /* Counter charged by net daemon */
 } agent_usage_t;
