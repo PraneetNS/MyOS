@@ -1,4 +1,10 @@
-import subprocess, sys, time
+import subprocess, sys, time, argparse
+
+parser = argparse.ArgumentParser(description="MyOS Sysfuzz Test Runner")
+parser.add_argument("--iterations", type=int, default=1000, help="Number of fuzz iterations")
+parser.add_argument("--seed", type=str, default="0x12345678", help="PRNG seed")
+parser.add_argument("--timeout", type=int, default=45, help="Fuzz timeout in seconds")
+args = parser.parse_args()
 
 cmd = [
     'qemu-system-x86_64', '-m', '256',
@@ -11,13 +17,13 @@ cmd = [
 ]
 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 time.sleep(5)
-proc.stdin.write('sysfuzz.elf 1000\n')
+proc.stdin.write(f'sysfuzz.elf --iterations {args.iterations} --seed {args.seed}\n')
 proc.stdin.flush()
-time.sleep(20)
+time.sleep(args.timeout)
 proc.stdin.write('reboot\n')
 proc.stdin.flush()
 try:
-    out, _ = proc.communicate(timeout=10)
+    out, _ = proc.communicate(timeout=15)
 except Exception:
     proc.kill()
     out, _ = proc.communicate()
