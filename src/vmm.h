@@ -29,6 +29,10 @@ struct vma;
 /* Duplicates every user page currently mapped in `src` into `dst` (COW / shared handling) */
 int vmm_clone_user_pages(address_space_t* dst, address_space_t* src, struct vma* vma_list);
 
+/* Translates a virtual address in the given address space to its physical address.
+   Returns 0 if the page is not mapped. */
+uint64_t vmm_virt_to_phys(address_space_t* as, uint64_t vaddr);
+
 void vmm_switch(address_space_t* as);
 void vmm_switch_to_kernel(void);
 
