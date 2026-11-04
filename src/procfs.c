@@ -287,8 +287,12 @@ static int proc_status_read(vnode_t* vn, uint32_t offset, uint8_t* buf, uint32_t
     append_str(text, &pos, sizeof(text), p->name);
     append_str(text, &pos, sizeof(text), "\nState:\t");
     append_str(text, &pos, sizeof(text), state_str);
-    append_str(text, &pos, sizeof(text), "\nPid:\t");
+    append_str(text, &pos, sizeof(text), "\nTgid:\t");
     append_int(text, &pos, sizeof(text), p->pid);
+    append_str(text, &pos, sizeof(text), "\nPid:\t");
+    append_int(text, &pos, sizeof(text), p->tid);
+    append_str(text, &pos, sizeof(text), "\nThreads:\t");
+    append_int(text, &pos, sizeof(text), p->group ? p->group->num_threads : 1);
     append_str(text, &pos, sizeof(text), "\nPPid:\t");
     append_int(text, &pos, sizeof(text), p->ppid);
     append_str(text, &pos, sizeof(text), "\nPgid:\t");
