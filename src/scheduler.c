@@ -10,6 +10,9 @@
 #include "console.h"
 #include "signal.h"
 #include "agent.h"
+#include "futex.h"
+#include "uaccess.h"
+#include "vma.h"
 
 #define SWITCH_EVERY_N_TICKS 30 /* at 100Hz, ~0.3s per process's time slice */
 
@@ -89,8 +92,18 @@ static int time_slice_for(process_t* p) {
     return slice;
 }
 
+static void reap_zombie_threads(void) {
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table_entry(i);
+        if (p && p != current && p->state == PROC_ZOMBIE && p->group && p->tid != p->pid) {
+            process_destroy(p);
+        }
+    }
+}
+
 void scheduler_yield(void) {
     if (!started || !current) return;
+    reap_zombie_threads();
     agent_killswitch_check_deferred();
     process_t* next = pick_next_from(process_index(current));
     if (!next || next == current) return;
@@ -105,6 +118,7 @@ void scheduler_yield(void) {
 
 void scheduler_tick(void) {
     if (!started) return;
+    reap_zombie_threads();
 
     agent_killswitch_check_deferred();
 
@@ -164,86 +178,146 @@ void scheduler_exit_current(int exit_status) {
     int idx = process_index(p);
     int exiting_pid = p->pid;
 
-    if (exiting_pid == 1) {
-        bcache_sync();
+    /* Handle futex robust list and clear_child_tid before unmapping address space */
+    futex_handle_thread_exit(p);
+    if (p->clear_child_tid) {
+        int zero = 0;
+        copy_to_user(p->clear_child_tid, &zero, sizeof(int));
+        futex_wake((uint32_t*)p->clear_child_tid, 1, 0xFFFFFFFF);
+        p->clear_child_tid = 0;
     }
 
-    console_on_process_exit(exiting_pid);
-
-    /* Reparent children to PID 1 (init / shell) */
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* child = process_table_entry(i);
-        if (child && child->state != PROC_UNUSED && child->ppid == exiting_pid) {
-            child->ppid = 1;
+    int is_secondary = (p->group && p->group->num_threads > 1 && p->tid != p->pid);
+    if (is_secondary) {
+        p->group->num_threads--;
+        if (p->agent_id > 0) {
+            agent_thread_exited(p->agent_id);
+            p->agent_id = 0;
         }
-    }
-
-    /* Close all open descriptors */
-    for (int i = 0; i < MAX_FDS; i++) {
-        p->fd_flags[i] = 0;
-        if (p->fds[i]) {
-            open_file_unref(p->fds[i]);
-            p->fds[i] = 0;
-        }
-    }
-
-    /* Release user address space */
-    if (!p->is_kernel_task && p->as.pml4) {
-        vmm_destroy_address_space(&p->as);
+        p->exit_code = exit_status;
+        p->state = PROC_ZOMBIE;
         p->as.pml4 = 0;
-    }
 
-    if (p->agent_id > 0) {
-        agent_proc_exited(p->agent_id);
-        p->agent_id = 0;
-    }
+        vmm_switch_to_kernel();
+        wake_waiters_for(p->tid);
+    } else {
+        if (exiting_pid == 1) {
+            bcache_sync();
+        }
 
-    p->exit_code = exit_status;
-    p->state = PROC_ZOMBIE;
+        console_on_process_exit(exiting_pid);
 
-    /* Restore TTY foreground group to parent if foreground group has no living processes */
-    extern tty_t* global_tty;
-    if (global_tty && global_tty->fg_pgid == p->pgid) {
-        int any_alive = 0;
+        /* Reparent children to PID 1 (init / shell) */
         for (int i = 0; i < MAX_PROCESSES; i++) {
-            process_t* other = process_table_entry(i);
-            if (other && other != p && other->state != PROC_UNUSED && other->state != PROC_ZOMBIE && other->pgid == p->pgid) {
-                any_alive = 1;
-                break;
+            process_t* child = process_table_entry(i);
+            if (child && child->state != PROC_UNUSED && child->ppid == exiting_pid) {
+                child->ppid = 1;
             }
         }
-        if (!any_alive) {
-            process_t* parent_p = process_find_by_pid(p->ppid);
-            if (parent_p) {
-                global_tty->fg_pgid = parent_p->pgid;
-            } else {
-                global_tty->fg_pgid = 1;
+
+        /* If there are any other threads in this group, mark them zombie */
+        if (p->group) {
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                process_t* other = process_table_entry(i);
+                if (other && other != p && other->group == p->group && other->state != PROC_UNUSED) {
+                    other->state = PROC_ZOMBIE;
+                    if (other->agent_id > 0) {
+                        agent_thread_exited(other->agent_id);
+                        other->agent_id = 0;
+                    }
+                }
             }
-        }
-    }
+            p->group->num_threads = 0;
 
-    process_t* parent = process_find_by_pid(p->ppid);
-    if (parent) {
-        sig_send(parent, SIGCHLD);
-    }
-
-    /* Adopt orphaned children into PID 1 */
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* child = process_table_entry(i);
-        if (child && child != p && child->state != PROC_UNUSED && child->ppid == exiting_pid) {
-            child->ppid = 1;
-            if (child->state == PROC_ZOMBIE) {
-                process_t* init_p = process_find_by_pid(1);
-                if (init_p && init_p != p) {
-                    sig_send(init_p, SIGCHLD);
+            /* Close all open descriptors */
+            for (int i = 0; i < MAX_FDS; i++) {
+                p->group->fd_flags[i] = 0;
+                if (p->group->fds[i]) {
+                    open_file_unref(p->group->fds[i]);
+                    p->group->fds[i] = 0;
+                }
+            }
+        } else {
+            for (int i = 0; i < MAX_FDS; i++) {
+                p->fd_flags[i] = 0;
+                if (p->fds[i]) {
+                    open_file_unref(p->fds[i]);
+                    p->fds[i] = 0;
                 }
             }
         }
+
+        vmm_switch_to_kernel();
+
+        /* Release user address space */
+        if (p->group && !p->is_kernel_task && p->group->as.pml4 && p->group->tgid != 0) {
+            vmm_destroy_address_space(&p->group->as);
+            p->group->as.pml4 = 0;
+            p->as.pml4 = 0;
+        } else if (!p->group && !p->is_kernel_task && p->as.pml4) {
+            vmm_destroy_address_space(&p->as);
+            p->as.pml4 = 0;
+        }
+
+        if (p->group && p->group->vma_list) {
+            vma_free_list(p->group->vma_list);
+            p->group->vma_list = NULL;
+            p->vma_list = NULL;
+        } else if (!p->group && p->vma_list) {
+            vma_free_list(p->vma_list);
+            p->vma_list = NULL;
+        }
+
+        if (p->agent_id > 0) {
+            agent_proc_exited(p->agent_id);
+            p->agent_id = 0;
+        }
+
+        p->exit_code = exit_status;
+        p->state = PROC_ZOMBIE;
+
+        /* Restore TTY foreground group to parent if foreground group has no living processes */
+        extern tty_t* global_tty;
+        if (global_tty && global_tty->fg_pgid == p->pgid) {
+            int any_alive = 0;
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                process_t* other = process_table_entry(i);
+                if (other && other != p && other->state != PROC_UNUSED && other->state != PROC_ZOMBIE && other->pgid == p->pgid) {
+                    any_alive = 1;
+                    break;
+                }
+            }
+            if (!any_alive) {
+                process_t* parent_p = process_find_by_pid(p->ppid);
+                if (parent_p) {
+                    global_tty->fg_pgid = parent_p->pgid;
+                } else {
+                    global_tty->fg_pgid = 1;
+                }
+            }
+        }
+
+        process_t* parent = process_find_by_pid(p->ppid);
+        if (parent) {
+            sig_send(parent, SIGCHLD);
+        }
+
+        /* Adopt orphaned children into PID 1 */
+        for (int i = 0; i < MAX_PROCESSES; i++) {
+            process_t* child = process_table_entry(i);
+            if (child && child != p && child->state != PROC_UNUSED && child->ppid == exiting_pid) {
+                child->ppid = 1;
+                if (child->state == PROC_ZOMBIE) {
+                    process_t* init_p = process_find_by_pid(1);
+                    if (init_p && init_p != p) {
+                        sig_send(init_p, SIGCHLD);
+                    }
+                }
+            }
+        }
+
+        wake_waiters_for(exiting_pid);
     }
-
-    wake_waiters_for(exiting_pid);
-
-    vmm_switch_to_kernel();
 
     extern int g_kernel_shutting_down;
     if (exiting_pid == 1 && !g_kernel_shutting_down) {
