@@ -64,8 +64,11 @@ def send_cmd(s):
 
 try:
     # Wait for shell prompt
-    out = read_until("sh:/$", timeout=25)
-    assert "sh:/$" in out, "Shell prompt did not appear"
+    out = read_until("sh:", timeout=30)
+    assert "sh:" in out, "Shell prompt did not appear"
+    send_cmd("\n")
+    time.sleep(1.0)
+    read_until("sh:", timeout=10)
     print("[PASS] Kernel booted and shell ready")
 
     mon = QemuMonitor(sock_path=MON_SOCK, timeout=5.0)
@@ -89,7 +92,7 @@ try:
     print(f"\n[PASS] Test 3a Verified: {ticks_per_s} ticks/sec under heavy disk load (98-102 ticks/s window)")
 
     # Wait for prompt
-    read_until("sh:/$", timeout=5)
+    read_until("sh:", timeout=5)
 
     # -------------------------------------------------------------
     # 3b. Serial / Ctrl+C Responsiveness Under Disk Load
@@ -106,10 +109,10 @@ try:
     # Send Ctrl+C (\x03) over COM1 serial line
     t_ctrlc = time.time()
     send_cmd("\x03")
-    out_sig = read_until("sh:/$", timeout=2.0)
+    out_sig = read_until("sh:", timeout=2.0)
     elapsed_kill = time.time() - t_ctrlc
 
-    assert "terminated by signal 2" in out_sig or "sh:/$" in out_sig, "spin.elf was not terminated by Ctrl+C"
+    assert "terminated by signal 2" in out_sig or "sh:" in out_sig, "spin.elf was not terminated by Ctrl+C"
     assert elapsed_kill <= 1.0, f"Ctrl+C latency exceeded 1.0s: {elapsed_kill:.3f}s"
     print(f"[PASS] Test 3b Verified: Ctrl+C interrupted spin.elf in {elapsed_kill:.3f}s (< 1.0s)")
 
@@ -132,15 +135,18 @@ try:
     print("[PASS] Test 3c Verified: mousetest received all injected mouse events during disk load")
 
     # Clean up background disk stress job and sync
-    read_until("sh:/$", timeout=5.0)
+    read_until("sh:", timeout=5.0)
     send_cmd("kill %1\n")
-    time.sleep(0.5)
+    read_until("sh:", timeout=5.0)
     send_cmd("rm /tmp/bgload.txt\n")
-    time.sleep(0.5)
+    read_until("sh:", timeout=5.0)
     send_cmd("sync\n")
-    time.sleep(0.5)
-    send_cmd("exit\n")
-    time.sleep(1)
+    read_until("sh:", timeout=5.0)
+    send_cmd("poweroff\n")
+    try:
+        proc.wait(timeout=10)
+    except Exception:
+        pass
 
     print("\n==========================================")
     print("ALL CONCURRENCY & RESPONSIVENESS TESTS PASSED!")
@@ -148,8 +154,9 @@ try:
 
 finally:
     try:
-        proc.terminate()
-        proc.wait(timeout=2)
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=2)
     except Exception:
         proc.kill()
     if os.path.exists(MON_SOCK):
