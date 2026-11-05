@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 cd "$(dirname "$0")/.."
 
 LOGFILE="/tmp/test_boot_run.log"
