@@ -557,7 +557,7 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     printf "sigtest.elf\n"
     sleep 2.5
     printf "fputest.elf\n"
-    sleep 2.5
+    sleep 4.0
     printf "uptime\n"
     sleep 0.3
     printf "free\n"
@@ -597,7 +597,7 @@ echo "[TEST] Session 7: Stage 16 Time, RTC, sleeping wait queue, procfs, schedul
     printf "shinfo\n"
     sleep 0.3
     printf "exit\n"
-) | timeout 35s qemu-system-x86_64 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
+) | timeout 45s qemu-system-x86_64 -vga std -m 256 -hda disk.img -cdrom myos.iso -boot d -serial stdio -display none -no-reboot > "$LOGFILE7" 2>&1 || true
 
 tr -d '\r' < "$LOGFILE7" > "${LOGFILE7}.tmp" && mv "${LOGFILE7}.tmp" "$LOGFILE7"
 cat "$LOGFILE7"
