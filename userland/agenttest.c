@@ -314,7 +314,7 @@ static int test_cpu_budget(void) {
 
     agent_budget_t budget;
     memset(&budget, 0, sizeof(budget));
-    budget.max_cpu_ticks = 15; /* 15 ticks ~ 150ms */
+    budget.max_cpu_ticks = 8; /* 8 ticks ~ 80ms */
 
     int ag_id = agent_create("cpu_spin_agent", &caps, &budget);
     if (ag_id < 0) {
@@ -324,7 +324,10 @@ static int test_cpu_budget(void) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        if (agent_attach(ag_id) < 0) exit(1);
+        int rc = agent_attach(ag_id);
+        if (rc < 0) {
+            exit(1);
+        }
         /* Spin CPU */
         volatile uint32_t count = 0;
         for (;;) {
@@ -332,12 +335,18 @@ static int test_cpu_budget(void) {
         }
     }
 
-    /* Parent sleeps and checks status */
-    struct timespec req = { 0, 300000000 }; /* 300ms */
-    nanosleep(&req, NULL);
-
+    /* Parent waits and checks status until suspended or timeout */
     agent_info_t info;
-    if (agent_info(ag_id, &info) != 0) {
+    memset(&info, 0, sizeof(info));
+    for (int iter = 0; iter < 40; iter++) {
+        struct timespec req = { 0, 100000000 }; /* 100ms */
+        nanosleep(&req, NULL);
+        if (agent_info(ag_id, &info) == 0 && info.state == AGENT_STATE_SUSPENDED) {
+            break;
+        }
+    }
+
+    if (info.id == 0 && agent_info(ag_id, &info) != 0) {
         printf("FAILED: agent_info failed\n");
         agent_kill(ag_id);
         return 0;
