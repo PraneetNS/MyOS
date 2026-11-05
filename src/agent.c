@@ -481,6 +481,25 @@ int agent_attach_proc(int agent_id, process_t* p) {
     ag->usage.threads_count++;
     kmutex_unlock(&s_agent_lock);
 
+    /* Sanitize inherited file descriptors (fd >= 3):
+     * Close non-standard descriptors pointing to vnodes outside allowed prefixes */
+    if (p->fds) {
+        for (int fd = 3; fd < MAX_FDS; fd++) {
+            if (p->fds[fd]) {
+                open_file_t* of = p->fds[fd];
+                if (of->type == OPEN_FILE_VNODE && of->path[0]) {
+                    int r_ok = (agent_check_access(p, CAP_FS_READ, of->path, "inherit_fd") == 0);
+                    int w_ok = (agent_check_access(p, CAP_FS_WRITE, of->path, "inherit_fd") == 0);
+                    if (!r_ok && !w_ok) {
+                        p->fds[fd] = 0;
+                        if (p->fd_flags) p->fd_flags[fd] = 0;
+                        vfs_close(of);
+                    }
+                }
+            }
+        }
+    }
+
     agent_audit_log(agent_id, AUDIT_EVENT_SYSCALL_ALLOWED_SENSITIVE, "attach_proc");
     return 0;
 }
