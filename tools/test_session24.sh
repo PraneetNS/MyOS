@@ -11,3 +11,4 @@ python3 tools/test_session24.py
 echo "=========================================================="
 echo "ALL SESSION 24 TESTS PASSED SUCCESSFULLY!"
 echo "=========================================================="
+

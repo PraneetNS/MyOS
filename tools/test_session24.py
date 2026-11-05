@@ -59,16 +59,20 @@ def run_cmd(command, expect_pattern=None, timeout=25):
         return False
     return True
 
-if not read_until("sh:/$", timeout=30):
+if not read_until("sh:", timeout=30):
     print("FAILED TO BOOT TO SHELL")
     proc.kill()
     sys.exit(1)
 
-print("\n--- SHELL READY ---")
-time.sleep(1)
+proc.stdin.write(b"\n")
+proc.stdin.flush()
+time.sleep(0.5)
 
-# Session 24: POSIX Threads & Futex Validation
-assert run_cmd("threadtest.elf", expect_pattern="ALL THREAD TESTS PASSED (8/8)", timeout=35)
+print("\n--- SHELL READY ---")
+time.sleep(3)
+
+# Session 24: POSIX Threads, Futex & Concurrency Validation
+assert run_cmd("threadtest.elf", expect_pattern="ALL THREAD TESTS PASSED (20/20)", timeout=60)
 
 print("\n==========================================")
 print("SUCCESS: Session 24 POSIX Threads & Futex suite passed!")
@@ -80,3 +84,4 @@ try:
 except Exception:
     proc.kill()
 sys.exit(0)
+
