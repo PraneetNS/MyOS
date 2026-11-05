@@ -17,7 +17,24 @@ static uint64_t* get_or_alloc_table(uint64_t* entry) {
 }
 
 void kstack_init(void) {
-    /* Virtual region 0xFFFFFFFFB0000000..0xFFFFFFFFB8000000 is reserved for kstack */
+    /* Virtual region 0xFFFFFFFFB0000000..0xFFFFFFFFB8000000 is reserved for kstack.
+     * Pre-allocate the master page tables (PDPT, PD, PTs) for all MAX_PROCESSES slots
+     * so that process creation never lazily allocates page table frames.
+     */
+    uint64_t* master_pml4 = paging_get_kernel_pml4_virt();
+    uint64_t total_size = (uint64_t)MAX_PROCESSES * KSTACK_SLOT_SIZE;
+    for (uint64_t va = KSTACK_AREA_BASE; va < KSTACK_AREA_BASE + total_size; va += 0x200000ULL) {
+        uint64_t pml4_idx = (va >> 39) & 0x1FFULL;
+        uint64_t pdpt_idx = (va >> 30) & 0x1FFULL;
+        uint64_t pd_idx   = (va >> 21) & 0x1FFULL;
+        uint64_t* pdpt = get_or_alloc_table(&master_pml4[pml4_idx]);
+        if (pdpt) {
+            uint64_t* pd = get_or_alloc_table(&pdpt[pdpt_idx]);
+            if (pd) {
+                get_or_alloc_table(&pd[pd_idx]);
+            }
+        }
+    }
     serial_printf("[kstack] Initialized kernel stack allocator with guard pages (area: 0x%016llx)\n",
                   (unsigned long long)KSTACK_AREA_BASE);
 }
