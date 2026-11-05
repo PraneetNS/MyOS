@@ -2098,13 +2098,13 @@ static void syscall_handler_internal(struct syscall_args* regs) {
 
             if (resolved_canon[0]) {
                 int ci = 0;
-                while (resolved_canon[ci] && ci < (int)sizeof(me->cwd) - 1) {
+                while (resolved_canon[ci] && ci < 1023) {
                     me->cwd[ci] = resolved_canon[ci];
                     ci++;
                 }
                 me->cwd[ci] = '\0';
             } else {
-                vfs_path_canonical(path, me->cwd, me->cwd, sizeof(me->cwd));
+                vfs_path_canonical(path, me->cwd, me->cwd, 1024);
             }
             regs->eax = 0;
             break;
@@ -2124,7 +2124,7 @@ static void syscall_handler_internal(struct syscall_args* regs) {
             }
             if (of->path[0]) {
                 int ci = 0;
-                while (of->path[ci] && ci < (int)sizeof(me->cwd) - 1) {
+                while (of->path[ci] && ci < 1023) {
                     me->cwd[ci] = of->path[ci];
                     ci++;
                 }
