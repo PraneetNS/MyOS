@@ -891,6 +891,8 @@ rm -f "$LOGFILE10B"
 echo "[TEST] Running Concurrency Responsiveness, Tick-Loss (20s) and Input Delivery Suite..."
 python3 tools/test_concur_suite.py || { echo "FAIL: test_concur_suite.py failed"; exit 1; }
 echo "[PASS] Concurrency & Responsiveness suite verified"
+fsck.fat -v -n disk.img || { echo "FAIL: fsck.fat found filesystem corruptions after test_concur_suite"; exit 1; }
+echo "[PASS] fsck.fat disk consistency verified after test_concur_suite"
 pass_session "10B" "4 Concurrent Processes + Preemption Spinner Stress Test & fsck.fat"
 
 echo "[TEST] Session 11: Stage 18A Demo Apps (paint, screenshot, view, gfxdemo) and Crash Safety..."
