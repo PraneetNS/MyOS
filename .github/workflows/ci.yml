@@ -105,7 +105,7 @@ jobs:
             disk.img
 
   nightly-tests:
-    name: Nightly Full Regression (Sessions 1-23)
+    name: Nightly Full Regression (Sessions 1-24)
     runs-on: ubuntu-22.04
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
