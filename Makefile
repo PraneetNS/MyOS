@@ -1,6 +1,7 @@
-CC      = /root/opt/myos-cross/bin/x86_64-elf-gcc
-AS      = /root/opt/myos-cross/bin/x86_64-elf-as
-LD      = /root/opt/myos-cross/bin/x86_64-elf-ld
+PREFIX  ?= $(if $(MYOS_PREFIX),$(MYOS_PREFIX),$(if $(wildcard /root/opt/myos-cross/bin/x86_64-elf-gcc),/root/opt/myos-cross,$(if $(wildcard /opt/myos-cross/bin/x86_64-elf-gcc),/opt/myos-cross,$(HOME)/opt/myos-cross)))
+CC      ?= $(PREFIX)/bin/x86_64-elf-gcc
+AS      ?= $(PREFIX)/bin/x86_64-elf-as
+LD      ?= $(PREFIX)/bin/x86_64-elf-ld
 
 CFLAGS  = -m64 -std=gnu11 -ffreestanding -mcmodel=kernel -mno-red-zone \
           -mno-sse -mno-mmx -fno-pie -fno-pic -fno-stack-protector \
