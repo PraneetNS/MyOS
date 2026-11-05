@@ -220,6 +220,7 @@ void scheduler_exit_current(int exit_status) {
             for (int i = 0; i < MAX_PROCESSES; i++) {
                 process_t* other = process_table_entry(i);
                 if (other && other != p && other->group == p->group && other->state != PROC_UNUSED) {
+                    other->exit_code = exit_status;
                     other->state = PROC_ZOMBIE;
                     if (other->agent_id > 0) {
                         agent_thread_exited(other->agent_id);
