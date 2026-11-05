@@ -118,7 +118,7 @@ During regression test suite execution (Session 23, `musltest.elf`, `busybox`, `
 | 160 | `setrlimit` | Musl libc | Resource limits modification |
 | 186 | `gettid` | Musl libc | Thread ID |
 | 200 | `tkill` | Musl libc | Target thread signalling |
-| 202 | `futex` | Musl libc (stub) | Fast user mutex synchronization |
+| 202 | `futex` | Musl libc, POSIX threads | Fast user mutex synchronization (WAIT, WAKE, WAIT_BITSET, WAKE_BITSET, REQUEUE, CMP_REQUEUE) |
 | 217 | `getdents64` | Musl opendir/readdir | Directory entry enumeration |
 | 218 | `set_tid_address`| Musl libc initialization | Clear child TID on thread exit |
 | 228 | `clock_gettime` | Musl libc, MicroPython | Monotonic and real-time clock |
@@ -131,12 +131,33 @@ During regression test suite execution (Session 23, `musltest.elf`, `busybox`, `
 | 264 | `renameat` | Musl libc | Directory relative file rename |
 | 267 | `readlinkat` | Musl libc | Directory relative readlink |
 | 269 | `faccessat` | Musl libc | Directory relative access check |
-| 273 | `set_robust_list`| Musl libc (stub) | Robust futex list pointer |
+| 273 | `set_robust_list`| Musl libc, POSIX threads | Robust futex list pointer registration |
+| 274 | `get_robust_list`| Musl libc, POSIX threads | Robust futex list pointer retrieval |
 | 280 | `utimensat` | Musl libc, BusyBox touch | High-resolution timestamp modification |
 | 293 | `pipe2` | Musl libc | Pipe with O_CLOEXEC / O_NONBLOCK |
 | 302 | `prlimit64` | Musl libc | 64-bit resource limit control |
 | 318 | `getrandom` | Musl libc, CSPRNG | Kernel CSPRNG random bytes |
 | 332 | `statx` | Musl libc (stub) | Extended file metadata |
+
+---
+
+## Futex Subsystem & Timer Granularity
+
+### Architecture & Supported Operations
+MyOS implements a 64-bucket hashed waitqueue futex subsystem supporting:
+- `FUTEX_WAIT` / `FUTEX_WAIT_BITSET`: Suspends caller if `*uaddr == val` until waken or timeout. Supports both relative `struct timespec` and absolute timestamps with `FUTEX_CLOCK_REALTIME`.
+- `FUTEX_WAKE` / `FUTEX_WAKE_BITSET`: Wakes up to `val` waiters matching the 32-bit bitset mask.
+- `FUTEX_REQUEUE` / `FUTEX_CMP_REQUEUE`: Atomically checks `*uaddr == val3`, wakes up to `val` waiters, and moves remaining waiters to secondary queue `uaddr2` (essential for POSIX condition variable broadcast without thundering herd).
+- `set_robust_list` / `get_robust_list`: Registers the per-thread robust futex head. Upon unexpected thread termination (crash, SIGKILL, or `exit_group`), the kernel walks the robust list, marks the held futex words with `FUTEX_OWNER_DIED`, and wakes pending waiters with `futex_wake_all`.
+
+### Timeout Granularity (100Hz = 10ms)
+- **Clock Resolution**: The underlying kernel scheduler runs on the PIT timer configured at 100Hz (1 tick = 10 milliseconds).
+- **Timeout Conversions**:
+  $$\text{ticks} = \text{tv\_sec} \times 100 + \left\lceil\frac{\text{tv\_nsec}}{10,000,000}\right\rceil$$
+- **Impact on Runtimes**:
+  - `pthread_cond_timedwait`: Any sub-10ms timeout requested by userland will round up to a minimum of 1 tick (10ms). Deadlines are guaranteed to not fire early, but may experience up to 10ms jitter.
+  - **Go Runtime (`time.Sleep` / channel timeouts)**: Go's timer wheel uses nanotime readings from `clock_gettime(CLOCK_MONOTONIC)` which reads hardware TSC cycles and is nanosecond-accurate. However, when Go blocks in the kernel via `futex(..., timeout)`, wakeups occur on 10ms tick boundaries unless woken by an explicit waker thread.
+  - Future improvement: An APIC one-shot high-resolution timer path will be introduced with SMP (Phase 11) to provide sub-millisecond sleeping wait resolution.
 
 ---
 

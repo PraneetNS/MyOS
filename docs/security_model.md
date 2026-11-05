@@ -155,3 +155,8 @@ The MyOS kernel reserves the `1000+` syscall range for operating system extensio
 - **Agent Self-Visibility Only**: Agents in `/proc/<pid>/` can inspect only their own PID or threads within their thread group. Any attempt to inspect `/proc/<other_pid>/` (including cmdline, environ, maps, status, fd) is denied with `-EACCES` or `-ENOENT`.
 - **Prohibited Interfaces**: `/proc/<pid>/mem` is completely forbidden and not implemented in the kernel (always returning `-EACCES` or `-ENOENT`). Sandboxed agents cannot inspect or tamper with arbitrary process memory.
 
+### Inherited File Descriptors & Close-On-Exec Sandbox Policy
+1. **Inherited FDs on Agent Attachment**: When a process is attached to an agent sandbox via `agent_attach` (`SYS_AGENT_ATTACH`), any non-standard file descriptor (`fd >= 3`) that references a filesystem vnode outside the agent's explicit `CAP_FS_READ` and `CAP_FS_WRITE` capability allowlists is immediately sanitized and closed by the kernel. Standard streams (`0` stdin, `1` stdout, `2` stderr) and explicitly permitted paths remain intact.
+2. **Close-On-Exec (`FD_CLOEXEC` / `O_CLOEXEC`)**: Upon `execve`, the kernel automatically closes all file descriptors marked with `FD_CLOEXEC` across `open`, `openat`, `pipe2`, `dup3`, `socket`, `accept4`, `socketpair`, and `fcntl(F_DUPFD_CLOEXEC)`. In agent processes, any inherited non-permitted file descriptors cannot survive `execve`.
+
+
