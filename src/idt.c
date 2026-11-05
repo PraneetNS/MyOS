@@ -247,12 +247,13 @@ void irq_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no] != 0)
         interrupt_handlers[regs->int_no](regs);
 
-    if ((regs->cs & 0x3) == 3) {
-        signal_handle_pending(regs);
-    }
     cur = scheduler_current();
     if (cur && cur->in_interrupt > 0) cur->in_interrupt--;
     if ((regs->cs & 0x3) == 3 && cur) {
         cur->in_interrupt = 0;
+    }
+
+    if ((regs->cs & 0x3) == 3) {
+        signal_handle_pending(regs);
     }
 }
