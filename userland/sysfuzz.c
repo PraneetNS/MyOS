@@ -67,15 +67,15 @@ static int read_free_frames(void) {
 static const uint64_t s_syscall_numbers[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20,
     21, 22, 23, 24, 25, 26, 28, 32, 33, 34, 35, 37, 38, 39, 41, 42, 43, 44,
-    45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 61, 63, 72, 73, 74, 75,
+    45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 63, 72, 73, 74, 75,
     76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93,
     94, 95, 96, 97, 99, 100, 102, 104, 107, 108, 109, 110, 111, 112,
-    137, 138, 217, 218, 228, 229, 230, 257, 258, 260, 262,
-    263, 264, 265, 266, 267, 268, 269, 270, 271, 280, 288, 292, 293, 302,
+    137, 138, 186, 202, 217, 218, 228, 229, 230, 234, 257, 258, 260, 262,
+    263, 264, 265, 266, 267, 268, 269, 270, 271, 273, 274, 280, 288, 292, 293, 302,
     316, 318, 332,
     /* MyOS custom syscalls */
     1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
-    1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021,
+    1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1099,
     /* Unknown / invalid syscall numbers */
     500, 888, 999, 1200, 0x10000, 0x7fffffff, 0xffffffff
 };
@@ -198,6 +198,22 @@ static inline long invoke_syscall6(uint64_t nr, uint64_t a1, uint64_t a2, uint64
     return ret;
 }
 
+static inline long invoke_syscall0(uint64_t nr) {
+    return invoke_syscall6(nr, 0, 0, 0, 0, 0, 0);
+}
+static inline long invoke_syscall1(uint64_t nr, uint64_t a1) {
+    return invoke_syscall6(nr, a1, 0, 0, 0, 0, 0);
+}
+static inline long invoke_syscall2(uint64_t nr, uint64_t a1, uint64_t a2) {
+    return invoke_syscall6(nr, a1, a2, 0, 0, 0, 0);
+}
+static inline long invoke_syscall3(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
+    return invoke_syscall6(nr, a1, a2, a3, 0, 0, 0);
+}
+static inline long invoke_syscall4(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    return invoke_syscall6(nr, a1, a2, a3, a4, 0, 0);
+}
+
 static int verify_canary(void) {
     int fd = open(CANARY_PATH, O_RDONLY);
     if (fd < 0) return 0;
@@ -221,8 +237,155 @@ static inline int is_blacklisted_syscall(uint64_t nr) {
     return 0;
 }
 
-static int run_fuzz_loop(int iterations, int is_sandboxed) {
+static volatile int s_thread_stop = 0;
+
+static int thread_fuzz_worker(void* arg) {
+    (void) arg;
+    uint32_t futex_word = 0;
+    while (!s_thread_stop) {
+        /* Concurrently exercise thread-related syscalls */
+        uint64_t tnr = prng_next() % 5;
+        if (tnr == 0) {
+            invoke_syscall0(186 /* gettid */);
+        } else if (tnr == 1) {
+            invoke_syscall0(24 /* sched_yield */);
+        } else if (tnr == 2) {
+            invoke_syscall3(202 /* futex */, (uint64_t)&futex_word, 1 /* FUTEX_WAKE */, 1);
+        } else if (tnr == 3) {
+            invoke_syscall1(218 /* set_tid_address */, (uint64_t)&futex_word);
+        } else {
+            invoke_syscall0(1000 /* SYS_TICKS */);
+        }
+    }
+    return 0;
+}
+
+static int create_fuzz_thread(int (*fn)(void*), void* arg) {
+    void* stack = malloc(65536);
+    if (!stack) return -1;
+    void* stack_top = (void*)((uintptr_t)stack + 65536 - 16);
+    unsigned long flags = 0x00000100 /* CLONE_VM */ |
+                          0x00000200 /* CLONE_FS */ |
+                          0x00000400 /* CLONE_FILES */ |
+                          0x00000800 /* CLONE_SIGHAND */ |
+                          0x00010000 /* CLONE_THREAD */ |
+                          0x00080000 /* CLONE_SYSVSEM */;
+    long ret;
+    asm volatile (
+        "mov $56, %%rax\n\t"
+        "mov %1, %%rdi\n\t"
+        "mov %2, %%rsi\n\t"
+        "syscall\n\t"
+        "mov %%rax, %0\n\t"
+        : "=r"(ret)
+        : "g"(flags), "g"(stack_top)
+        : "rcx", "r11", "memory"
+    );
+    if (ret == 0) {
+        fn(arg);
+        /* SYS_exit */
+        asm volatile (
+            "mov $60, %%rax\n\t"
+            "xor %%rdi, %%rdi\n\t"
+            "syscall\n\t"
+            : : : "memory"
+        );
+    }
+    return (int)ret;
+}
+
+static int run_sandboxed_escape_audit(int canary_inherited_fd) {
     int escapes = 0;
+
+    /* 1. Directly opening outside files */
+    int fd = open(CANARY_PATH, O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: open(%s, RDONLY) succeeded\n", CANARY_PATH); close(fd); escapes++; }
+    fd = open(CANARY_PATH, O_WRONLY);
+    if (fd >= 0) { printf("ESCAPE: open(%s, WRONLY) succeeded\n", CANARY_PATH); close(fd); escapes++; }
+
+    /* 2. Symlink pointing outside */
+    fd = open("/tmp/sandbox/symlink_to_canary", O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: open symlink pointing to canary succeeded\n"); close(fd); escapes++; }
+
+    /* 3. Dot-dot traversal */
+    fd = open("/tmp/sandbox/../canary.txt", O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: dot-dot traversal open succeeded\n"); close(fd); escapes++; }
+
+    /* 4. Truncate / chmod / utimensat on outside path */
+    long r = invoke_syscall2(76 /* truncate */, (uint64_t)CANARY_PATH, 0);
+    if (r >= 0) { printf("ESCAPE: truncate(%s) succeeded\n", CANARY_PATH); escapes++; }
+    r = invoke_syscall2(90 /* chmod */, (uint64_t)CANARY_PATH, 0777);
+    if (r >= 0) { printf("ESCAPE: chmod(%s) succeeded\n", CANARY_PATH); escapes++; }
+    r = invoke_syscall4(280 /* utimensat */, (uint64_t)-100 /* AT_FDCWD */, (uint64_t)CANARY_PATH, 0, 0);
+    if (r >= 0) { printf("ESCAPE: utimensat(%s) succeeded\n", CANARY_PATH); escapes++; }
+
+    /* 5. Rename / link across sandbox boundary */
+    r = invoke_syscall2(82 /* rename */, (uint64_t)"/tmp/sandbox/sub", (uint64_t)"/tmp/escaped_dir");
+    if (r >= 0) { printf("ESCAPE: rename out of sandbox succeeded\n"); escapes++; }
+    r = invoke_syscall2(82 /* rename */, (uint64_t)CANARY_PATH, (uint64_t)"/tmp/sandbox/stolen_canary");
+    if (r >= 0) { printf("ESCAPE: rename into sandbox succeeded\n"); escapes++; }
+    r = invoke_syscall2(86 /* link */, (uint64_t)CANARY_PATH, (uint64_t)"/tmp/sandbox/hardlink");
+    if (r >= 0) { printf("ESCAPE: hard link to canary succeeded\n"); escapes++; }
+
+    /* 6. Process management & signaling across boundaries */
+    r = invoke_syscall2(109 /* setpgid */, 1, 1);
+    if (r >= 0) { printf("ESCAPE: setpgid(1, 1) succeeded\n"); escapes++; }
+    r = invoke_syscall2(62 /* kill */, 1, 0);
+    if (r >= 0) { printf("ESCAPE: kill(1, 0) succeeded\n"); escapes++; }
+
+    /* 7. Procfs cross-process isolation & mem prohibited */
+    fd = open("/proc/1/status", O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: open(/proc/1/status) succeeded\n"); close(fd); escapes++; }
+    fd = open("/proc/self/mem", O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: open(/proc/self/mem) succeeded\n"); close(fd); escapes++; }
+    fd = open("/proc/agents", O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: open(/proc/agents) succeeded\n"); close(fd); escapes++; }
+
+    /* 8. Inherited FD check: parent opened canary on fd >= 3, must be sanitized/closed in child */
+    if (canary_inherited_fd >= 3) {
+        char buf[32];
+        int n = read(canary_inherited_fd, buf, sizeof(buf));
+        if (n > 0) {
+            printf("ESCAPE: read on inherited outside fd %d succeeded\n", canary_inherited_fd);
+            escapes++;
+        }
+    }
+
+    /* 9. 1000-range restricted MyOS syscalls */
+    static const int s_restricted_1000[] = {
+        1003, /* SYS_AGENT_ATTACH */
+        1004, /* SYS_AGENT_KILL */
+        1005, /* SYS_AGENT_SUSPEND */
+        1006, /* SYS_AGENT_RESUME */
+        1009, /* SYS_BUS_DAEMON_REGISTER */
+        1011, /* SYS_AGENT_CHARGE_TOKENS */
+        1013, /* SYS_MODEL_DAEMON_REGISTER */
+        1015, /* SYS_AGENT_CHARGE_NET */
+        1017, /* SYS_NET_DAEMON_REGISTER */
+        1018, /* SYS_TEST_HARDENING */
+        1099  /* kstack recursion debug */
+    };
+    for (size_t i = 0; i < sizeof(s_restricted_1000)/sizeof(s_restricted_1000[0]); i++) {
+        r = invoke_syscall6(s_restricted_1000[i], 1, 0, 0, 0, 0, 0);
+        if (r >= 0) {
+            printf("ESCAPE: restricted syscall %d returned %ld (expected -EPERM)\n", s_restricted_1000[i], r);
+            escapes++;
+        }
+    }
+
+    return escapes;
+}
+
+static int run_fuzz_loop(int iterations, int is_sandboxed, int canary_fd) {
+    int escapes = 0;
+    s_thread_stop = 0;
+
+    /* Launch concurrent fuzz worker thread */
+    int th_tid = create_fuzz_thread(thread_fuzz_worker, NULL);
+    if (th_tid > 0) {
+        printf("[sysfuzz] Spawned concurrent fuzz thread (TID %d)\n", th_tid);
+    }
+
     for (int i = 0; i < iterations; i++) {
         uint64_t nr;
         if (prng_range(0, 9) < 8) {
@@ -257,12 +420,20 @@ static int run_fuzz_loop(int iterations, int is_sandboxed) {
         /* If sandboxed, calling restricted 1000-range syscalls must never succeed */
         if (is_sandboxed && (nr == 1003 || nr == 1004 || nr == 1005 || nr == 1006 ||
                              nr == 1009 || nr == 1011 || nr == 1013 || nr == 1015 ||
-                             nr == 1017 || nr == 1018)) {
+                             nr == 1017 || nr == 1018 || nr == 1099)) {
             if (ret == 0) {
                 escapes++;
             }
         }
     }
+
+    s_thread_stop = 1;
+    invoke_syscall0(24 /* sched_yield */);
+
+    if (is_sandboxed) {
+        escapes += run_sandboxed_escape_audit(canary_fd);
+    }
+
     return escapes;
 }
 
@@ -327,7 +498,7 @@ int main(int argc, char** argv) {
     printf("[sysfuzz] Phase 1: Unconfined fuzzing (%d iterations)...\n", unconfined_count);
     pid_t pid = fork();
     if (pid == 0) {
-        int esc = run_fuzz_loop(unconfined_count, 0);
+        int esc = run_fuzz_loop(unconfined_count, 0, -1);
         exit(esc);
     } else if (pid > 0) {
         int status = 0;
@@ -367,14 +538,18 @@ int main(int argc, char** argv) {
     }
     printf("[sysfuzz] Created restricted sandbox agent %d (allowed prefix: /tmp/sandbox)\n", ag_id);
 
+    /* Open canary in parent to test inherited fd closure upon agent attach */
+    int parent_canary_fd = open(CANARY_PATH, O_RDONLY);
+
     pid = fork();
     if (pid == 0) {
         if (agent_attach(ag_id) != 0) {
             exit(99);
         }
-        int esc = run_fuzz_loop(sandboxed_count, 1);
+        int esc = run_fuzz_loop(sandboxed_count, 1, parent_canary_fd);
         exit(esc);
     } else if (pid > 0) {
+        if (parent_canary_fd >= 0) close(parent_canary_fd);
         int status = 0;
         waitpid(pid, &status, 0);
         if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
