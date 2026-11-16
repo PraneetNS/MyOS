@@ -824,6 +824,26 @@ static void test_agent_suspend_freezes_all_threads(void) {
         exit(1);
     }
 
+    /* Killswitch toggle freezes ALL threads */
+    syscall(1014 /* SYS_AGENT_KILLSWITCH_STATE */, 1);
+    usleep(40000);
+    int c4 = s_sub18_data->counter;
+    usleep(40000);
+    int c5 = s_sub18_data->counter;
+    if (c5 != c4) {
+        printf("FAIL: threads advanced counter while killswitch active (%d -> %d)\n", c4, c5);
+        exit(1);
+    }
+
+    /* Toggle killswitch OFF */
+    syscall(1014 /* SYS_AGENT_KILLSWITCH_STATE */, 1);
+    usleep(40000);
+    int c6 = s_sub18_data->counter;
+    if (c6 <= c5) {
+        printf("FAIL: threads failed to resume after killswitch toggle off (c5=%d, c6=%d)\n", c5, c6);
+        exit(1);
+    }
+
     s_sub18_data->running = 0;
     syscall(SYS_AGENT_KILL, ag_id);
     waitpid(pid, NULL, 0);
@@ -844,17 +864,51 @@ static void* sub19_worker(void* arg) {
     fd = open("/canary.txt", O_WRONLY);
     if (fd >= 0) { close(fd); escapes++; }
 
-    /* 2. Truncate & chmod outside */
+    /* 2. Truncate, chmod & utimensat outside */
     if (truncate("/canary.txt", 0) == 0) escapes++;
     if (chmod("/canary.txt", 0777) == 0) escapes++;
+    if (syscall(280 /* utimensat */, -100 /* AT_FDCWD */, "/canary.txt", NULL, 0) == 0) escapes++;
 
-    /* 3. Procfs cross-process isolation */
+    /* 3. Rename & link across boundary */
+    if (rename("/tmp/sub", "/tmp_escaped") == 0) escapes++;
+    if (rename("/canary.txt", "/tmp/stolen_canary") == 0) escapes++;
+    if (syscall(86 /* link */, "/canary.txt", "/tmp/hardlink") == 0) escapes++;
+
+    /* 4. Socketpair & sendmsg across boundary */
+    int sv[2] = {-1, -1};
+    if (syscall(53 /* socketpair */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0, sv) == 0) {
+        long sm_r = syscall(46 /* sendmsg */, sv[0], NULL, 0);
+        if (sm_r >= 0) escapes++;
+        close(sv[0]);
+        close(sv[1]);
+    }
+
+    /* 5. Process management & signaling across boundaries (setpgid/setsid/kill) */
+    if (syscall(109 /* setpgid */, 1, 1) == 0) escapes++;
+    if (syscall(62 /* kill */, 1, 0) == 0) escapes++;
+
+    /* 6. Procfs cross-process isolation & mem prohibited */
     fd = open("/proc/1/status", O_RDONLY);
     if (fd >= 0) { close(fd); escapes++; }
     fd = open("/proc/self/mem", O_RDONLY);
     if (fd >= 0) { close(fd); escapes++; }
+    fd = open("/proc/agents", O_RDONLY);
+    if (fd >= 0) { close(fd); escapes++; }
 
-    /* 4. Restricted 1000-range syscalls */
+    /* 7. /proc/self/fd after chdir */
+    chdir("/tmp");
+    fd = open("/proc/1/fd/0", O_RDONLY);
+    if (fd >= 0) { close(fd); escapes++; }
+
+    /* 8. Close-on-exec validation */
+    int cfd = open("/tmp", O_RDONLY | 0x80000 /* O_CLOEXEC */);
+    if (cfd >= 0) {
+        long f = syscall(72 /* fcntl */, cfd, 1 /* F_GETFD */);
+        if (!(f & 1 /* FD_CLOEXEC */)) escapes++;
+        close(cfd);
+    }
+
+    /* 9. Restricted 1000-range syscalls */
     if (syscall(SYS_AGENT_ATTACH, 1) == 0) escapes++;
     if (syscall(SYS_AGENT_KILL, 1) == 0) escapes++;
     if (syscall(1009 /* SYS_BUS_DAEMON_REGISTER */) == 0) escapes++;
