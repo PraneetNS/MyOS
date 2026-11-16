@@ -5,6 +5,8 @@
 #include "serial.h"
 #include "rtc.h"
 #include "kmutex.h"
+#include "process.h"
+#include "scheduler.h"
 
 #define FAT_ATTR_READONLY   0x01
 #define FAT_ATTR_HIDDEN     0x02
@@ -1362,7 +1364,9 @@ static int fat16_readdir(vnode_t* dir, uint32_t index, struct dirent* entry) {
 }
 
 static int fat16_truncate(vnode_t* node, uint32_t length) {
+    if (!node || node->type == VNODE_DIR) return -EISDIR;
     fat_node_t* fnode = (fat_node_t*) node->fs_data;
+    if (!fnode || fnode->is_dir) return -EISDIR;
     if (length == 0) {
         if (fnode->first_cluster) {
             fat_free_chain(fnode->first_cluster);
