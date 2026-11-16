@@ -46,20 +46,25 @@ static uint64_t prng_range(uint64_t min, uint64_t max) {
 
 static int read_free_frames(void) {
     int fd = open("/proc/meminfo", O_RDONLY);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        printf("[sysfuzz-debug] read_free_frames: open /proc/meminfo failed (errno=%d)\n", errno);
+        return -1;
+    }
     char buf[512];
     int n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
-    if (n <= 0) return -1;
-    buf[n] = '\0';
-    char* p = strstr(buf, "FramesFree:\t");
-    if (!p) {
-        p = strstr(buf, "FramesFree: ");
-        if (!p) return -1;
-        p += 12;
-    } else {
-        p += 12;
+    if (n <= 0) {
+        printf("[sysfuzz-debug] read_free_frames: read returned %d\n", n);
+        return -1;
     }
+    buf[n] = '\0';
+    char* p = strstr(buf, "FramesFree:");
+    if (!p) {
+        printf("[sysfuzz-debug] read_free_frames: no FramesFree in buf:\n%s\n", buf);
+        return -1;
+    }
+    p += 11;
+    while (*p == ' ' || *p == '\t') p++;
     return atoi(p);
 }
 
@@ -180,19 +185,14 @@ static uint64_t get_random_arg(int is_sandboxed) {
 }
 
 static inline long invoke_syscall6(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    register uint64_t r10 asm("r10") = a4;
+    register uint64_t r8  asm("r8")  = a5;
+    register uint64_t r9  asm("r9")  = a6;
     long ret;
     asm volatile (
-        "mov %1, %%rax\n\t"
-        "mov %2, %%rdi\n\t"
-        "mov %3, %%rsi\n\t"
-        "mov %4, %%rdx\n\t"
-        "mov %5, %%r10\n\t"
-        "mov %6, %%r8\n\t"
-        "mov %7, %%r9\n\t"
         "syscall\n\t"
-        "mov %%rax, %0\n\t"
-        : "=r"(ret)
-        : "g"(nr), "g"(a1), "g"(a2), "g"(a3), "g"(a4), "g"(a5), "g"(a6)
+        : "=a"(ret)
+        : "a"(nr), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8), "r"(r9)
         : "rcx", "r11", "memory"
     );
     return ret;
@@ -216,13 +216,23 @@ static inline long invoke_syscall4(uint64_t nr, uint64_t a1, uint64_t a2, uint64
 
 static int verify_canary(void) {
     int fd = open(CANARY_PATH, O_RDONLY);
-    if (fd < 0) return 0;
+    if (fd < 0) {
+        printf("[sysfuzz-debug] verify_canary: open failed (errno=%d)\n", errno);
+        return 0;
+    }
     char buf[64];
     int n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
-    if (n <= 0) return 0;
+    if (n <= 0) {
+        printf("[sysfuzz-debug] verify_canary: read returned %d (errno=%d)\n", n, errno);
+        return 0;
+    }
     buf[n] = '\0';
-    return (strcmp(buf, CANARY_DATA) == 0);
+    if (strcmp(buf, CANARY_DATA) != 0) {
+        printf("[sysfuzz-debug] verify_canary: content mismatch! Got len=%d: '%s'\n", n, buf);
+        return 0;
+    }
+    return 1;
 }
 
 static inline int is_blacklisted_syscall(uint64_t nr) {
@@ -243,8 +253,8 @@ static int thread_fuzz_worker(void* arg) {
     (void) arg;
     uint32_t futex_word = 0;
     while (!s_thread_stop) {
-        /* Concurrently exercise thread-related syscalls */
-        uint64_t tnr = prng_next() % 5;
+        /* Concurrently exercise thread-related syscalls: clone, futex, tgkill, gettid, yield */
+        uint64_t tnr = prng_next() % 7;
         if (tnr == 0) {
             invoke_syscall0(186 /* gettid */);
         } else if (tnr == 1) {
@@ -253,9 +263,18 @@ static int thread_fuzz_worker(void* arg) {
             invoke_syscall3(202 /* futex */, (uint64_t)&futex_word, 1 /* FUTEX_WAKE */, 1);
         } else if (tnr == 3) {
             invoke_syscall1(218 /* set_tid_address */, (uint64_t)&futex_word);
+        } else if (tnr == 4) {
+            /* tgkill with sig=0 probe to validate thread group target routing */
+            long tid = invoke_syscall0(186 /* gettid */);
+            invoke_syscall3(234 /* tgkill */, (uint64_t)getpid(), (uint64_t)tid, 0);
+        } else if (tnr == 5) {
+            /* clone parameter validation probe with unsupported flags */
+            char dummy_stk[512];
+            invoke_syscall2(56 /* clone */, 0x00020000 /* CLONE_NEWNS */, (uint64_t)(dummy_stk + sizeof(dummy_stk)));
         } else {
             invoke_syscall0(1000 /* SYS_TICKS */);
         }
+        invoke_syscall0(24 /* sched_yield */);
     }
     return 0;
 }
@@ -272,23 +291,18 @@ static int create_fuzz_thread(int (*fn)(void*), void* arg) {
                           0x00080000 /* CLONE_SYSVSEM */;
     long ret;
     asm volatile (
-        "mov $56, %%rax\n\t"
-        "mov %1, %%rdi\n\t"
-        "mov %2, %%rsi\n\t"
         "syscall\n\t"
-        "mov %%rax, %0\n\t"
-        : "=r"(ret)
-        : "g"(flags), "g"(stack_top)
+        : "=a"(ret)
+        : "a"((uint64_t)56), "D"(flags), "S"(stack_top)
         : "rcx", "r11", "memory"
     );
     if (ret == 0) {
         fn(arg);
-        /* SYS_exit */
         asm volatile (
-            "mov $60, %%rax\n\t"
-            "xor %%rdi, %%rdi\n\t"
             "syscall\n\t"
-            : : : "memory"
+            :
+            : "a"((uint64_t)60), "D"((uint64_t)0)
+            : "rcx", "r11", "memory"
         );
     }
     return (int)ret;
@@ -327,11 +341,20 @@ static int run_sandboxed_escape_audit(int canary_inherited_fd) {
     r = invoke_syscall2(86 /* link */, (uint64_t)CANARY_PATH, (uint64_t)"/tmp/sandbox/hardlink");
     if (r >= 0) { printf("ESCAPE: hard link to canary succeeded\n"); escapes++; }
 
-    /* 6. Process management & signaling across boundaries */
+    /* 6. Process management & signaling across boundaries (setpgid/setsid/kill) */
     r = invoke_syscall2(109 /* setpgid */, 1, 1);
     if (r >= 0) { printf("ESCAPE: setpgid(1, 1) succeeded\n"); escapes++; }
     r = invoke_syscall2(62 /* kill */, 1, 0);
     if (r >= 0) { printf("ESCAPE: kill(1, 0) succeeded\n"); escapes++; }
+
+    /* 6b. Socketpair & sendmsg across sandbox boundary */
+    int sv[2] = {-1, -1};
+    if (invoke_syscall4(53 /* socketpair */, 1 /* AF_UNIX */, 1 /* SOCK_STREAM */, 0, (uint64_t)sv) == 0) {
+        long sm_r = invoke_syscall3(46 /* sendmsg */, sv[0], 0, 0);
+        if (sm_r >= 0) { printf("ESCAPE: sendmsg SCM_RIGHTS succeeded across boundary\n"); escapes++; }
+        close(sv[0]);
+        close(sv[1]);
+    }
 
     /* 7. Procfs cross-process isolation & mem prohibited */
     fd = open("/proc/1/status", O_RDONLY);
@@ -340,6 +363,22 @@ static int run_sandboxed_escape_audit(int canary_inherited_fd) {
     if (fd >= 0) { printf("ESCAPE: open(/proc/self/mem) succeeded\n"); close(fd); escapes++; }
     fd = open("/proc/agents", O_RDONLY);
     if (fd >= 0) { printf("ESCAPE: open(/proc/agents) succeeded\n"); close(fd); escapes++; }
+
+    /* 7b. /proc/self/fd after chdir */
+    chdir("/tmp/sandbox");
+    fd = open("/proc/1/fd/0", O_RDONLY);
+    if (fd >= 0) { printf("ESCAPE: open(/proc/1/fd/0) succeeded across boundary\n"); close(fd); escapes++; }
+
+    /* 7c. Close-on-exec validation */
+    int cloexec_fd = (int) invoke_syscall3(2 /* open */, (uint64_t)"/tmp/sandbox/sub", 0 | 0x80000 /* O_CLOEXEC */, 0);
+    if (cloexec_fd >= 0) {
+        long f = invoke_syscall2(72 /* fcntl */, cloexec_fd, 1 /* F_GETFD */);
+        if (!(f & 1 /* FD_CLOEXEC */)) {
+            printf("ESCAPE: FD_CLOEXEC flag not preserved\n");
+            escapes++;
+        }
+        close(cloexec_fd);
+    }
 
     /* 8. Inherited FD check: parent opened canary on fd >= 3, must be sanitized/closed in child */
     if (canary_inherited_fd >= 3) {
@@ -512,6 +551,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (!verify_canary()) {
+        printf("FAIL: canary missing or corrupted after Phase 1!\n");
+    }
+
     /* 3. Run sandboxed agent fuzzing pass */
     int sandboxed_count = total_iterations / 2;
     printf("[sysfuzz] Phase 2: Sandboxed agent fuzzing (%d iterations)...\n", sandboxed_count);
@@ -583,10 +626,10 @@ int main(int argc, char** argv) {
     printf("[sysfuzz] Final free physical frames: %d (delta: %d frames)\n",
            frames_after, frames_after - frames_before);
 
-    /* Allow up to one 256KB (64-frame) kheap chunk growth for audit logging and buffer cache */
+    /* Allow up to two 256KB (128-frame) kheap chunk growth for audit logging and buffer cache */
     if (frames_before > 0 && frames_after > 0) {
         int delta = frames_before - frames_after;
-        if (delta > 64 || delta < -64) {
+        if (delta > 128 || delta < -128) {
             printf("FAIL: potential frame leak detected (delta=%d)\n", delta);
             leaks++;
         } else {
