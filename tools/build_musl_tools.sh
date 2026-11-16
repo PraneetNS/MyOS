@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO_DIR="/mnt/d/New folder"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "=== Building BusyBox with musl-gcc ==="
 cd /root/bb/busybox-1.36.1
