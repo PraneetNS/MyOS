@@ -378,7 +378,7 @@ static int do_sys_openat(int dirfd, const char* path, int flags, int mode) {
             vnode_unref(vn);
             return -EEXIST;
         }
-        if (vn->type == VNODE_DIR && ((flags & O_WRONLY) || (flags & O_RDWR))) {
+        if (vn->type == VNODE_DIR && ((flags & (O_WRONLY | O_RDWR | O_TRUNC | O_CREAT)))) {
             vnode_unref(vn);
             return -EISDIR;
         }
