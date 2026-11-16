@@ -126,6 +126,7 @@ vnode_t* vfs_get_root(void) {
 
 int vfs_truncate(vnode_t* vn, uint32_t length) {
     if (!vn) return -EINVAL;
+    if (vn->type == VNODE_DIR) return -EISDIR;
     if (!vn->ops || !vn->ops->truncate) return -EINVAL;
     return vn->ops->truncate(vn, length);
 }
